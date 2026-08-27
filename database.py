@@ -1,5 +1,4 @@
 import os
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -8,7 +7,7 @@ from supabase import create_client, Client
 
 
 # ============================================================
-# ENV
+# ENVIRONMENT
 # ============================================================
 
 load_dotenv()
@@ -46,12 +45,26 @@ def get_supabase() -> Client:
             "SUPABASE_KEY belum dikonfigurasi."
         )
 
-    _supabase = create_client(
-        SUPABASE_URL,
-        SUPABASE_KEY
-    )
+    try:
 
-    return _supabase
+        _supabase = create_client(
+            SUPABASE_URL,
+            SUPABASE_KEY
+        )
+
+        print(
+            "[SUPABASE] Client berhasil dibuat."
+        )
+
+        return _supabase
+
+    except Exception as e:
+
+        print(
+            f"[SUPABASE CONNECTION ERROR] {e}"
+        )
+
+        raise
 
 
 # ============================================================
@@ -74,7 +87,45 @@ def now_iso() -> str:
 
 
 # ============================================================
-# ARTICLES
+# TEST CONNECTION
+# ============================================================
+
+def test_connection() -> bool:
+
+    try:
+
+        client = get_supabase()
+
+        response = (
+            client
+            .table("articles")
+            .select("link")
+            .limit(1)
+            .execute()
+        )
+
+        print(
+            "[SUPABASE] Koneksi berhasil."
+        )
+
+        print(
+            f"[SUPABASE] Test response: "
+            f"{len(response.data or [])} row."
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"[SUPABASE TEST ERROR] {e}"
+        )
+
+        return False
+
+
+# ============================================================
+# GET ALL ARTICLES
 # ============================================================
 
 def get_all_articles(
@@ -104,13 +155,28 @@ def get_all_articles(
 
         results.extend(rows)
 
+        print(
+            f"[SUPABASE] Mengambil "
+            f"{len(rows)} artikel "
+            f"(offset {start})."
+        )
+
         if len(rows) < page_size:
             break
 
         start += page_size
 
+    print(
+        f"[SUPABASE] Total artikel: "
+        f"{len(results)}"
+    )
+
     return results
 
+
+# ============================================================
+# GET ARTICLE BY LINK
+# ============================================================
 
 def get_article_by_link(
     link: str
@@ -123,22 +189,39 @@ def get_article_by_link(
 
     client = get_supabase()
 
-    response = (
-        client
-        .table("articles")
-        .select("*")
-        .eq("link", link)
-        .limit(1)
-        .execute()
-    )
+    try:
 
-    data = response.data or []
+        response = (
+            client
+            .table("articles")
+            .select("*")
+            .eq(
+                "link",
+                link
+            )
+            .limit(1)
+            .execute()
+        )
 
-    if not data:
+        data = response.data or []
+
+        if not data:
+            return None
+
+        return data[0]
+
+    except Exception as e:
+
+        print(
+            f"[DB GET ERROR] {e}"
+        )
+
         return None
 
-    return data[0]
 
+# ============================================================
+# UPSERT ARTICLE
+# ============================================================
 
 def upsert_article(
     article: Dict[str, Any]
@@ -148,34 +231,151 @@ def upsert_article(
 
     data = dict(article)
 
+    # --------------------------------------------------------
+    # LINK
+    # --------------------------------------------------------
+
     data["link"] = normalize_link(
         data.get("link", "")
     )
 
     if not data["link"]:
+
         raise ValueError(
             "Artikel tidak memiliki link."
         )
 
-    data["updated_at"] = now_iso()
+    # --------------------------------------------------------
+    # TIMESTAMP
+    # --------------------------------------------------------
 
-    response = (
-        client
-        .table("articles")
-        .upsert(
-            data,
-            on_conflict="link"
-        )
-        .execute()
+    current_time = now_iso()
+
+    data.setdefault(
+        "created_at",
+        current_time
     )
 
-    rows = response.data or []
+    data["updated_at"] = current_time
 
-    if rows:
-        return rows[0]
+    # --------------------------------------------------------
+    # INSERT / UPDATE
+    # --------------------------------------------------------
 
-    return data
+    try:
 
+        response = (
+            client
+            .table("articles")
+            .upsert(
+                data,
+                on_conflict="link"
+            )
+            .execute()
+        )
+
+        rows = response.data or []
+
+        if rows:
+
+            result = rows[0]
+
+            print(
+                "[SUPABASE] UPSERT BERHASIL:"
+            )
+
+            print(
+                f"  Judul    : "
+                f"{result.get('title', '-')}"
+            )
+
+            print(
+                f"  Kategori : "
+                f"{result.get('category', '-')}"
+            )
+
+            print(
+                f"  Link     : "
+                f"{result.get('link', '-')}"
+            )
+
+            return result
+
+        print(
+            "[SUPABASE] UPSERT berhasil "
+            "tetapi response kosong."
+        )
+
+        return data
+
+    except Exception as e:
+
+        print(
+            "[SUPABASE UPSERT ERROR]"
+        )
+
+        print(
+            f"Judul: {data.get('title', '-')}"
+        )
+
+        print(
+            f"Link : {data.get('link', '-')}"
+        )
+
+        print(
+            f"Error: {e}"
+        )
+
+        raise
+
+
+# ============================================================
+# INSERT MANY ARTICLES
+# ============================================================
+
+def insert_articles(
+    articles: List[Dict[str, Any]]
+) -> int:
+
+    if not articles:
+
+        print(
+            "[SUPABASE] Tidak ada artikel "
+            "untuk disimpan."
+        )
+
+        return 0
+
+    success = 0
+
+    for article in articles:
+
+        try:
+
+            upsert_article(
+                article
+            )
+
+            success += 1
+
+        except Exception as e:
+
+            print(
+                f"[SUPABASE] Gagal menyimpan artikel: "
+                f"{e}"
+            )
+
+    print(
+        f"[SUPABASE] Berhasil menyimpan "
+        f"{success}/{len(articles)} artikel."
+    )
+
+    return success
+
+
+# ============================================================
+# UPDATE ARTICLE
+# ============================================================
 
 def update_article(
     link: str,
@@ -193,45 +393,72 @@ def update_article(
 
     data["updated_at"] = now_iso()
 
-    response = (
-        client
-        .table("articles")
-        .update(data)
-        .eq("link", link)
-        .execute()
-    )
+    try:
 
-    rows = response.data or []
+        response = (
+            client
+            .table("articles")
+            .update(data)
+            .eq(
+                "link",
+                link
+            )
+            .execute()
+        )
 
-    if rows:
-        return rows[0]
+        rows = response.data or []
 
-    return None
+        if rows:
+
+            return rows[0]
+
+        return None
+
+    except Exception as e:
+
+        print(
+            f"[DB UPDATE ERROR] {e}"
+        )
+
+        raise
 
 
 # ============================================================
-# DELETE
+# DELETE ALL ARTICLES
 # ============================================================
 
 def delete_all_articles():
 
     client = get_supabase()
 
-    # id tidak boleh NULL, sehingga filter neq kosong
-    (
-        client
-        .table("articles")
-        .delete()
-        .neq(
-            "link",
-            ""
+    try:
+
+        (
+            client
+            .table("articles")
+            .delete()
+            .neq(
+                "link",
+                ""
+            )
+            .execute()
         )
-        .execute()
-    )
+
+        print(
+            "[SUPABASE] Semua artikel dihapus."
+        )
+
+    except Exception as e:
+
+        print(
+            f"[DB DELETE ERROR] {e}"
+        )
+
+        raise
 
 
 # ============================================================
-# LOGS
+# RUN LOG
 # ============================================================
 
 def save_run_log(
@@ -263,6 +490,10 @@ def save_run_log(
         )
 
 
+# ============================================================
+# GET RUN LOGS
+# ============================================================
+
 def get_run_logs(
     limit: int = 200
 ) -> List[Dict[str, Any]]:
@@ -279,27 +510,38 @@ def get_run_logs(
                 "created_at",
                 desc=True
             )
-            .limit(limit)
+            .limit(
+                limit
+            )
             .execute()
         )
 
         return response.data or []
 
-    except Exception:
+    except Exception as e:
+
+        print(
+            f"[DB RUN LOG ERROR] {e}"
+        )
 
         return []
 
 
 # ============================================================
-# STATISTIK
+# STATISTIK KATEGORI
 # ============================================================
 
 def get_category_counts(
-    articles: Optional[List[Dict[str, Any]]] = None
+    articles: Optional[
+        List[Dict[str, Any]]
+    ] = None
 ):
 
     if articles is None:
-        articles = get_all_articles()
+
+        articles = (
+            get_all_articles()
+        )
 
     counts = {
 
@@ -318,6 +560,7 @@ def get_category_counts(
         )
 
         if category not in counts:
+
             category = "Netral"
 
         counts[category] += 1
