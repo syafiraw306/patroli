@@ -1,0 +1,10 @@
+streamlit
+requests
+feedparser
+pandas
+plotly
+beautifulsoup4
+python-dotenv
+python-dateutil
+supabase
+schedule
