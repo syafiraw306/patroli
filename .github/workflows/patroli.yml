@@ -1,0 +1,39 @@
+name: Patroli Siber Otomatis
+
+on:
+  schedule:
+    # 08:00 WIB = 01:00 UTC
+    - cron: "0 1 * * *"
+
+    # 15:00 WIB = 08:00 UTC
+    - cron: "0 8 * * *"
+
+  workflow_dispatch:
+
+jobs:
+  patroli:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Jalankan Patroli
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          NAMA_SATKER: "Kejaksaan Negeri Deli Serdang"
+        run: |
+          python patroli.py
