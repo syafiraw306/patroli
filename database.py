@@ -466,6 +466,7 @@ def delete_all_articles():
         raise
 
 
+```python
 # ============================================================
 # RUN LOG
 # ============================================================
@@ -473,78 +474,107 @@ def delete_all_articles():
 def save_run_log(
     log_data: Dict[str, Any]
 ):
-
     """
-    Menyimpan statistik patroli ke run_logs.
+    Menyimpan log patroli ke tabel run_logs.
 
-    Fungsi ini sengaja hanya mengirim kolom yang
-    kemungkinan digunakan oleh tabel run_logs.
+    Kolom yang tersedia di database:
 
-    Jika database_total belum tersedia di schema
-    run_logs, tidak akan menyebabkan workflow gagal.
+    id
+    created_at
+    duration_seconds
+    candidate_count
+    valid_count
+    negative_count
+    handling_count
+    neutral_count
+    positive_count
+    telegram_count
+    status
+
+    Field lain dari patroli.py sengaja tidak dikirim
+    agar tidak menyebabkan error schema cache Supabase.
     """
 
     try:
 
         client = get_supabase()
 
-        data = dict(log_data)
-
-        data.setdefault(
-            "created_at",
-            now_iso()
-        )
-
         # ----------------------------------------------------
-        # Hanya field log utama
+        # HANYA KOLOM YANG ADA DI run_logs
         # ----------------------------------------------------
 
-        allowed_fields = {
+        data = {
 
-            "duration_seconds",
+            "created_at":
+                log_data.get(
+                    "created_at",
+                    now_iso()
+                ),
 
-            "candidate_count",
+            "duration_seconds":
+                log_data.get(
+                    "duration_seconds",
+                    0
+                ),
 
-            "valid_count",
+            "candidate_count":
+                log_data.get(
+                    "candidate_count",
+                    0
+                ),
 
-            "saved_count",
+            "valid_count":
+                log_data.get(
+                    "valid_count",
+                    0
+                ),
 
-            "save_failed",
+            "negative_count":
+                log_data.get(
+                    "negative_count",
+                    0
+                ),
 
-            "reclassified_count",
+            "handling_count":
+                log_data.get(
+                    "handling_count",
+                    0
+                ),
 
-            "reclassify_failed",
+            "neutral_count":
+                log_data.get(
+                    "neutral_count",
+                    0
+                ),
 
-            "negative_count",
+            "positive_count":
+                log_data.get(
+                    "positive_count",
+                    0
+                ),
 
-            "handling_count",
+            "telegram_count":
+                log_data.get(
+                    "telegram_count",
+                    0
+                ),
 
-            "neutral_count",
-
-            "positive_count",
-
-            "telegram_count",
-
-            "status",
-
-            "created_at"
+            "status":
+                log_data.get(
+                    "status",
+                    "SELESAI"
+                )
 
         }
 
-        clean_data = {
+        # ----------------------------------------------------
+        # INSERT
+        # ----------------------------------------------------
 
-            key: value
-
-            for key, value in data.items()
-
-            if key in allowed_fields
-
-        }
-
-        (
+        response = (
             client
             .table("run_logs")
-            .insert(clean_data)
+            .insert(data)
             .execute()
         )
 
@@ -552,10 +582,12 @@ def save_run_log(
             "[SUPABASE] Run log berhasil disimpan."
         )
 
+        return response.data or []
+
     except Exception as e:
 
         # ----------------------------------------------------
-        # Run log TIDAK BOLEH membuat patroli gagal.
+        # ERROR LOG TIDAK BOLEH MEMBUAT PATROLI GAGAL
         # ----------------------------------------------------
 
         print(
@@ -567,6 +599,8 @@ def save_run_log(
             "Patroli tetap dianggap selesai."
         )
 
+        return []
+```
 
 # ============================================================
 # GET RUN LOGS
