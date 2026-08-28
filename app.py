@@ -64,63 +64,128 @@ TAHUN_TARGET = 2026
 # LOGIN CONFIG
 # ============================================================
 
+def get_env_value(name: str) -> str:
+    """
+    Mengambil nilai environment variable dengan aman.
+    """
+    return (
+        os.getenv(name, "")
+        or ""
+    ).strip()
+
+
 def get_users():
     """
-    Mengambil konfigurasi user dari Streamlit Secrets.
+    Mengambil konfigurasi user.
 
-    Format:
+    Prioritas:
+    1. Environment Variables
+    2. Streamlit Secrets
 
-    [users.admin]
-    username = "admin"
-    password = "..."
-    role = "admin"
-
-    [users.viewer]
-    username = "viewer"
-    password = "..."
-    role = "viewer"
+    User yang tersedia:
+    - admin
+    - viewer
     """
 
     users = {}
 
+    # ========================================================
+    # 1. ENVIRONMENT VARIABLES
+    # ========================================================
+
+    admin_username = get_env_value(
+        "ADMIN_USERNAME"
+    )
+
+    admin_password = get_env_value(
+        "ADMIN_PASSWORD"
+    )
+
+    viewer_username = get_env_value(
+        "VIEWER_USERNAME"
+    )
+
+    viewer_password = get_env_value(
+        "VIEWER_PASSWORD"
+    )
+
+    if (
+        admin_username
+        and admin_password
+    ):
+
+        users[admin_username] = {
+            "password": admin_password,
+            "role": "admin"
+        }
+
+    if (
+        viewer_username
+        and viewer_password
+    ):
+
+        users[viewer_username] = {
+            "password": viewer_password,
+            "role": "viewer"
+        }
+
+    # ========================================================
+    # 2. STREAMLIT SECRETS
+    # ========================================================
+
+    if users:
+        return users
+
     try:
 
-        if "users" not in st.secrets:
-            return users
+        if "users" in st.secrets:
 
-        secret_users = st.secrets["users"]
+            secret_users = st.secrets["users"]
 
-        for user_key in secret_users:
+            for user_key in secret_users:
 
-            user_data = secret_users[user_key]
+                user_data = secret_users[user_key]
 
-            username = str(
-                user_data.get("username", "")
-            ).strip()
+                username = str(
+                    user_data.get(
+                        "username",
+                        ""
+                    )
+                ).strip()
 
-            password = str(
-                user_data.get("password", "")
-            )
+                password = str(
+                    user_data.get(
+                        "password",
+                        ""
+                    )
+                )
 
-            role = str(
-                user_data.get("role", "viewer")
-            ).lower().strip()
+                role = str(
+                    user_data.get(
+                        "role",
+                        "viewer"
+                    )
+                ).lower().strip()
 
-            if (
-                username
-                and password
-                and role in ["admin", "viewer"]
-            ):
+                if (
+                    username
+                    and password
+                    and role in [
+                        "admin",
+                        "viewer"
+                    ]
+                ):
 
-                users[username] = {
-                    "password": password,
-                    "role": role
-                }
+                    users[username] = {
+                        "password": password,
+                        "role": role
+                    }
 
     except Exception as e:
 
-        st.error(
-            f"Gagal membaca konfigurasi login: {e}"
+        print(
+            f"[LOGIN] Gagal membaca "
+            f"Streamlit Secrets: {e}"
         )
 
     return users
@@ -135,14 +200,26 @@ def authenticate(
     password
 ):
 
-    users = get_users()
+    username = (
+        str(username)
+        .strip()
+    )
 
-    username = username.strip()
+    password = str(
+        password
+    )
 
-    if username not in users:
+    if not username or not password:
         return None
 
-    user = users[username]
+    users = get_users()
+
+    user = users.get(
+        username
+    )
+
+    if user is None:
+        return None
 
     if password != user["password"]:
         return None
@@ -151,8 +228,6 @@ def authenticate(
         "username": username,
         "role": user["role"]
     }
-
-
 # ============================================================
 # SESSION STATE
 # ============================================================
