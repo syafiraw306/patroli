@@ -1,3 +1,10 @@
+
+Jangan sampai ada tanda backtick tersebut di dalam file Python.
+
+Namun agar tidak terjadi lagi, saya sarankan **ganti seluruh isi `database.py`** dengan versi bersih berikut:
+
+:::writing{variant="standard" id="58321"}
+```python
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -45,26 +52,16 @@ def get_supabase() -> Client:
             "SUPABASE_KEY belum dikonfigurasi."
         )
 
-    try:
+    _supabase = create_client(
+        SUPABASE_URL,
+        SUPABASE_KEY
+    )
 
-        _supabase = create_client(
-            SUPABASE_URL,
-            SUPABASE_KEY
-        )
+    print(
+        "[SUPABASE] Client berhasil dibuat."
+    )
 
-        print(
-            "[SUPABASE] Client berhasil dibuat."
-        )
-
-        return _supabase
-
-    except Exception as e:
-
-        print(
-            f"[SUPABASE CONNECTION ERROR] {e}"
-        )
-
-        raise
+    return _supabase
 
 
 # ============================================================
@@ -231,10 +228,6 @@ def upsert_article(
 
     data = dict(article)
 
-    # --------------------------------------------------------
-    # LINK
-    # --------------------------------------------------------
-
     data["link"] = normalize_link(
         data.get("link", "")
     )
@@ -245,10 +238,6 @@ def upsert_article(
             "Artikel tidak memiliki link."
         )
 
-    # --------------------------------------------------------
-    # TIMESTAMP
-    # --------------------------------------------------------
-
     current_time = now_iso()
 
     data.setdefault(
@@ -257,10 +246,6 @@ def upsert_article(
     )
 
     data["updated_at"] = current_time
-
-    # --------------------------------------------------------
-    # UPSERT
-    # --------------------------------------------------------
 
     try:
 
@@ -294,17 +279,7 @@ def upsert_article(
                 f"{result.get('category', '-')}"
             )
 
-            print(
-                f"  Link     : "
-                f"{result.get('link', '-')}"
-            )
-
             return result
-
-        print(
-            "[SUPABASE] UPSERT berhasil "
-            "tetapi response kosong."
-        )
 
         return data
 
@@ -338,11 +313,6 @@ def insert_articles(
 ) -> int:
 
     if not articles:
-
-        print(
-            "[SUPABASE] Tidak ada artikel "
-            "untuk disimpan."
-        )
 
         return 0
 
@@ -385,9 +355,7 @@ def update_article(
     link = normalize_link(link)
 
     if not link:
-        raise ValueError(
-            "Link artikel kosong saat update."
-        )
+        return None
 
     client = get_supabase()
 
@@ -411,6 +379,7 @@ def update_article(
         rows = response.data or []
 
         if rows:
+
             return rows[0]
 
         return None
@@ -418,15 +387,7 @@ def update_article(
     except Exception as e:
 
         print(
-            "[DB UPDATE ERROR]"
-        )
-
-        print(
-            f"Link: {link}"
-        )
-
-        print(
-            f"Error: {e}"
+            f"[DB UPDATE ERROR] {e}"
         )
 
         raise
@@ -466,112 +427,70 @@ def delete_all_articles():
         raise
 
 
-
 # ============================================================
 # RUN LOG
+#
+# SESUAIKAN DENGAN KOLOM run_logs YANG ADA:
+#
+# id
+# created_at
+# duration_seconds
+# candidate_count
+# valid_count
+# negative_count
+# handling_count
+# neutral_count
+# positive_count
+# telegram_count
+# status
+#
+# Tidak mengirim:
+# database_total
+# reclassified_count
+# reclassify_failed
+# saved_count
+# save_failed
 # ============================================================
+
+RUN_LOG_COLUMNS = {
+    "id",
+    "created_at",
+    "duration_seconds",
+    "candidate_count",
+    "valid_count",
+    "negative_count",
+    "handling_count",
+    "neutral_count",
+    "positive_count",
+    "telegram_count",
+    "status"
+}
+
 
 def save_run_log(
     log_data: Dict[str, Any]
 ):
-    """
-    Menyimpan log patroli ke tabel run_logs.
-
-    Kolom yang tersedia di database:
-
-    id
-    created_at
-    duration_seconds
-    candidate_count
-    valid_count
-    negative_count
-    handling_count
-    neutral_count
-    positive_count
-    telegram_count
-    status
-
-    Field lain dari patroli.py sengaja tidak dikirim
-    agar tidak menyebabkan error schema cache Supabase.
-    """
 
     try:
 
         client = get_supabase()
 
-        # ----------------------------------------------------
-        # HANYA KOLOM YANG ADA DI run_logs
-        # ----------------------------------------------------
+        source = dict(log_data)
 
-        data = {
+        data = {}
 
-            "created_at":
-                log_data.get(
-                    "created_at",
-                    now_iso()
-                ),
+        for key in RUN_LOG_COLUMNS:
 
-            "duration_seconds":
-                log_data.get(
-                    "duration_seconds",
-                    0
-                ),
+            if key in source:
 
-            "candidate_count":
-                log_data.get(
-                    "candidate_count",
-                    0
-                ),
+                data[key] = source[key]
 
-            "valid_count":
-                log_data.get(
-                    "valid_count",
-                    0
-                ),
+        data.setdefault(
+            "created_at",
+            now_iso()
+        )
 
-            "negative_count":
-                log_data.get(
-                    "negative_count",
-                    0
-                ),
-
-            "handling_count":
-                log_data.get(
-                    "handling_count",
-                    0
-                ),
-
-            "neutral_count":
-                log_data.get(
-                    "neutral_count",
-                    0
-                ),
-
-            "positive_count":
-                log_data.get(
-                    "positive_count",
-                    0
-                ),
-
-            "telegram_count":
-                log_data.get(
-                    "telegram_count",
-                    0
-                ),
-
-            "status":
-                log_data.get(
-                    "status",
-                    "SELESAI"
-                )
-
-        }
-
-        # ----------------------------------------------------
-        # INSERT
-        # ----------------------------------------------------
-
-        response = (
+        (
             client
             .table("run_logs")
             .insert(data)
@@ -579,16 +498,10 @@ def save_run_log(
         )
 
         print(
-            "[SUPABASE] Run log berhasil disimpan."
+            "[DB LOG] Run log berhasil disimpan."
         )
 
-        return response.data or []
-
     except Exception as e:
-
-        # ----------------------------------------------------
-        # ERROR LOG TIDAK BOLEH MEMBUAT PATROLI GAGAL
-        # ----------------------------------------------------
 
         print(
             f"[DB LOG ERROR] {e}"
@@ -599,8 +512,6 @@ def save_run_log(
             "Patroli tetap dianggap selesai."
         )
 
-        return []
-```
 
 # ============================================================
 # GET RUN LOGS
@@ -647,7 +558,7 @@ def get_category_counts(
     articles: Optional[
         List[Dict[str, Any]]
     ] = None
-) -> Dict[str, int]:
+):
 
     if articles is None:
 
@@ -658,11 +569,8 @@ def get_category_counts(
     counts = {
 
         "Negatif Kuat": 0,
-
         "Perlu Penanganan": 0,
-
         "Netral": 0,
-
         "Positif": 0
 
     }
