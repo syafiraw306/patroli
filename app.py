@@ -5,6 +5,12 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from auth import (
+    login,
+    logout,
+    get_current_user
+) 
+
 from database import (
     get_all_articles,
     get_run_logs
@@ -31,6 +37,15 @@ st.set_page_config(
 
 )
 
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
+if not login():
+    st.stop()
+
+
+current_user = get_current_user()
 
 # ============================================================
 # STYLE
@@ -215,6 +230,28 @@ with st.sidebar:
     st.caption(
         "Patroli Siber 2026"
     )
+
+    st.divider()
+
+    st.divider()
+
+    st.subheader(
+        "👤 Pengguna"
+    )
+
+    st.write(
+        f"**Username:** {current_user['username']}"
+    )
+
+    st.write(
+        f"**Role:** {current_user['role'].upper()}"
+    )
+
+    if st.button(
+        "🚪 Logout",
+        use_container_width=True
+    ):
+        logout()
 
     st.divider()
 
