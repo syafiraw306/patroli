@@ -15,28 +15,13 @@ from database import (
 # CONFIG
 # ============================================================
 
-#st.set_page_config(
-    #page_title="Dashboard Patroli Siber 2026",
-    #page_icon="🛡️",
-    #layout="wide",
-    #initial_sidebar_state="expanded"
-#)
-
-
-# ============================================================
-# STYLE
-# ============================================================
-
-st.markdown(
-    """
-    <div style="text-align: center; padding: 20px;">
-        <div style="font-size: 60px;">🛡️</div>
-        <h1>Dashboard Patroli Siber 2026</h1>
-        <p>Sistem Monitoring Pemberitaan</p>
-    </div>
-    """,
-    unsafe_allow_html=True
+st.set_page_config(
+    page_title="Dashboard Patroli Siber 2026",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
 
 # ============================================================
 # CONFIG APLIKASI
