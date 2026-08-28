@@ -8,7 +8,7 @@ on:
     # 15:00 WIB = 08:00 UTC
     - cron: "0 8 * * *"
 
-  # Bisa dijalankan manual dari GitHub Actions
+  # Menjalankan workflow secara manual
   workflow_dispatch:
 
 jobs:
@@ -20,13 +20,13 @@ jobs:
       # 1. Checkout repository
       # ==========================================
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ==========================================
       # 2. Setup Python
       # ==========================================
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
@@ -45,53 +45,42 @@ jobs:
               requests \
               feedparser \
               beautifulsoup4 \
-              python-dateutil
+              python-dateutil \
+              supabase \
+              streamlit
           fi
 
       # ==========================================
-      # 4. Jalankan Patroli Siber
+      # 4. Jalankan patroli.py
       # ==========================================
-      - name: Jalankan patroli.py
+      - name: Jalankan Patroli Siber
         env:
-          # ------------------------------
-          # Supabase
-          # ------------------------------
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
 
-          # ------------------------------
-          # Telegram
-          # ------------------------------
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
 
-          # ------------------------------
-          # Nama Satker
-          # ------------------------------
           NAMA_SATKER: "Kejaksaan Negeri Deli Serdang"
-
-          # ------------------------------
-          # Tahun target
-          # ------------------------------
           TAHUN_TARGET: "2026"
 
         run: |
           python patroli.py
 
       # ==========================================
-      # 5. Informasi selesai
+      # 5. Status berhasil
       # ==========================================
-      - name: Patroli selesai
+      - name: Patroli berhasil
         if: success()
         run: |
           echo "=========================================="
           echo "PATROLI SIBER BERHASIL"
           echo "=========================================="
-          echo "Jadwal: 08:00 WIB dan 15:00 WIB"
+          echo "08:00 WIB dan 15:00 WIB"
           echo "=========================================="
 
       # ==========================================
-      # 6. Informasi jika gagal
+      # 6. Status gagal
       # ==========================================
       - name: Patroli gagal
         if: failure()
@@ -99,5 +88,6 @@ jobs:
           echo "=========================================="
           echo "PATROLI SIBER GAGAL"
           echo "=========================================="
-          echo "Periksa log GitHub Actions."
+          echo "Silakan periksa log GitHub Actions."
           echo "=========================================="
+
