@@ -40,20 +40,14 @@ st.markdown(
     """
     <style>
 
-    /* ======================================================
-       GLOBAL
-       ====================================================== */
-
+    /* GLOBAL */
     .block-container {
         max-width: 1450px;
         padding-top: 2rem;
         padding-bottom: 3rem;
     }
 
-    /* ======================================================
-       SIDEBAR
-       ====================================================== */
-
+    /* SIDEBAR */
     section[data-testid="stSidebar"] {
         border-right: 1px solid #e5e7eb;
     }
@@ -62,10 +56,7 @@ st.markdown(
         padding-top: 1.5rem;
     }
 
-    /* ======================================================
-       DASHBOARD HEADER
-       ====================================================== */
-
+    /* DASHBOARD HEADER */
     .dashboard-header {
         padding: 28px 30px;
         border-radius: 20px;
@@ -104,52 +95,13 @@ st.markdown(
 
         color: white;
         background: rgba(255, 255, 255, 0.16);
-
         border: 1px solid rgba(255, 255, 255, 0.30);
 
         font-size: 13px;
         font-weight: 600;
     }
 
-    /* ======================================================
-       LOGIN
-       ====================================================== */
-
-    .login-wrapper {
-        max-width: 430px;
-        margin: 80px auto 0 auto;
-        padding: 35px;
-
-        background: white;
-
-        border: 1px solid #e5e7eb;
-        border-radius: 22px;
-
-        box-shadow:
-            0 15px 45px rgba(0, 0, 0, 0.09);
-    }
-
-    .login-icon {
-        text-align: center;
-        font-size: 58px;
-        margin-bottom: 8px;
-    }
-
-    .login-heading {
-        text-align: center;
-        font-size: 29px;
-        font-weight: 800;
-        color: #111827;
-    }
-
-    .login-description {
-        text-align: center;
-        color: #6b7280;
-        font-size: 14px;
-        margin-top: 5px;
-        margin-bottom: 25px;
-    }
-
+    /* LOGIN */
     .login-satker {
         text-align: center;
         color: #6b7280;
@@ -157,10 +109,7 @@ st.markdown(
         margin-top: 20px;
     }
 
-    /* ======================================================
-       SECTION
-       ====================================================== */
-
+    /* SECTION */
     .section-title {
         font-size: 21px;
         font-weight: 800;
@@ -175,47 +124,7 @@ st.markdown(
         margin-bottom: 16px;
     }
 
-    /* ======================================================
-       ARTICLE
-       ====================================================== */
-
-    .article-heading {
-        font-size: 17px;
-        font-weight: 750;
-        line-height: 1.45;
-        color: #111827;
-        margin-bottom: 8px;
-    }
-
-    .article-meta {
-        color: #6b7280;
-        font-size: 12px;
-        margin-bottom: 10px;
-    }
-
-    .article-snippet {
-        color: #374151;
-        font-size: 14px;
-        line-height: 1.65;
-    }
-
-    /* ======================================================
-       FOOTER
-       ====================================================== */
-
-    .footer {
-        text-align: center;
-        color: #9ca3af;
-        font-size: 12px;
-        line-height: 1.6;
-        padding-top: 15px;
-        padding-bottom: 5px;
-    }
-
-    /* ======================================================
-       METRIC
-       ====================================================== */
-
+    /* METRIC */
     [data-testid="stMetricValue"] {
         font-size: 28px;
         font-weight: 800;
@@ -231,7 +140,7 @@ st.markdown(
 )
 
 # ============================================================
-# LOGIN CONFIG
+# AUTHENTICATION FUNCTIONS
 # ============================================================
 
 
@@ -247,9 +156,7 @@ def get_users():
             user_data = secret_users[user_key]
 
             username = str(user_data.get("username", "")).strip()
-
             password = str(user_data.get("password", ""))
-
             role = str(user_data.get("role", "viewer")).lower().strip()
 
             if role not in ["admin", "viewer"]:
@@ -269,14 +176,8 @@ def get_users():
     return users
 
 
-# ============================================================
-# AUTHENTICATION
-# ============================================================
-
-
 def authenticate(username, password):
     users = get_users()
-
     username = str(username).strip()
     password = str(password)
 
@@ -309,7 +210,7 @@ if "role" not in st.session_state:
 
 
 # ============================================================
-# LOGIN PAGE
+# LOGIN PAGE (Mencegah eksekusi script ke bawah sebelum login)
 # ============================================================
 
 if not st.session_state.logged_in:
@@ -364,11 +265,12 @@ if not st.session_state.logged_in:
             unsafe_allow_html=True,
         )
 
+    # Menghentikan alur aplikasi jika pengguna belum login
     st.stop()
 
 
 # ============================================================
-# CURRENT USER & ROLE VALIDATION
+# USER & ROLE VALIDATION (Dijalankan hanya setelah login)
 # ============================================================
 
 CURRENT_USERNAME = st.session_state.username
@@ -381,13 +283,12 @@ if CURRENT_ROLE not in ["admin", "viewer"]:
     st.session_state.logged_in = False
     st.session_state.username = ""
     st.session_state.role = ""
-
     st.error("Role pengguna tidak valid.")
     st.stop()
 
 
 # ============================================================
-# LOAD DATA
+# LOAD DATA (Hanya dipanggil setelah berhasil login)
 # ============================================================
 
 
@@ -409,7 +310,7 @@ except Exception as e:
 
 
 try:
-    logs = load_logs()
+    logs = load_logs() if IS_ADMIN else []
 except Exception as e:
     logs = []
     if IS_ADMIN:
@@ -417,7 +318,7 @@ except Exception as e:
 
 
 # ============================================================
-# DATE FUNCTIONS
+# HELPER FUNCTIONS
 # ============================================================
 
 
@@ -455,11 +356,6 @@ def filter_date(article, mode):
         return dt.year == TAHUN_TARGET and dt <= now
 
     return True
-
-
-# ============================================================
-# SAFE LIST
-# ============================================================
 
 
 def safe_list(value):
@@ -579,7 +475,7 @@ with col_filter2:
 
 
 # ============================================================
-# FILTER ARTICLE
+# FILTER ARTICLE LOGIC
 # ============================================================
 
 filtered = []
@@ -607,7 +503,7 @@ for article in articles:
 
 
 # ============================================================
-# SEARCH
+# SEARCH & SORT
 # ============================================================
 
 search_text = st.text_input(
@@ -629,11 +525,6 @@ if search_text:
             f"{' '.join(map(str, safe_list(item.get('satker_matches'))))}"
         ).lower()
     ]
-
-
-# ============================================================
-# SORT
-# ============================================================
 
 priority_order = {
     "KRITIS": 1,
@@ -659,27 +550,18 @@ filtered.sort(
 
 
 # ============================================================
-# CATEGORIES
+# CATEGORIES & KPI
 # ============================================================
 
 negative = [x for x in filtered if x.get("category") == "Negatif Kuat"]
-
 handling = [x for x in filtered if x.get("category") == "Perlu Penanganan"]
-
 neutral = [x for x in filtered if x.get("category") == "Netral"]
-
 positive = [x for x in filtered if x.get("category") == "Positif"]
-
 priority = [
     x
     for x in filtered
     if x.get("category") in ["Negatif Kuat", "Perlu Penanganan"]
 ]
-
-
-# ============================================================
-# KPI
-# ============================================================
 
 st.divider()
 
@@ -733,19 +615,15 @@ def render_article(item):
             st.markdown(f"### {icon} {item.get('title', '-')}")
 
             info1, info2, info3, info4 = st.columns(4)
-
             with info1:
                 st.caption("Kategori")
                 st.write(category)
-
             with info2:
                 st.caption("Prioritas")
                 st.write(priority_value)
-
             with info3:
                 st.caption("Negative Score")
                 st.write(negative_score)
-
             with info4:
                 st.caption("Handling Score")
                 st.write(handling_score)
@@ -793,7 +671,7 @@ def render_article(item):
 
 
 # ============================================================
-# TABS DECLARATION (FIXED SINGLE CALL)
+# TABS DECLARATION (SINGLE CONDITIONAL CALL)
 # ============================================================
 
 if IS_ADMIN:
@@ -841,50 +719,40 @@ else:
 # TAB CONTENTS
 # ============================================================
 
-# --- PRIORITY ---
 with tab_priority:
     st.markdown(
         '<div class="section-title">🚨 Prioritas Review</div>',
         unsafe_allow_html=True,
     )
     st.caption("Artikel dengan kategori Negatif Kuat dan Perlu Penanganan.")
-
     if priority:
         for item in priority:
             render_article(item)
     else:
         st.success("Tidak ada artikel prioritas pada periode yang dipilih.")
 
-
-# --- NEGATIVE ---
 with tab_negative:
     st.markdown(
         '<div class="section-title">🔴 Negatif Kuat</div>',
         unsafe_allow_html=True,
     )
-
     if negative:
         for item in negative:
             render_article(item)
     else:
         st.info("Tidak ada artikel Negatif Kuat.")
 
-
-# --- HANDLING ---
 with tab_handling:
     st.markdown(
         '<div class="section-title">🟠 Perlu Penanganan</div>',
         unsafe_allow_html=True,
     )
-
     if handling:
         for item in handling:
             render_article(item)
     else:
         st.info("Tidak ada artikel Perlu Penanganan.")
 
-
-# --- NEUTRAL ---
 with tab_neutral:
     st.markdown(
         '<div class="section-title">🟡 Artikel Netral</div>',
@@ -893,29 +761,23 @@ with tab_neutral:
     st.caption(
         "Artikel netral tetap disimpan untuk kebutuhan monitoring dan audit."
     )
-
     if neutral:
         for item in neutral:
             render_article(item)
     else:
         st.info("Tidak ada artikel Netral.")
 
-
-# --- POSITIVE ---
 with tab_positive:
     st.markdown(
         '<div class="section-title">🟢 Pemberitaan Positif</div>',
         unsafe_allow_html=True,
     )
-
     if positive:
         for item in positive:
             render_article(item)
     else:
         st.info("Tidak ada artikel Positif.")
 
-
-# --- ANALYTICS ---
 with tab_analytics:
     st.markdown(
         '<div class="section-title">📊 Analisis Pemberitaan</div>',
@@ -1007,8 +869,6 @@ with tab_analytics:
     with a3:
         st.metric("Artikel Positif", len(positive))
 
-
-# --- LOG ADMIN ---
 if IS_ADMIN and tab_logs is not None:
     with tab_logs:
         st.markdown(
