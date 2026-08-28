@@ -17,30 +17,55 @@ def hash_password(password: str) -> str:
         password.encode("utf-8")
     ).hexdigest()
 
+def get_secret(name, default=""):
 
+    try:
+        value = st.secrets.get(name)
+
+        if value:
+            return str(value).strip()
+
+    except Exception:
+        pass
+
+    return (
+        os.getenv(name, default)
+        or default
+    ).strip() 
+    
 # ============================================================
 # USER CONFIG
 # ============================================================
 
 USERS = {
-    os.getenv("ADMIN_USERNAME", "admin"): {
-        "password": os.getenv(
+
+    get_secret(
+        "ADMIN_USERNAME",
+        "admin"
+    ): {
+        "password": get_secret(
             "ADMIN_PASSWORD",
             "admin123"
         ),
         "role": "admin"
     },
 
-    os.getenv("OPERATOR_USERNAME", "operator"): {
-        "password": os.getenv(
+    get_secret(
+        "OPERATOR_USERNAME",
+        "operator"
+    ): {
+        "password": get_secret(
             "OPERATOR_PASSWORD",
             "operator123"
         ),
         "role": "operator"
     },
 
-    os.getenv("VIEWER_USERNAME", "viewer"): {
-        "password": os.getenv(
+    get_secret(
+        "VIEWER_USERNAME",
+        "viewer"
+    ): {
+        "password": get_secret(
             "VIEWER_PASSWORD",
             "viewer123"
         ),
