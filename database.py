@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-
 load_dotenv()
 
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip()
@@ -179,37 +178,22 @@ def upsert_article(
 
     data["updated_at"] = current_time
 
-    try:
-
-        response = (
-            client
-            .table("articles")
-            .upsert(
-                data,
-                on_conflict="link"
-            )
-            .execute()
+    response = (
+        client
+        .table("articles")
+        .upsert(
+            data,
+            on_conflict="link"
         )
+        .execute()
+    )
 
-        rows = response.data or []
+    rows = response.data or []
 
-        if rows:
-            return rows[0]
+    if rows:
+        return rows[0]
 
-        return data
-
-    except Exception as e:
-
-        print("[SUPABASE UPSERT ERROR]")
-        print(
-            f"Judul: {data.get('title', '-')}"
-        )
-        print(
-            f"Link : {data.get('link', '-')}"
-        )
-        print(f"Error: {e}")
-
-        raise
+    return data
 
 
 def insert_articles(
@@ -224,12 +208,10 @@ def insert_articles(
     for article in articles:
 
         try:
-
             upsert_article(article)
             success += 1
 
         except Exception as e:
-
             print(
                 f"[SUPABASE] Gagal menyimpan artikel: {e}"
             )
@@ -258,55 +240,37 @@ def update_article(
 
     data["updated_at"] = now_iso()
 
-    try:
+    response = (
+        client
+        .table("articles")
+        .update(data)
+        .eq("link", link)
+        .execute()
+    )
 
-        response = (
-            client
-            .table("articles")
-            .update(data)
-            .eq("link", link)
-            .execute()
-        )
+    rows = response.data or []
 
-        rows = response.data or []
+    if rows:
+        return rows[0]
 
-        if rows:
-            return rows[0]
-
-        return None
-
-    except Exception as e:
-
-        print(f"[DB UPDATE ERROR] {e}")
-
-        raise
+    return None
 
 
 def delete_all_articles():
 
     client = get_supabase()
 
-    try:
+    (
+        client
+        .table("articles")
+        .delete()
+        .neq("link", "")
+        .execute()
+    )
 
-        (
-            client
-            .table("articles")
-            .delete()
-            .neq("link", "")
-            .execute()
-        )
-
-        print(
-            "[SUPABASE] Semua artikel dihapus."
-        )
-
-    except Exception as e:
-
-        print(
-            f"[DB DELETE ERROR] {e}"
-        )
-
-        raise
+    print(
+        "[SUPABASE] Semua artikel dihapus."
+    )
 
 
 def save_run_log(
@@ -317,10 +281,6 @@ def save_run_log(
 
         client = get_supabase()
 
-        source = dict(log_data)
-
-        # Hanya kolom yang BENAR-BENAR ada
-        # di tabel run_logs Anda.
         allowed_columns = {
             "id",
             "created_at",
@@ -335,12 +295,11 @@ def save_run_log(
             "status"
         }
 
-        data = {}
-
-        for key in allowed_columns:
-
-            if key in source:
-                data[key] = source[key]
+        data = {
+            key: value
+            for key, value in log_data.items()
+            if key in allowed_columns
+        }
 
         data.setdefault(
             "created_at",
@@ -430,4 +389,3 @@ def get_category_counts(
         counts[category] += 1
 
     return counts
-```
