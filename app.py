@@ -430,15 +430,66 @@ if "role" not in st.session_state:
 if not st.session_state.logged_in:
 
     st.markdown(
-        "<br><br>",
+        """
+        <style>
+
+        /* Hilangkan padding berlebihan */
+        .block-container {
+            padding-top: 4rem;
+        }
+
+        /* LOGIN CARD */
+        .login-card {
+            max-width: 430px;
+            margin: auto;
+            padding: 38px 40px;
+            border-radius: 22px;
+            background: rgba(255, 255, 255, 0.98);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.10);
+            border: 1px solid rgba(0,0,0,0.06);
+        }
+
+        /* LOGO */
+        .login-logo {
+            text-align: center;
+            font-size: 58px;
+            margin-bottom: 8px;
+        }
+
+        /* TITLE */
+        .login-title {
+            text-align: center;
+            font-size: 30px;
+            font-weight: 800;
+            margin-bottom: 4px;
+        }
+
+        /* SUBTITLE */
+        .login-subtitle {
+            text-align: center;
+            color: #6b7280;
+            font-size: 14px;
+            margin-bottom: 28px;
+        }
+
+        /* SATKER */
+        .login-satker {
+            text-align: center;
+            font-size: 13px;
+            color: #6b7280;
+            margin-top: 18px;
+        }
+
+        </style>
+        """,
         unsafe_allow_html=True
     )
 
-    col1, col2, col3 = st.columns(
+    col_left, col_center, col_right = st.columns(
         [1, 2, 1]
     )
 
-    with col2:
+    with col_center:
 
         st.markdown(
             """
@@ -461,11 +512,7 @@ if not st.session_state.logged_in:
             unsafe_allow_html=True
         )
 
-        st.divider()
-
-        st.subheader(
-            "🔐 Login Sistem"
-        )
+        st.subheader("🔐 Login Sistem")
 
         username = st.text_input(
             "Username",
@@ -510,19 +557,19 @@ if not st.session_state.logged_in:
                 else:
 
                     st.session_state.logged_in = True
-                    st.session_state.username = (
-                        user["username"]
-                    )
-                    st.session_state.role = (
-                        user["role"]
-                    )
+                    st.session_state.username = user["username"]
+                    st.session_state.role = user["role"]
 
                     st.rerun()
 
-        st.divider()
-
-        st.caption(
-            f"{NAMA_SATKER} • Sistem Internal"
+        st.markdown(
+            f"""
+            <div class="login-satker">
+                🏛️ {NAMA_SATKER}<br>
+                Sistem Internal • Tahun {TAHUN_TARGET}
+            </div>
+            """,
+            unsafe_allow_html=True
         )
 
     st.stop()
