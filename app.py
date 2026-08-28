@@ -17,9 +17,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.write("VERSI APP.PY TERBARU - 28 AGUSTUS 2026")
-
-
 # ============================================================
 # CONFIG APLIKASI
 # ============================================================
