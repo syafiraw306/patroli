@@ -491,26 +491,6 @@ if not st.session_state.logged_in:
 
     with col_center:
 
-        st.markdown(
-            """
-            <div class="login-card">
-
-                <div class="login-logo">
-                    🛡️
-                </div>
-
-                <div class="login-title">
-                    Patroli Siber 2026
-                </div>
-
-                <div class="login-subtitle">
-                    Sistem Monitoring Pemberitaan
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
 
         st.subheader("🔐 Login Sistem")
 
@@ -845,31 +825,20 @@ with st.sidebar:
 # MAIN HEADER
 # ============================================================
 
-st.markdown(
-    f"""
-    <div class="hero">
+# ============================================================
+# HEADER
+# ============================================================
 
-        <div class="hero-content">
+st.title("🛡️ Dashboard Patroli Siber 2026")
 
-            <div class="hero-title">
-                🛡️ Patroli Siber 2026
-            </div>
-
-            <div class="hero-subtitle">
-                Sistem Monitoring dan Klasifikasi Pemberitaan
-            </div>
-
-            <div class="hero-satker">
-                🏢 {html.escape(NAMA_SATKER)}
-            </div>
-
-        </div>
-
-    </div>
-    """,
-    unsafe_allow_html=True
+st.subheader(
+    NAMA_SATKER
 )
 
+st.caption(
+    "Monitoring pemberitaan berbasis "
+    "contextual classification + prioritas review."
+)
 
 # ============================================================
 # FILTER
