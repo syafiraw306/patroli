@@ -1,9 +1,3 @@
-
-Jangan sampai ada tanda backtick tersebut di dalam file Python.
-
-Namun agar tidak terjadi lagi, saya sarankan **ganti seluruh isi `database.py`** dengan versi bersih berikut:
-
-:::writing{variant="standard" id="58321"}
 ```python
 import os
 from datetime import datetime, timezone
@@ -13,63 +7,37 @@ from dotenv import load_dotenv
 from supabase import create_client, Client
 
 
-# ============================================================
-# ENVIRONMENT
-# ============================================================
-
 load_dotenv()
 
-SUPABASE_URL = (
-    os.getenv("SUPABASE_URL") or ""
-).strip()
-
-SUPABASE_KEY = (
-    os.getenv("SUPABASE_KEY") or ""
-).strip()
-
-
-# ============================================================
-# CLIENT
-# ============================================================
+SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip()
+SUPABASE_KEY = (os.getenv("SUPABASE_KEY") or "").strip()
 
 _supabase: Optional[Client] = None
 
 
 def get_supabase() -> Client:
-
     global _supabase
 
     if _supabase is not None:
         return _supabase
 
     if not SUPABASE_URL:
-        raise RuntimeError(
-            "SUPABASE_URL belum dikonfigurasi."
-        )
+        raise RuntimeError("SUPABASE_URL belum dikonfigurasi.")
 
     if not SUPABASE_KEY:
-        raise RuntimeError(
-            "SUPABASE_KEY belum dikonfigurasi."
-        )
+        raise RuntimeError("SUPABASE_KEY belum dikonfigurasi.")
 
     _supabase = create_client(
         SUPABASE_URL,
         SUPABASE_KEY
     )
 
-    print(
-        "[SUPABASE] Client berhasil dibuat."
-    )
+    print("[SUPABASE] Client berhasil dibuat.")
 
     return _supabase
 
 
-# ============================================================
-# HELPER
-# ============================================================
-
 def normalize_link(link: str) -> str:
-
     if not link:
         return ""
 
@@ -77,20 +45,11 @@ def normalize_link(link: str) -> str:
 
 
 def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
-
-
-# ============================================================
-# TEST CONNECTION
-# ============================================================
 
 def test_connection() -> bool:
-
     try:
-
         client = get_supabase()
 
         response = (
@@ -101,10 +60,7 @@ def test_connection() -> bool:
             .execute()
         )
 
-        print(
-            "[SUPABASE] Koneksi berhasil."
-        )
-
+        print("[SUPABASE] Koneksi berhasil.")
         print(
             f"[SUPABASE] Test response: "
             f"{len(response.data or [])} row."
@@ -113,17 +69,9 @@ def test_connection() -> bool:
         return True
 
     except Exception as e:
-
-        print(
-            f"[SUPABASE TEST ERROR] {e}"
-        )
-
+        print(f"[SUPABASE TEST ERROR] {e}")
         return False
 
-
-# ============================================================
-# GET ALL ARTICLES
-# ============================================================
 
 def get_all_articles(
     page_size: int = 1000
@@ -132,7 +80,6 @@ def get_all_articles(
     client = get_supabase()
 
     results = []
-
     start = 0
 
     while True:
@@ -171,10 +118,6 @@ def get_all_articles(
     return results
 
 
-# ============================================================
-# GET ARTICLE BY LINK
-# ============================================================
-
 def get_article_by_link(
     link: str
 ) -> Optional[Dict[str, Any]]:
@@ -192,10 +135,7 @@ def get_article_by_link(
             client
             .table("articles")
             .select("*")
-            .eq(
-                "link",
-                link
-            )
+            .eq("link", link)
             .limit(1)
             .execute()
         )
@@ -209,16 +149,10 @@ def get_article_by_link(
 
     except Exception as e:
 
-        print(
-            f"[DB GET ERROR] {e}"
-        )
+        print(f"[DB GET ERROR] {e}")
 
         return None
 
-
-# ============================================================
-# UPSERT ARTICLE
-# ============================================================
 
 def upsert_article(
     article: Dict[str, Any]
@@ -233,7 +167,6 @@ def upsert_article(
     )
 
     if not data["link"]:
-
         raise ValueError(
             "Artikel tidak memiliki link."
         )
@@ -262,58 +195,29 @@ def upsert_article(
         rows = response.data or []
 
         if rows:
-
-            result = rows[0]
-
-            print(
-                "[SUPABASE] UPSERT BERHASIL:"
-            )
-
-            print(
-                f"  Judul    : "
-                f"{result.get('title', '-')}"
-            )
-
-            print(
-                f"  Kategori : "
-                f"{result.get('category', '-')}"
-            )
-
-            return result
+            return rows[0]
 
         return data
 
     except Exception as e:
 
-        print(
-            "[SUPABASE UPSERT ERROR]"
-        )
-
+        print("[SUPABASE UPSERT ERROR]")
         print(
             f"Judul: {data.get('title', '-')}"
         )
-
         print(
             f"Link : {data.get('link', '-')}"
         )
-
-        print(
-            f"Error: {e}"
-        )
+        print(f"Error: {e}")
 
         raise
 
-
-# ============================================================
-# INSERT MANY ARTICLES
-# ============================================================
 
 def insert_articles(
     articles: List[Dict[str, Any]]
 ) -> int:
 
     if not articles:
-
         return 0
 
     success = 0
@@ -322,17 +226,13 @@ def insert_articles(
 
         try:
 
-            upsert_article(
-                article
-            )
-
+            upsert_article(article)
             success += 1
 
         except Exception as e:
 
             print(
-                f"[SUPABASE] Gagal menyimpan artikel: "
-                f"{e}"
+                f"[SUPABASE] Gagal menyimpan artikel: {e}"
             )
 
     print(
@@ -342,10 +242,6 @@ def insert_articles(
 
     return success
 
-
-# ============================================================
-# UPDATE ARTICLE
-# ============================================================
 
 def update_article(
     link: str,
@@ -369,33 +265,23 @@ def update_article(
             client
             .table("articles")
             .update(data)
-            .eq(
-                "link",
-                link
-            )
+            .eq("link", link)
             .execute()
         )
 
         rows = response.data or []
 
         if rows:
-
             return rows[0]
 
         return None
 
     except Exception as e:
 
-        print(
-            f"[DB UPDATE ERROR] {e}"
-        )
+        print(f"[DB UPDATE ERROR] {e}")
 
         raise
 
-
-# ============================================================
-# DELETE ALL ARTICLES
-# ============================================================
 
 def delete_all_articles():
 
@@ -407,10 +293,7 @@ def delete_all_articles():
             client
             .table("articles")
             .delete()
-            .neq(
-                "link",
-                ""
-            )
+            .neq("link", "")
             .execute()
         )
 
@@ -427,46 +310,6 @@ def delete_all_articles():
         raise
 
 
-# ============================================================
-# RUN LOG
-#
-# SESUAIKAN DENGAN KOLOM run_logs YANG ADA:
-#
-# id
-# created_at
-# duration_seconds
-# candidate_count
-# valid_count
-# negative_count
-# handling_count
-# neutral_count
-# positive_count
-# telegram_count
-# status
-#
-# Tidak mengirim:
-# database_total
-# reclassified_count
-# reclassify_failed
-# saved_count
-# save_failed
-# ============================================================
-
-RUN_LOG_COLUMNS = {
-    "id",
-    "created_at",
-    "duration_seconds",
-    "candidate_count",
-    "valid_count",
-    "negative_count",
-    "handling_count",
-    "neutral_count",
-    "positive_count",
-    "telegram_count",
-    "status"
-}
-
-
 def save_run_log(
     log_data: Dict[str, Any]
 ):
@@ -477,12 +320,27 @@ def save_run_log(
 
         source = dict(log_data)
 
+        # Hanya kolom yang BENAR-BENAR ada
+        # di tabel run_logs Anda.
+        allowed_columns = {
+            "id",
+            "created_at",
+            "duration_seconds",
+            "candidate_count",
+            "valid_count",
+            "negative_count",
+            "handling_count",
+            "neutral_count",
+            "positive_count",
+            "telegram_count",
+            "status"
+        }
+
         data = {}
 
-        for key in RUN_LOG_COLUMNS:
+        for key in allowed_columns:
 
             if key in source:
-
                 data[key] = source[key]
 
         data.setdefault(
@@ -513,10 +371,6 @@ def save_run_log(
         )
 
 
-# ============================================================
-# GET RUN LOGS
-# ============================================================
-
 def get_run_logs(
     limit: int = 200
 ) -> List[Dict[str, Any]]:
@@ -533,9 +387,7 @@ def get_run_logs(
                 "created_at",
                 desc=True
             )
-            .limit(
-                limit
-            )
+            .limit(limit)
             .execute()
         )
 
@@ -550,10 +402,6 @@ def get_run_logs(
         return []
 
 
-# ============================================================
-# STATISTIK KATEGORI
-# ============================================================
-
 def get_category_counts(
     articles: Optional[
         List[Dict[str, Any]]
@@ -561,18 +409,13 @@ def get_category_counts(
 ):
 
     if articles is None:
-
-        articles = (
-            get_all_articles()
-        )
+        articles = get_all_articles()
 
     counts = {
-
         "Negatif Kuat": 0,
         "Perlu Penanganan": 0,
         "Netral": 0,
         "Positif": 0
-
     }
 
     for article in articles:
@@ -583,9 +426,9 @@ def get_category_counts(
         )
 
         if category not in counts:
-
             category = "Netral"
 
         counts[category] += 1
 
     return counts
+```
