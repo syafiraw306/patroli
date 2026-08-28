@@ -1734,7 +1734,223 @@ def process_candidate(item):
 
     }
 
+# ============================================================
+# REKLASIFIKASI SELURUH DATABASE
+# ============================================================
 
+def rekategorisasi_semua_database():
+    """
+    Membaca SELURUH artikel yang ada di Supabase,
+    kemudian menjalankan classifier terbaru terhadap
+    setiap artikel.
+
+    Artikel tidak dihapus.
+    Hanya field klasifikasi yang diperbarui.
+    """
+
+    print()
+    print("==========================================")
+    print("REKLASIFIKASI SELURUH DATABASE")
+    print("==========================================")
+
+    try:
+        articles = get_all_articles()
+    except Exception as e:
+        print(f"[RECLASSIFY ERROR] Gagal membaca database: {e}")
+        return {
+            "total": 0,
+            "updated": 0,
+            "failed": 0,
+            "counts": {
+                "Negatif Kuat": 0,
+                "Perlu Penanganan": 0,
+                "Netral": 0,
+                "Positif": 0
+            }
+        }
+
+    total = len(articles)
+
+    print(f"Total artikel di Supabase: {total}")
+
+    counter = {
+        "Negatif Kuat": 0,
+        "Perlu Penanganan": 0,
+        "Netral": 0,
+        "Positif": 0
+    }
+
+    updated = 0
+    failed = 0
+
+    for index, article in enumerate(articles, start=1):
+
+        title = article.get("title", "") or ""
+        snippet = article.get("snippet", "") or ""
+        content = article.get("content", "") or ""
+
+        try:
+
+            classification = classify_article(
+                title,
+                snippet,
+                content
+            )
+
+            updates = {
+                "category": classification.get(
+                    "category",
+                    "Netral"
+                ),
+
+                "priority": classification.get(
+                    "priority",
+                    "RENDAH"
+                ),
+
+                "negative_score": int(
+                    classification.get(
+                        "negative_score",
+                        0
+                    )
+                ),
+
+                "handling_score": int(
+                    classification.get(
+                        "handling_score",
+                        0
+                    )
+                ),
+
+                "positive_score": int(
+                    classification.get(
+                        "positive_score",
+                        0
+                    )
+                ),
+
+                "detected_keywords":
+                    classification.get(
+                        "detected_keywords",
+                        []
+                    ),
+
+                "satker_matches":
+                    classification.get(
+                        "satker_matches",
+                        []
+                    ),
+
+                "strong_context":
+                    classification.get(
+                        "strong_context",
+                        []
+                    ),
+
+                "positive_context":
+                    classification.get(
+                        "positive_context",
+                        []
+                    ),
+
+                "handling_context":
+                    classification.get(
+                        "handling_context",
+                        []
+                    )
+            }
+
+            link = article.get("link", "")
+
+            if not link:
+                print(
+                    f"[SKIP] Artikel #{index} "
+                    f"tidak memiliki link."
+                )
+                failed += 1
+                continue
+
+            update_article(
+                link,
+                updates
+            )
+
+            category = updates["category"]
+
+            if category not in counter:
+                category = "Netral"
+
+            counter[category] += 1
+            updated += 1
+
+        except Exception as e:
+
+            failed += 1
+
+            print(
+                f"[RECLASSIFY ERROR] "
+                f"{index}/{total}: {e}"
+            )
+
+        # Progress setiap 25 artikel
+        if (
+            index % 25 == 0
+            or index == total
+        ):
+
+            print(
+                f"[RECLASSIFY] "
+                f"{index}/{total} "
+                f" | Updated: {updated} "
+                f"| Failed: {failed}"
+            )
+
+    print()
+    print("==========================================")
+    print("REKLASIFIKASI SELESAI")
+    print("==========================================")
+
+    print(
+        f"Total database : {total}"
+    )
+
+    print(
+        f"Berhasil       : {updated}"
+    )
+
+    print(
+        f"Gagal          : {failed}"
+    )
+
+    print(
+        f"Negatif Kuat   : "
+        f"{counter['Negatif Kuat']}"
+    )
+
+    print(
+        f"Perlu Penanganan: "
+        f"{counter['Perlu Penanganan']}"
+    )
+
+    print(
+        f"Netral         : "
+        f"{counter['Netral']}"
+    )
+
+    print(
+        f"Positif        : "
+        f"{counter['Positif']}"
+    )
+
+    print("==========================================")
+    print()
+
+    return {
+        "total": total,
+        "updated": updated,
+        "failed": failed,
+        "counts": counter
+    } 
 # ============================================================
 # TELEGRAM
 # ============================================================
@@ -1855,59 +2071,52 @@ def send_telegram(
 # PATROLI
 # ============================================================
 
+# ============================================================
+# PATROLI UTAMA
+# ============================================================
+
 def jalankan_patroli():
 
     start = time.time()
 
+    print()
+    print("==========================================")
+    print("MEMULAI PATROLI SIBER 2026")
+    print("==========================================")
+    print(f"TARGET: {NAMA_SATKER}")
+    print("==========================================")
+    print()
 
-    print(
-        "=========================================="
-    )
-
-    print(
-        "MEMULAI PATROLI SIBER 2026"
-    )
-
-    print(
-        f"TARGET: {NAMA_SATKER}"
-    )
-
-    print(
-        "=========================================="
-    )
-
+    # ========================================================
+    # 1. AMBIL KANDIDAT DARI GOOGLE NEWS
+    # ========================================================
 
     candidates = collect_candidates()
 
-
     print(
-        f"Kandidat: {len(candidates)}"
+        f"[PATROLI] Kandidat ditemukan: "
+        f"{len(candidates)}"
     )
 
+    # ========================================================
+    # 2. PROSES ARTIKEL
+    # ========================================================
 
     results = []
-
 
     with ThreadPoolExecutor(
         max_workers=MAX_WORKERS
     ) as executor:
 
-
         futures = [
-
             executor.submit(
                 process_candidate,
                 item
             )
-
             for item in candidates
-
         ]
 
-
-        for future in as_completed(
-            futures
-        ):
+        for future in as_completed(futures):
 
             try:
 
@@ -1922,23 +2131,69 @@ def jalankan_patroli():
                     f"[WORKER ERROR] {e}"
                 )
 
+    print(
+        f"[PATROLI] Artikel valid: "
+        f"{len(results)}"
+    )
 
-    counts = {
+    # ========================================================
+    # 3. SIMPAN / UPDATE ARTIKEL BARU
+    # ========================================================
 
-        "Negatif Kuat": 0,
-        "Perlu Penanganan": 0,
-        "Netral": 0,
-        "Positif": 0
+    save_success = 0
+    save_failed = 0
 
-    }
+    for article in results:
 
+        try:
+
+            upsert_article(article)
+
+            save_success += 1
+
+        except Exception as e:
+
+            save_failed += 1
+
+            print(
+                f"[SUPABASE ERROR] {e}"
+            )
+
+    print(
+        f"[SUPABASE] Berhasil disimpan/update: "
+        f"{save_success}"
+    )
+
+    print(
+        f"[SUPABASE] Gagal: "
+        f"{save_failed}"
+    )
+
+    # ========================================================
+    # 4. REKLASIFIKASI SELURUH DATABASE
+    # ========================================================
+
+    print()
+    print(
+        "[PATROLI] Memulai reklasifikasi "
+        "seluruh database..."
+    )
+
+    reclass_result = (
+        rekategorisasi_semua_database()
+    )
+
+    # ========================================================
+    # 5. TELEGRAM
+    #
+    # Telegram tetap menggunakan hasil artikel yang
+    # ditemukan pada patroli ini.
+    #
+    # Tujuannya agar artikel lama tidak mengirim
+    # notifikasi Telegram berulang-ulang setiap patroli.
+    # ========================================================
 
     telegram_count = 0
-
-
-    # --------------------------------------------------------
-    # SIMPAN KE SUPABASE
-    # --------------------------------------------------------
 
     for article in results:
 
@@ -1947,64 +2202,61 @@ def jalankan_patroli():
             "Netral"
         )
 
-
-        if category not in counts:
-
-            category = "Netral"
-
-            article["category"] = category
-
-
-        counts[category] += 1
-
-
-        try:
-
-            upsert_article(
-                article
-            )
-
-        except Exception as e:
-
-            print(
-                f"[SUPABASE ERROR] {e}"
-            )
-
-            continue
-
-
-        # ----------------------------------------------------
-        # TELEGRAM
-        # ----------------------------------------------------
-
-        if category in [
+        if category not in [
             "Negatif Kuat",
             "Perlu Penanganan"
         ]:
 
-            priority = article.get(
-                "priority",
-                "RENDAH"
+            continue
+
+        priority = article.get(
+            "priority",
+            "RENDAH"
+        )
+
+        if priority not in [
+            "KRITIS",
+            "TINGGI"
+        ]:
+
+            continue
+
+        try:
+
+            if send_telegram(article):
+
+                telegram_count += 1
+
+        except Exception as e:
+
+            print(
+                f"[TELEGRAM ERROR] {e}"
             )
 
-
-            if priority in [
-                "KRITIS",
-                "TINGGI"
-            ]:
-
-                if send_telegram(
-                    article
-                ):
-
-                    telegram_count += 1
-
+    # ========================================================
+    # 6. STATISTIK
+    # ========================================================
 
     elapsed = (
         time.time()
         - start
     )
 
+    counts = (
+        reclass_result.get(
+            "counts",
+            {
+                "Negatif Kuat": 0,
+                "Perlu Penanganan": 0,
+                "Netral": 0,
+                "Positif": 0
+            }
+        )
+    )
+
+    # ========================================================
+    # 7. LOG
+    # ========================================================
 
     log_data = {
 
@@ -2017,17 +2269,53 @@ def jalankan_patroli():
         "valid_count":
             len(results),
 
+        "saved_count":
+            save_success,
+
+        "save_failed":
+            save_failed,
+
+        "database_total":
+            reclass_result.get(
+                "total",
+                0
+            ),
+
+        "reclassified_count":
+            reclass_result.get(
+                "updated",
+                0
+            ),
+
+        "reclassify_failed":
+            reclass_result.get(
+                "failed",
+                0
+            ),
+
         "negative_count":
-            counts["Negatif Kuat"],
+            counts.get(
+                "Negatif Kuat",
+                0
+            ),
 
         "handling_count":
-            counts["Perlu Penanganan"],
+            counts.get(
+                "Perlu Penanganan",
+                0
+            ),
 
         "neutral_count":
-            counts["Netral"],
+            counts.get(
+                "Netral",
+                0
+            ),
 
         "positive_count":
-            counts["Positif"],
+            counts.get(
+                "Positif",
+                0
+            ),
 
         "telegram_count":
             telegram_count,
@@ -2037,66 +2325,96 @@ def jalankan_patroli():
 
     }
 
-
     try:
 
         save_run_log(
             log_data
         )
 
-    except Exception:
-        pass
+    except Exception as e:
 
+        print(
+            f"[LOG ERROR] {e}"
+        )
+
+    # ========================================================
+    # 8. OUTPUT AKHIR
+    # ========================================================
+
+    print()
+    print("==========================================")
+    print("PATROLI SELESAI")
+    print("==========================================")
 
     print(
-        "=========================================="
+        f"Durasi              : "
+        f"{elapsed:.1f} detik"
     )
 
     print(
-        f"PATROLI SELESAI "
-        f"dalam {elapsed:.1f} detik"
+        f"Kandidat            : "
+        f"{len(candidates)}"
     )
 
     print(
-        f"Kandidat: {len(candidates)}"
+        f"Artikel valid       : "
+        f"{len(results)}"
     )
 
     print(
-        f"Artikel valid: {len(results)}"
+        f"Berhasil disimpan   : "
+        f"{save_success}"
     )
 
     print(
-        f"Negatif Kuat: "
-        f"{counts['Negatif Kuat']}"
+        f"Gagal disimpan      : "
+        f"{save_failed}"
     )
 
     print(
-        f"Perlu Penanganan: "
-        f"{counts['Perlu Penanganan']}"
+        f"Database             : "
+        f"{reclass_result.get('total', 0)}"
     )
 
     print(
-        f"Netral: "
-        f"{counts['Netral']}"
+        f"Direklasifikasi     : "
+        f"{reclass_result.get('updated', 0)}"
     )
 
     print(
-        f"Positif: "
-        f"{counts['Positif']}"
+        f"Reclass gagal       : "
+        f"{reclass_result.get('failed', 0)}"
     )
 
     print(
-        f"Telegram terkirim: "
+        f"Negatif Kuat       : "
+        f"{counts.get('Negatif Kuat', 0)}"
+    )
+
+    print(
+        f"Perlu Penanganan   : "
+        f"{counts.get('Perlu Penanganan', 0)}"
+    )
+
+    print(
+        f"Netral             : "
+        f"{counts.get('Netral', 0)}"
+    )
+
+    print(
+        f"Positif            : "
+        f"{counts.get('Positif', 0)}"
+    )
+
+    print(
+        f"Telegram terkirim  : "
         f"{telegram_count}"
     )
 
-    print(
-        "=========================================="
-    )
-
+    print("==========================================")
+    print()
 
     return log_data
-
 
 # ============================================================
 # REKLASIFIKASI DATABASE LAMA
