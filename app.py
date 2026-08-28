@@ -1,4 +1,3 @@
-
 import os
 import datetime
 
@@ -64,128 +63,76 @@ TAHUN_TARGET = 2026
 # LOGIN CONFIG
 # ============================================================
 
-def get_env_value(name: str) -> str:
-    """
-    Mengambil nilai environment variable dengan aman.
-    """
-    return (
-        os.getenv(name, "")
-        or ""
-    ).strip()
-
-
 def get_users():
     """
-    Mengambil konfigurasi user.
+    Membaca konfigurasi user dari Streamlit Secrets.
 
-    Prioritas:
-    1. Environment Variables
-    2. Streamlit Secrets
+    Format secrets:
 
-    User yang tersedia:
-    - admin
-    - viewer
+    [users.admin]
+    username = "admin"
+    password = "password_admin"
+    role = "admin"
+
+    [users.viewer]
+    username = "viewer"
+    password = "password_viewer"
+    role = "viewer"
     """
 
     users = {}
 
-    # ========================================================
-    # 1. ENVIRONMENT VARIABLES
-    # ========================================================
-
-    admin_username = get_env_value(
-        "ADMIN_USERNAME"
-    )
-
-    admin_password = get_env_value(
-        "ADMIN_PASSWORD"
-    )
-
-    viewer_username = get_env_value(
-        "VIEWER_USERNAME"
-    )
-
-    viewer_password = get_env_value(
-        "VIEWER_PASSWORD"
-    )
-
-    if (
-        admin_username
-        and admin_password
-    ):
-
-        users[admin_username] = {
-            "password": admin_password,
-            "role": "admin"
-        }
-
-    if (
-        viewer_username
-        and viewer_password
-    ):
-
-        users[viewer_username] = {
-            "password": viewer_password,
-            "role": "viewer"
-        }
-
-    # ========================================================
-    # 2. STREAMLIT SECRETS
-    # ========================================================
-
-    if users:
-        return users
-
     try:
 
-        if "users" in st.secrets:
+        if "users" not in st.secrets:
+            return users
 
-            secret_users = st.secrets["users"]
+        secret_users = st.secrets["users"]
 
-            for user_key in secret_users:
+        for user_key in secret_users:
 
-                user_data = secret_users[user_key]
+            user_data = secret_users[user_key]
 
-                username = str(
-                    user_data.get(
-                        "username",
-                        ""
-                    )
-                ).strip()
-
-                password = str(
-                    user_data.get(
-                        "password",
-                        ""
-                    )
+            username = str(
+                user_data.get(
+                    "username",
+                    ""
                 )
+            ).strip()
 
-                role = str(
-                    user_data.get(
-                        "role",
-                        "viewer"
-                    )
-                ).lower().strip()
+            password = str(
+                user_data.get(
+                    "password",
+                    ""
+                )
+            )
 
-                if (
-                    username
-                    and password
-                    and role in [
-                        "admin",
-                        "viewer"
-                    ]
-                ):
+            role = str(
+                user_data.get(
+                    "role",
+                    "viewer"
+                )
+            ).lower().strip()
 
-                    users[username] = {
-                        "password": password,
-                        "role": role
-                    }
+            # Hanya menerima 2 role
+            if role not in [
+                "admin",
+                "viewer"
+            ]:
+                continue
+
+            if not username or not password:
+                continue
+
+            users[username] = {
+                "password": password,
+                "role": role
+            }
 
     except Exception as e:
 
-        print(
-            f"[LOGIN] Gagal membaca "
-            f"Streamlit Secrets: {e}"
+        st.error(
+            f"Gagal membaca konfigurasi login: {e}"
         )
 
     return users
@@ -200,34 +147,38 @@ def authenticate(
     password
 ):
 
-    username = (
-        str(username)
-        .strip()
-    )
+    users = get_users()
+
+    username = str(
+        username
+    ).strip()
 
     password = str(
         password
     )
 
-    if not username or not password:
+    if not users:
         return None
-
-    users = get_users()
 
     user = users.get(
         username
     )
 
-    if user is None:
+    if not user:
         return None
 
-    if password != user["password"]:
+    if str(
+        user["password"]
+    ) != password:
+
         return None
 
     return {
         "username": username,
         "role": user["role"]
     }
+
+
 # ============================================================
 # SESSION STATE
 # ============================================================
@@ -270,8 +221,16 @@ if not st.session_state.logged_in:
                 text-align:center;
                 padding:20px;
             ">
-                <h1>🛡️</h1>
-                <h2>Dashboard Patroli Siber 2026</h2>
+                <div style="
+                    font-size:60px;
+                ">
+                    🛡️
+                </div>
+
+                <h1>
+                    Dashboard Patroli Siber 2026
+                </h1>
+
                 <p>
                     Sistem Monitoring Pemberitaan
                 </p>
@@ -283,7 +242,7 @@ if not st.session_state.logged_in:
         st.divider()
 
         st.subheader(
-            "🔐 Login"
+            "🔐 Login Sistem"
         )
 
         username = st.text_input(
@@ -350,11 +309,45 @@ if not st.session_state.logged_in:
 
 
 # ============================================================
-# USER SESSION
+# CURRENT USER
 # ============================================================
 
-CURRENT_USERNAME = st.session_state.username
-CURRENT_ROLE = st.session_state.role
+CURRENT_USERNAME = (
+    st.session_state.username
+)
+
+CURRENT_ROLE = (
+    st.session_state.role
+)
+
+
+# ============================================================
+# ROLE VALIDATION
+# ============================================================
+
+if CURRENT_ROLE not in [
+    "admin",
+    "viewer"
+]:
+
+    st.session_state.logged_in = False
+    st.session_state.username = ""
+    st.session_state.role = ""
+
+    st.error(
+        "Role pengguna tidak valid."
+    )
+
+    st.stop()
+
+
+IS_ADMIN = (
+    CURRENT_ROLE == "admin"
+)
+
+IS_VIEWER = (
+    CURRENT_ROLE == "viewer"
+)
 
 
 # ============================================================
@@ -403,7 +396,9 @@ def parse_date(value):
             None
         ):
 
-            dt = dt.tz_convert(None)
+            dt = dt.tz_convert(
+                None
+            )
 
         return dt.to_pydatetime()
 
@@ -435,29 +430,39 @@ def filter_date(
     if mode == "24 jam terakhir":
 
         return (
-            dt >= now - datetime.timedelta(hours=24)
-            and dt <= now
+            dt >= now - datetime.timedelta(
+                hours=24
+            )
+            and
+            dt <= now
         )
 
     if mode == "7 hari terakhir":
 
         return (
-            dt >= now - datetime.timedelta(days=7)
-            and dt <= now
+            dt >= now - datetime.timedelta(
+                days=7
+            )
+            and
+            dt <= now
         )
 
     if mode == "1 bulan terakhir":
 
         return (
-            dt >= now - datetime.timedelta(days=30)
-            and dt <= now
+            dt >= now - datetime.timedelta(
+                days=30
+            )
+            and
+            dt <= now
         )
 
     if mode == "Tahun 2026":
 
         return (
-            dt.year == 2026
-            and dt <= now
+            dt.year == TAHUN_TARGET
+            and
+            dt <= now
         )
 
     return True
@@ -479,9 +484,9 @@ with st.sidebar:
 
     st.divider()
 
-    # --------------------------------------------------------
-    # USER LOGIN
-    # --------------------------------------------------------
+    # ========================================================
+    # USER
+    # ========================================================
 
     st.subheader(
         "👤 Pengguna"
@@ -491,21 +496,29 @@ with st.sidebar:
         f"**Username:** {CURRENT_USERNAME}"
     )
 
-    if CURRENT_ROLE == "admin":
+    if IS_ADMIN:
 
         st.success(
-            "Role: ADMIN"
+            "👑 Role: ADMIN"
+        )
+
+        st.caption(
+            "Akses penuh sistem"
         )
 
     else:
 
         st.info(
-            "Role: VIEWER"
+            "👁️ Role: VIEWER"
         )
 
-    # --------------------------------------------------------
+        st.caption(
+            "Akses monitoring"
+        )
+
+    # ========================================================
     # LOGOUT
-    # --------------------------------------------------------
+    # ========================================================
 
     if st.button(
         "🚪 Logout",
@@ -522,12 +535,12 @@ with st.sidebar:
 
     st.divider()
 
-    # --------------------------------------------------------
-    # INFORMASI
-    # --------------------------------------------------------
+    # ========================================================
+    # INFORMASI SISTEM
+    # ========================================================
 
     st.subheader(
-        "Informasi"
+        "ℹ️ Informasi Sistem"
     )
 
     st.text_input(
@@ -553,9 +566,13 @@ with st.sidebar:
         "Aktif ✅"
 
         if (
-            os.getenv("TELEGRAM_TOKEN")
+            os.getenv(
+                "TELEGRAM_TOKEN"
+            )
             and
-            os.getenv("CHAT_ID")
+            os.getenv(
+                "CHAT_ID"
+            )
         )
 
         else
@@ -572,18 +589,32 @@ with st.sidebar:
 
     st.divider()
 
-    # --------------------------------------------------------
+    # ========================================================
     # REFRESH
-    # --------------------------------------------------------
+    # ADMIN ONLY
+    # ========================================================
 
-    if st.button(
-        "🔄 Refresh Data",
-        use_container_width=True
-    ):
+    if IS_ADMIN:
 
-        st.cache_data.clear()
+        st.subheader(
+            "⚙️ Administrasi"
+        )
 
-        st.rerun()
+        if st.button(
+            "🔄 Refresh Data",
+            use_container_width=True
+        ):
+
+            st.cache_data.clear()
+
+            st.rerun()
+
+    else:
+
+        st.caption(
+            "🔒 Refresh Data hanya tersedia "
+            "untuk Admin."
+        )
 
 
 # ============================================================
@@ -614,7 +645,9 @@ st.subheader(
     "🕒 Filter Periode"
 )
 
-col_filter1, col_filter2 = st.columns(2)
+col_filter1, col_filter2 = st.columns(
+    2
+)
 
 
 with col_filter1:
@@ -708,14 +741,16 @@ for article in articles:
         )
 
         if (
-            dt.year != 2026
+            dt.year != TAHUN_TARGET
             or
             dt.month != month_number
         ):
 
             continue
 
-    filtered.append(article)
+    filtered.append(
+        article
+    )
 
 
 # ============================================================
@@ -812,7 +847,9 @@ negative = [
 
     x for x in filtered
 
-    if x.get("category") == "Negatif Kuat"
+    if x.get(
+        "category"
+    ) == "Negatif Kuat"
 
 ]
 
@@ -821,7 +858,9 @@ handling = [
 
     x for x in filtered
 
-    if x.get("category") == "Perlu Penanganan"
+    if x.get(
+        "category"
+    ) == "Perlu Penanganan"
 
 ]
 
@@ -830,7 +869,9 @@ neutral = [
 
     x for x in filtered
 
-    if x.get("category") == "Netral"
+    if x.get(
+        "category"
+    ) == "Netral"
 
 ]
 
@@ -839,7 +880,9 @@ positive = [
 
     x for x in filtered
 
-    if x.get("category") == "Positif"
+    if x.get(
+        "category"
+    ) == "Positif"
 
 ]
 
@@ -848,8 +891,9 @@ priority = [
 
     x for x in filtered
 
-    if x.get("category")
-    in [
+    if x.get(
+        "category"
+    ) in [
         "Negatif Kuat",
         "Perlu Penanganan"
     ]
@@ -867,8 +911,9 @@ st.subheader(
     "📊 Ringkasan"
 )
 
-
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5 = st.columns(
+    5
+)
 
 
 with c1:
@@ -915,7 +960,9 @@ with c5:
 # RENDER ARTICLE
 # ============================================================
 
-def render_article(item):
+def render_article(
+    item
+):
 
     category = item.get(
         "category",
@@ -1083,27 +1130,43 @@ def render_article(item):
 # TABS
 # ============================================================
 
-(
-    tab_priority,
-    tab_negative,
-    tab_handling,
-    tab_neutral,
-    tab_positive,
-    tab_analytics,
-    tab_logs
-) = st.tabs(
+tabs = [
 
-    [
-        "🚨 PRIORITAS REVIEW",
-        "🔴 NEGATIF KUAT",
-        "🟠 PERLU PENANGANAN",
-        "🟡 NETRAL",
-        "🟢 POSITIF",
-        "📊 ANALISIS",
+    "🚨 PRIORITAS REVIEW",
+    "🔴 NEGATIF KUAT",
+    "🟠 PERLU PENANGANAN",
+    "🟡 NETRAL",
+    "🟢 POSITIF",
+    "📊 ANALISIS"
+]
+
+
+# ============================================================
+# ADMIN ONLY TAB
+# ============================================================
+
+if IS_ADMIN:
+
+    tabs.append(
         "📜 LOG"
-    ]
+    )
 
+
+tab_objects = st.tabs(
+    tabs
 )
+
+
+tab_priority = tab_objects[0]
+tab_negative = tab_objects[1]
+tab_handling = tab_objects[2]
+tab_neutral = tab_objects[3]
+tab_positive = tab_objects[4]
+tab_analytics = tab_objects[5]
+
+if IS_ADMIN:
+
+    tab_logs = tab_objects[6]
 
 
 # ============================================================
@@ -1125,7 +1188,9 @@ with tab_priority:
 
         for item in priority:
 
-            render_article(item)
+            render_article(
+                item
+            )
 
     else:
 
@@ -1149,7 +1214,9 @@ with tab_negative:
 
         for item in negative:
 
-            render_article(item)
+            render_article(
+                item
+            )
 
     else:
 
@@ -1172,7 +1239,9 @@ with tab_handling:
 
         for item in handling:
 
-            render_article(item)
+            render_article(
+                item
+            )
 
     else:
 
@@ -1199,7 +1268,9 @@ with tab_neutral:
 
         for item in neutral:
 
-            render_article(item)
+            render_article(
+                item
+            )
 
     else:
 
@@ -1222,7 +1293,9 @@ with tab_positive:
 
         for item in positive:
 
-            render_article(item)
+            render_article(
+                item
+            )
 
     else:
 
@@ -1284,6 +1357,10 @@ with tab_analytics:
             use_container_width=True
         )
 
+    st.subheader(
+        "📊 Distribusi Prioritas"
+    )
+
     priority_df = pd.DataFrame({
 
         "Prioritas": [
@@ -1327,38 +1404,73 @@ with tab_analytics:
         hide_index=True
     )
 
+    # --------------------------------------------------------
+    # STATISTIK TAMBAHAN
+    # --------------------------------------------------------
+
+    st.subheader(
+        "📈 Statistik"
+    )
+
+    a1, a2, a3 = st.columns(3)
+
+    with a1:
+
+        st.metric(
+            "Total Artikel",
+            len(filtered)
+        )
+
+    with a2:
+
+        st.metric(
+            "Prioritas Review",
+            len(priority)
+        )
+
+    with a3:
+
+        st.metric(
+            "Artikel Positif",
+            len(positive)
+        )
+
 
 # ============================================================
 # LOG
+# ADMIN ONLY
 # ============================================================
 
-with tab_logs:
+if IS_ADMIN:
 
-    st.subheader(
-        "📜 Log Patroli"
-    )
+    with tab_logs:
 
-    # Viewer tetap boleh melihat log.
-    # Jika nanti ingin log hanya untuk admin,
-    # bagian ini dapat diproteksi.
-
-    if logs:
-
-        df_logs = pd.DataFrame(
-            logs
+        st.subheader(
+            "📜 Log Patroli"
         )
 
-        st.dataframe(
-            df_logs,
-            use_container_width=True,
-            hide_index=True
+        st.caption(
+            "Log patroli hanya dapat diakses "
+            "oleh pengguna dengan role ADMIN."
         )
 
-    else:
+        if logs:
 
-        st.info(
-            "Belum ada log patroli."
-        )
+            df_logs = pd.DataFrame(
+                logs
+            )
+
+            st.dataframe(
+                df_logs,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+
+            st.info(
+                "Belum ada log patroli."
+            )
 
 
 # ============================================================
@@ -1374,3 +1486,7 @@ st.caption(
     "terhadap isi, sumber, dan fakta."
 )
 
+st.caption(
+    f"👤 Login: {CURRENT_USERNAME} "
+    f"• Role: {CURRENT_ROLE.upper()}"
+)
