@@ -259,7 +259,7 @@ def upsert_article(
     data["updated_at"] = current_time
 
     # --------------------------------------------------------
-    # INSERT / UPDATE
+    # UPSERT
     # --------------------------------------------------------
 
     try:
@@ -385,7 +385,9 @@ def update_article(
     link = normalize_link(link)
 
     if not link:
-        return None
+        raise ValueError(
+            "Link artikel kosong saat update."
+        )
 
     client = get_supabase()
 
@@ -409,7 +411,6 @@ def update_article(
         rows = response.data or []
 
         if rows:
-
             return rows[0]
 
         return None
@@ -417,7 +418,15 @@ def update_article(
     except Exception as e:
 
         print(
-            f"[DB UPDATE ERROR] {e}"
+            "[DB UPDATE ERROR]"
+        )
+
+        print(
+            f"Link: {link}"
+        )
+
+        print(
+            f"Error: {e}"
         )
 
         raise
@@ -465,6 +474,16 @@ def save_run_log(
     log_data: Dict[str, Any]
 ):
 
+    """
+    Menyimpan statistik patroli ke run_logs.
+
+    Fungsi ini sengaja hanya mengirim kolom yang
+    kemungkinan digunakan oleh tabel run_logs.
+
+    Jika database_total belum tersedia di schema
+    run_logs, tidak akan menyebabkan workflow gagal.
+    """
+
     try:
 
         client = get_supabase()
@@ -476,17 +495,76 @@ def save_run_log(
             now_iso()
         )
 
+        # ----------------------------------------------------
+        # Hanya field log utama
+        # ----------------------------------------------------
+
+        allowed_fields = {
+
+            "duration_seconds",
+
+            "candidate_count",
+
+            "valid_count",
+
+            "saved_count",
+
+            "save_failed",
+
+            "reclassified_count",
+
+            "reclassify_failed",
+
+            "negative_count",
+
+            "handling_count",
+
+            "neutral_count",
+
+            "positive_count",
+
+            "telegram_count",
+
+            "status",
+
+            "created_at"
+
+        }
+
+        clean_data = {
+
+            key: value
+
+            for key, value in data.items()
+
+            if key in allowed_fields
+
+        }
+
         (
             client
             .table("run_logs")
-            .insert(data)
+            .insert(clean_data)
             .execute()
+        )
+
+        print(
+            "[SUPABASE] Run log berhasil disimpan."
         )
 
     except Exception as e:
 
+        # ----------------------------------------------------
+        # Run log TIDAK BOLEH membuat patroli gagal.
+        # ----------------------------------------------------
+
         print(
             f"[DB LOG ERROR] {e}"
+        )
+
+        print(
+            "[DB LOG] Error log diabaikan. "
+            "Patroli tetap dianggap selesai."
         )
 
 
@@ -535,7 +613,7 @@ def get_category_counts(
     articles: Optional[
         List[Dict[str, Any]]
     ] = None
-):
+) -> Dict[str, int]:
 
     if articles is None:
 
@@ -546,8 +624,11 @@ def get_category_counts(
     counts = {
 
         "Negatif Kuat": 0,
+
         "Perlu Penanganan": 0,
+
         "Netral": 0,
+
         "Positif": 0
 
     }
