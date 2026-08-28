@@ -1109,6 +1109,10 @@ def safe_list(value):
     return [str(value)]
 
 
+# ============================================================
+# RENDER ARTICLE
+# ============================================================
+
 def render_article(item):
 
     category = item.get(
@@ -1121,44 +1125,6 @@ def render_article(item):
         "RENDAH"
     )
 
-    if category == "Negatif Kuat":
-
-        icon = "🔴"
-        category_class = "badge-red"
-
-    elif category == "Perlu Penanganan":
-
-        icon = "🟠"
-        category_class = "badge-orange"
-
-    elif category == "Positif":
-
-        icon = "🟢"
-        category_class = "badge-green"
-
-    else:
-
-        icon = "🟡"
-        category_class = "badge-yellow"
-
-    title = html.escape(
-        str(
-            item.get(
-                "title",
-                "-"
-            )
-        )
-    )
-
-    published = html.escape(
-        str(
-            item.get(
-                "published_date",
-                "-"
-            )
-        )
-    )
-
     negative_score = item.get(
         "negative_score",
         0
@@ -1169,102 +1135,96 @@ def render_article(item):
         0
     )
 
-    satker = safe_list(
-        item.get(
-            "satker_matches",
-            []
-        )
-    )
+    # --------------------------------------------------------
+    # ICON KATEGORI
+    # --------------------------------------------------------
 
-    title_matches = safe_list(
-        item.get(
-            "satker_title_matches",
-            []
-        )
-    )
+    if category == "Negatif Kuat":
 
-    first_matches = safe_list(
-        item.get(
-            "satker_first_paragraph_matches",
-            []
-        )
-    )
+        icon = "🔴"
 
-    location = item.get(
-        "satker_match_location",
-        ""
-    )
+    elif category == "Perlu Penanganan":
 
-    detected_keywords = safe_list(
-        item.get(
-            "detected_keywords",
-            []
-        )
-    )
+        icon = "🟠"
 
-    strong_context = safe_list(
-        item.get(
-            "strong_context",
-            []
-        )
-    )
+    elif category == "Positif":
 
-    handling_context = safe_list(
-        item.get(
-            "handling_context",
-            []
-        )
-    )
+        icon = "🟢"
 
-    first_paragraphs = safe_list(
-        item.get(
-            "first_paragraphs",
-            []
-        )
-    )
+    else:
 
-    with st.container(
-        border=True
-    ):
+        icon = "🟡"
+
+    # --------------------------------------------------------
+    # ARTICLE CARD
+    # --------------------------------------------------------
+
+    with st.container(border=True):
 
         col1, col2 = st.columns(
-            [6.5, 1]
+            [6, 1]
         )
+
+        # ====================================================
+        # INFORMASI ARTIKEL
+        # ====================================================
 
         with col1:
 
-            st.markdown(
-                f"""
-                <div class="article-card">
-
-                    <div class="article-title">
-                        {icon} {title}
-                    </div>
-
-                    <span class="badge {category_class}">
-                        {category}
-                    </span>
-
-                    <span class="badge badge-dark">
-                        Prioritas {html.escape(str(priority_value))}
-                    </span>
-
-                    <span class="badge badge-dark">
-                        Negatif {negative_score}
-                    </span>
-
-                    <span class="badge badge-dark">
-                        Penanganan {handling_score}
-                    </span>
-
-                    <div class="article-meta">
-                        📅 {published}
-                    </div>
-
-                </div>
-                """,
-                unsafe_allow_html=True
+            st.subheader(
+                f"{icon} {item.get('title', '-')}"
             )
+
+            # -----------------------------------------------
+            # BADGES / INFORMASI
+            # -----------------------------------------------
+
+            b1, b2, b3, b4 = st.columns(4)
+
+            with b1:
+
+                st.write(
+                    f"**Kategori**  \n"
+                    f"{category}"
+                )
+
+            with b2:
+
+                st.write(
+                    f"**Prioritas**  \n"
+                    f"{priority_value}"
+                )
+
+            with b3:
+
+                st.write(
+                    f"**Negatif**  \n"
+                    f"{negative_score}"
+                )
+
+            with b4:
+
+                st.write(
+                    f"**Penanganan**  \n"
+                    f"{handling_score}"
+                )
+
+            # -----------------------------------------------
+            # TANGGAL
+            # -----------------------------------------------
+
+            published_date = item.get(
+                "published_date",
+                "-"
+            )
+
+            st.caption(
+                f"📅 {published_date}"
+            )
+
+            # -----------------------------------------------
+            # SNIPPET
+            # -----------------------------------------------
 
             snippet = item.get(
                 "snippet",
@@ -1277,130 +1237,105 @@ def render_article(item):
                     snippet
                 )
 
-            # =================================================
-            # SATKER
-            # =================================================
+            # -----------------------------------------------
+            # DETECTED KEYWORDS
+            # -----------------------------------------------
 
-            if satker:
-
-                st.markdown(
-                    '<div class="info-box">'
-                    '<b>🏢 SATKER TERDETEKSI</b><br>'
-                    + html.escape(
-                        ", ".join(
-                            map(str, satker)
-                        )
-                    )
-                    + (
-                        "<br><small>Lokasi: "
-                        + html.escape(
-                            str(location)
-                        )
-                        + "</small>"
-                        if location
-                        else ""
-                    )
-                    + '</div>',
-                    unsafe_allow_html=True
+            keywords = (
+                item.get(
+                    "detected_keywords",
+                    []
                 )
+                or []
+            )
 
-            if title_matches:
-
-                st.markdown(
-                    '<div class="info-box">'
-                    '<b>📰 SATKER PADA JUDUL</b><br>'
-                    + html.escape(
-                        ", ".join(
-                            map(str, title_matches)
-                        )
-                    )
-                    + '</div>',
-                    unsafe_allow_html=True
-                )
-
-            if first_matches:
-
-                st.markdown(
-                    '<div class="info-box">'
-                    '<b>📌 SATKER PADA 1–3 PARAGRAF AWAL</b><br>'
-                    + html.escape(
-                        ", ".join(
-                            map(str, first_matches)
-                        )
-                    )
-                    + '</div>',
-                    unsafe_allow_html=True
-                )
-
-            # =================================================
-            # KEYWORDS
-            # =================================================
-
-            if detected_keywords:
+            if keywords:
 
                 st.markdown(
                     "**🔎 Indikator:** "
                     + ", ".join(
                         map(
                             str,
-                            detected_keywords[:30]
+                            keywords[:30]
                         )
                     )
                 )
 
-            # =================================================
-            # CONTEXT
-            # =================================================
+            # -----------------------------------------------
+            # STRONG CONTEXT
+            # -----------------------------------------------
+
+            strong_context = (
+                item.get(
+                    "strong_context",
+                    []
+                )
+                or []
+            )
 
             if strong_context:
 
-                st.markdown(
-                    '<div class="danger-box">'
-                    '<b>⚠️ Konteks Negatif Kuat</b><br>'
-                    + html.escape(
-                        ", ".join(
-                            map(
-                                str,
-                                strong_context
-                            )
+                st.warning(
+                    "⚠️ Konteks Negatif Kuat: "
+                    + ", ".join(
+                        map(
+                            str,
+                            strong_context
                         )
                     )
-                    + '</div>',
-                    unsafe_allow_html=True
                 )
+
+            # -----------------------------------------------
+            # HANDLING CONTEXT
+            # -----------------------------------------------
+
+            handling_context = (
+                item.get(
+                    "handling_context",
+                    []
+                )
+                or []
+            )
 
             if handling_context:
 
-                st.markdown(
-                    '<div class="warning-box">'
-                    '<b>📌 Konteks Penanganan</b><br>'
-                    + html.escape(
-                        ", ".join(
-                            map(
-                                str,
-                                handling_context
-                            )
+                st.info(
+                    "📌 Konteks Penanganan: "
+                    + ", ".join(
+                        map(
+                            str,
+                            handling_context
                         )
                     )
-                    + '</div>',
-                    unsafe_allow_html=True
                 )
 
-            # =================================================
-            # FIRST PARAGRAPHS
-            # =================================================
+            # -----------------------------------------------
+            # SATKER
+            # -----------------------------------------------
 
-            if first_paragraphs:
+            satker = (
+                item.get(
+                    "satker_matches",
+                    []
+                )
+                or []
+            )
 
-                with st.expander(
-                    "📄 Lihat 1–3 paragraf awal"
-                ):
+            if satker:
 
-                    for paragraph in first_paragraphs[:3]:
-
-                        st.write(
-                            paragraph
+                st.caption(
+                    "🏢 Satker: "
+                    + ", ".join(
+                        map(
+                            str,
+                            satker
                         )
+                    )
+                )
+
+        # ====================================================
+        # LINK ARTIKEL
+        # ====================================================
 
         with col2:
 
@@ -1415,311 +1350,7 @@ def render_article(item):
                     "🔗 Buka Artikel",
                     link,
                     use_container_width=True
-                )
-
-
-# ============================================================
-# TABS
-# ============================================================
-
-tabs = [
-    "🚨 PRIORITAS",
-    "🔴 NEGATIF",
-    "🟠 PENANGANAN",
-    "🟡 NETRAL",
-    "🟢 POSITIF",
-    "📊 ANALISIS"
-]
-
-if IS_ADMIN:
-
-    tabs.append(
-        "📜 LOG"
-    )
-
-tab_objects = st.tabs(
-    tabs
-)
-
-tab_priority = tab_objects[0]
-tab_negative = tab_objects[1]
-tab_handling = tab_objects[2]
-tab_neutral = tab_objects[3]
-tab_positive = tab_objects[4]
-tab_analytics = tab_objects[5]
-
-if IS_ADMIN:
-
-    tab_logs = tab_objects[6]
-
-
-# ============================================================
-# PRIORITY
-# ============================================================
-
-with tab_priority:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🚨 Prioritas Review'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.caption(
-        "Artikel dengan risiko tertinggi ditampilkan terlebih dahulu."
-    )
-
-    if priority:
-
-        for item in priority:
-
-            render_article(
-                item
-            )
-
-    else:
-
-        st.success(
-            "Tidak ada artikel prioritas."
-        )
-
-
-# ============================================================
-# NEGATIVE
-# ============================================================
-
-with tab_negative:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🔴 Negatif Kuat'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    if negative:
-
-        for item in negative:
-
-            render_article(
-                item
-            )
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Negatif Kuat."
-        )
-
-
-# ============================================================
-# HANDLING
-# ============================================================
-
-with tab_handling:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🟠 Perlu Penanganan'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    if handling:
-
-        for item in handling:
-
-            render_article(
-                item
-            )
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Perlu Penanganan."
-        )
-
-
-# ============================================================
-# NEUTRAL
-# ============================================================
-
-with tab_neutral:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🟡 Artikel Netral'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.caption(
-        "Artikel tetap disimpan untuk kebutuhan monitoring dan audit klasifikasi."
-    )
-
-    if neutral:
-
-        for item in neutral:
-
-            render_article(
-                item
-            )
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Netral."
-        )
-
-
-# ============================================================
-# POSITIVE
-# ============================================================
-
-with tab_positive:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🟢 Pemberitaan Positif'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    if positive:
-
-        for item in positive:
-
-            render_article(
-                item
-            )
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Positif."
-        )
-
-
-# ============================================================
-# ANALYTICS
-# ============================================================
-
-with tab_analytics:
-
-    st.markdown(
-        '<div class="section-title">'
-        '📊 Analisis Monitoring'
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    chart_data = pd.DataFrame({
-        "Kategori": [
-            "Negatif Kuat",
-            "Perlu Penanganan",
-            "Netral",
-            "Positif"
-        ],
-        "Jumlah": [
-            len(negative),
-            len(handling),
-            len(neutral),
-            len(positive)
-        ]
-    })
-
-    if chart_data["Jumlah"].sum() > 0:
-
-        fig = px.pie(
-            chart_data,
-            names="Kategori",
-            values="Jumlah",
-            hole=0.5,
-            title="Distribusi Kategori"
-        )
-
-        fig.update_layout(
-            margin=dict(
-                t=60,
-                l=10,
-                r=10,
-                b=10
-            ),
-            legend_title=""
-        )
-
-        st.plotly_chart(
-            fig,
-            use_container_width=True
-        )
-
-    st.divider()
-
-    st.subheader(
-        "📊 Distribusi Prioritas"
-    )
-
-    priority_df = pd.DataFrame({
-        "Prioritas": [
-            "KRITIS",
-            "TINGGI",
-            "SEDANG",
-            "RENDAH"
-        ],
-        "Jumlah": [
-            len([
-                x for x in filtered
-                if x.get("priority") == "KRITIS"
-            ]),
-            len([
-                x for x in filtered
-                if x.get("priority") == "TINGGI"
-            ]),
-            len([
-                x for x in filtered
-                if x.get("priority") == "SEDANG"
-            ]),
-            len([
-                x for x in filtered
-                if x.get("priority") == "RENDAH"
-            ])
-        ]
-    })
-
-    st.dataframe(
-        priority_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-    st.divider()
-
-    a1, a2, a3 = st.columns(3)
-
-    with a1:
-
-        st.metric(
-            "Total Artikel",
-            len(filtered)
-        )
-
-    with a2:
-
-        st.metric(
-            "Prioritas Review",
-            len(priority)
-        )
-
-    with a3:
-
-        st.metric(
-            "Artikel Positif",
-            len(positive)
-        )
-
-
-# ============================================================
+                )# ============================================================
 # LOG
 # ============================================================
 
