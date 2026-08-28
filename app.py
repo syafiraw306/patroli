@@ -1519,27 +1519,27 @@ if IS_ADMIN and tab_logs is not None:
 # FOOTER
 # ============================================================
 
+# ============================================================
+# FOOTER
+# ============================================================
+
 st.divider()
 
-st.markdown(
-    f"""
-    <div class="footer">
-
-        🛡️ <b>Patroli Siber 2026</b><br>
-
-        Sistem merupakan alat bantu monitoring dan
-        klasifikasi awal. Artikel Negatif Kuat dan
-        Perlu Penanganan tetap perlu diverifikasi
-        terhadap isi, sumber, dan fakta.<br><br>
-
-        {NAMA_SATKER} • Sistem Internal
-
-    </div>
-    """,
-    unsafe_allow_html=True,
+st.caption(
+    "🛡️ Patroli Siber 2026"
 )
 
 st.caption(
-    f"👤 Login: {CURRENT_USERNAME} "
-    f"• Role: {CURRENT_ROLE.upper()}"
+    "Sistem merupakan alat bantu monitoring dan klasifikasi awal. "
+    "Artikel Negatif Kuat dan Perlu Penanganan tetap perlu "
+    "diverifikasi terhadap isi, sumber, dan fakta."
+)
+
+st.caption(
+    f"{NAMA_SATKER} • Sistem Internal • Tahun {TAHUN_TARGET}"
+)
+
+st.caption(
+    f"👤 Login: {CURRENT_USERNAME} • "
+    f"Role: {CURRENT_ROLE.upper()}"
 )
