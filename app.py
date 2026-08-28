@@ -29,23 +29,14 @@ st.set_page_config(
 
 st.markdown(
     """
-    <style>
-
-    [data-testid="stMetricValue"] {
-        font-size: 26px;
-        font-weight: 700;
-    }
-
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-    }
-
-    </style>
+    <div style="text-align: center; padding: 20px;">
+        <div style="font-size: 60px;">🛡️</div>
+        <h1>Dashboard Patroli Siber 2026</h1>
+        <p>Sistem Monitoring Pemberitaan</p>
+    </div>
     """,
     unsafe_allow_html=True
 )
-
 
 # ============================================================
 # CONFIG APLIKASI
