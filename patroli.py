@@ -15,15 +15,16 @@ from bs4 import BeautifulSoup
 from dateutil import parser
 
 from database import (
-    upsert_article,
-    get_all_articles,
-    update_article,
-    save_run_log
+upsert_article,
+get_all_articles,
+update_article,
+save_run_log
 )
 
-
 # ============================================================
+
 # KONFIGURASI
+
 # ============================================================
 
 TAHUN_TARGET = 2026
@@ -33,603 +34,660 @@ MAX_WORKERS = 10
 REQUEST_TIMEOUT = 15
 
 NAMA_SATKER = os.getenv(
-    "NAMA_SATKER",
-    "Kejaksaan Negeri Deli Serdang"
+"NAMA_SATKER",
+"Kejaksaan Negeri Deli Serdang"
 ).strip()
 
 TELEGRAM_TOKEN = (
-    os.getenv("TELEGRAM_TOKEN") or ""
+os.getenv("TELEGRAM_TOKEN") or ""
 ).strip()
 
 CHAT_ID = (
-    os.getenv("CHAT_ID") or ""
+os.getenv("CHAT_ID") or ""
 ).strip()
 
-
 # ============================================================
-# TARGET
+
+# TARGET SATKER
+
 # ============================================================
 
 TARGET_KEJARI_KEYWORDS = [
 
-    "kejaksaan negeri deli serdang",
-    "kejari deli serdang",
-    "kajari deli serdang",
-    "kejari deliserdang",
-    "kejaksaan deliserdang",
-    "kejaksaan deli serdang",
+```
+"kejaksaan negeri deli serdang",
+"kejari deli serdang",
+"kajari deli serdang",
+"kejari deliserdang",
+"kejaksaan deliserdang",
+"kejaksaan deli serdang",
 
-    "cabang kejaksaan negeri pancur batu",
-    "cabjari pancur batu",
-    "kacabjari pancur batu",
+"cabang kejaksaan negeri pancur batu",
+"cabjari pancur batu",
+"kacabjari pancur batu",
 
-    "cabang kejaksaan negeri labuhan deli",
-    "cabjari labuhan deli",
-    "kacabjari labuhan deli"
+"cabang kejaksaan negeri labuhan deli",
+"cabjari labuhan deli",
+"kacabjari labuhan deli"
+```
+
 ]
-
 
 SEARCH_TARGETS = [
 
-    '"Kejaksaan Negeri Deli Serdang"',
-    '"Kejari Deli Serdang"',
-    '"Kajari Deli Serdang"',
-    '"Kejari Deliserdang"',
-    '"Kejaksaan Deli Serdang"',
-    '"Cabjari Pancur Batu"',
-    '"Cabjari Labuhan Deli"'
+```
+'"Kejaksaan Negeri Deli Serdang"',
+'"Kejari Deli Serdang"',
+'"Kajari Deli Serdang"',
+'"Kejari Deliserdang"',
+'"Kejaksaan Deli Serdang"',
+'"Cabjari Pancur Batu"',
+'"Cabjari Labuhan Deli"'
+```
 
 ]
 
-
 # ============================================================
+
 # NEGATIF KUAT
+
 # ============================================================
 
 NEGATIVE_STRONG_RULES = {
 
-    "skandal": 12,
-    "skandal perselingkuhan": 18,
-    "perselingkuhan": 15,
-    "selingkuh": 14,
-    "pelakor": 15,
+```
+"skandal": 12,
+"skandal perselingkuhan": 18,
+"perselingkuhan": 15,
+"selingkuh": 14,
+"pelakor": 15,
 
-    "dugaan skandal": 14,
-    "dugaan perselingkuhan": 16,
+"dugaan skandal": 14,
+"dugaan perselingkuhan": 16,
 
-    "karangan bunga sindiran": 15,
-    "papan bunga sindiran": 15,
-    "papan bunga pelakor": 17,
-    "karangan bunga pelakor": 17,
+"karangan bunga sindiran": 15,
+"papan bunga sindiran": 15,
+"papan bunga pelakor": 17,
+"karangan bunga pelakor": 17,
 
-    "aib": 12,
+"aib": 12,
 
-    "dicopot": 13,
-    "pencopotan": 13,
-    "copot kajari": 15,
-    "kajari dicopot": 17,
+"dicopot": 13,
+"pencopotan": 13,
+"copot kajari": 15,
+"kajari dicopot": 17,
 
-    "kejagung copot kajari": 18,
-    "kajari dicopot kejagung": 18,
+"kejagung copot kajari": 18,
+"kajari dicopot kejagung": 18,
 
-    "pelanggaran etik": 16,
-    "pelanggaran etika": 15,
-    "pelanggaran kode etik": 17,
+"pelanggaran etik": 16,
+"pelanggaran etika": 15,
+"pelanggaran kode etik": 17,
+"melanggar etik": 15,
 
-    "melanggar etik": 15,
+"didesak": 12,
+"didesak mundur": 16,
+"didesak dicopot": 17,
+"kejari didesak": 15,
 
-    "didesak": 12,
-    "didesak mundur": 16,
-    "didesak dicopot": 17,
-    "kejari didesak": 15,
+"protes": 10,
+"demonstrasi": 10,
+"demo": 9,
 
-    "protes": 10,
-    "demonstrasi": 10,
-    "demo": 9,
+"kritik keras": 13,
+"menuai kritik": 11,
+"menuai sorotan": 11,
+"disorot": 10,
 
-    "kritik keras": 13,
-    "menuai kritik": 11,
+"terjerat": 13,
+"tersandung": 12,
+"terlibat skandal": 17,
 
-    "menuai sorotan": 11,
-    "disorot": 10,
+"maladministrasi": 14,
+"arogan": 11,
 
-    "terjerat": 13,
-    "tersandung": 12,
+"pemerasan": 14,
+"dugaan pemerasan": 16,
 
-    "terlibat skandal": 17,
+"suap": 13,
+"dugaan suap": 15,
 
-    "maladministrasi": 14,
+"gratifikasi": 13,
+"dugaan gratifikasi": 15,
 
-    "arogan": 11,
+"pungli": 13,
+"dugaan pungli": 15,
 
-    "pemerasan": 14,
-    "dugaan pemerasan": 16,
+"mafia hukum": 17,
+"mafia": 13,
 
-    "suap": 13,
-    "dugaan suap": 15,
+"kolusi": 14,
+"nepotisme": 13,
 
-    "gratifikasi": 13,
-    "dugaan gratifikasi": 15,
+"penyalahgunaan wewenang": 15,
+"penyelewengan": 14,
 
-    "pungli": 13,
-    "dugaan pungli": 15,
+"cacat hukum": 13,
 
-    "mafia hukum": 17,
-    "mafia": 13,
+"kejanggalan": 11,
+"janggal": 8,
 
-    "kolusi": 14,
-    "nepotisme": 13,
+"tidak transparan": 11,
+"tidak profesional": 11,
 
-    "penyalahgunaan wewenang": 15,
-    "penyelewengan": 14,
+"batal dilantik": 11,
+"gagal dilantik": 11,
+"pelantikan ditunda": 11,
 
-    "cacat hukum": 13,
+"pelantikan mendadak ditunda": 14,
 
-    "kejanggalan": 11,
-    "janggal": 8,
+"bongkar dugaan skandal": 17,
 
-    "tidak transparan": 11,
-    "tidak profesional": 11,
+"sorotan kasus narkotika": 14,
 
-    "batal dilantik": 11,
-    "gagal dilantik": 11,
-    "pelantikan ditunda": 11,
+"kabur": 7,
+"melarikan diri": 9
+```
 
-    "pelantikan mendadak ditunda": 14,
-
-    "bongkar dugaan skandal": 17,
-
-    "sorotan kasus narkotika": 14,
-
-    "kabur": 7,
-    "melarikan diri": 9
 }
 
-
 # ============================================================
+
 # PERLU PENANGANAN
+
 # ============================================================
 
 HANDLING_RULES = {
 
-    "korupsi": 8,
-    "dugaan korupsi": 10,
-    "kasus korupsi": 9,
+```
+"korupsi": 8,
+"dugaan korupsi": 10,
+"kasus korupsi": 9,
 
-    "penyelidikan": 6,
-    "penyidikan": 6,
+"penyelidikan": 6,
+"penyidikan": 6,
 
-    "diperiksa": 8,
-    "diperiksa kejagung": 12,
+"diperiksa": 8,
+"diperiksa kejagung": 12,
+"diperiksa kejaksaan agung": 12,
 
-    "dipanggil": 7,
-    "dipanggil kejagung": 11,
+"dipanggil": 7,
+"dipanggil kejagung": 11,
+"dipanggil ke kejagung": 11,
 
-    "diperiksa kejaksaan agung": 12,
+"dilaporkan": 8,
+"laporan masyarakat": 8,
+"pengaduan": 7,
+"pengaduan masyarakat": 8,
 
-    "dilaporkan": 8,
-    "laporan masyarakat": 8,
-    "pengaduan": 7,
+"tersangka": 8,
+"terlapor": 8,
 
-    "tersangka": 8,
-    "terlapor": 8,
+"tuntutan": 5,
+"dituntut": 6,
 
-    "tuntutan": 5,
-    "dituntut": 6,
+"narkotika": 7,
+"kasus narkotika": 10,
 
-    "narkotika": 7,
-    "kasus narkotika": 10,
+"narapidana kabur": 10,
+"terpidana kabur": 10,
 
-    "narapidana kabur": 10,
-    "terpidana kabur": 10,
+"guru honorer": 5,
+"dibebaskan": 6,
 
-    "guru honorer": 5,
-    "dibebaskan": 6,
+"keluhan pelayanan": 8,
+"pelayanan buruk": 9,
 
-    "keluhan pelayanan": 8,
-    "pelayanan buruk": 9,
+"masalah": 3,
+"bermasalah": 6,
 
-    "masalah": 3,
-    "bermasalah": 6,
+"dipertanyakan": 7,
 
-    "dipertanyakan": 7,
+"dugaan": 5,
+"indikasi": 5,
+"terindikasi": 6,
 
-    "dugaan": 5,
-    "indikasi": 5,
-    "terindikasi": 6,
+"kasus": 4,
 
-    "kasus": 4,
+"pencopotan": 8,
+"dicopot": 8,
 
-    "pencopotan": 8,
-    "dicopot": 8
+"perkara": 4,
+"konflik": 5,
+"sengketa": 5,
+"pelaporan": 6,
+"pengawasan": 4,
+"pemeriksaan": 5
+```
+
 }
 
-
 # ============================================================
+
 # POSITIF
+
 # ============================================================
 
 POSITIVE_RULES = {
 
-    "berhasil mengungkap": 8,
-    "berhasil menangkap": 8,
-    "berhasil mengamankan": 7,
-    "berhasil mengusut": 7,
+```
+"berhasil mengungkap": 8,
+"berhasil menangkap": 8,
+"berhasil mengamankan": 7,
+"berhasil mengusut": 7,
 
-    "penghargaan": 7,
-    "prestasi": 7,
-    "capaian kinerja": 7,
+"penghargaan": 7,
+"prestasi": 7,
+"capaian kinerja": 7,
 
-    "pelayanan prima": 7,
-    "pelayanan publik": 5,
+"pelayanan prima": 7,
+"pelayanan publik": 5,
+"pelayanan terbaik": 6,
 
-    "penyuluhan hukum": 5,
-    "sosialisasi hukum": 5,
+"penyuluhan hukum": 5,
+"sosialisasi hukum": 5,
+"penerangan hukum": 5,
 
-    "jaksa masuk sekolah": 5,
+"jaksa masuk sekolah": 5,
 
-    "peresmian": 5,
-    "program unggulan": 6,
+"peresmian": 5,
+"program unggulan": 6,
+"inovasi pelayanan": 6,
 
-    "pemusnahan barang bukti": 6
+"pemusnahan barang bukti": 6,
+"penyerahan barang bukti": 5,
+
+"upacara": 3,
+"apel": 3,
+"kunjungan kerja": 4,
+"silaturahmi": 4,
+"rapat koordinasi": 4,
+"koordinasi": 4,
+"konsolidasi": 4,
+"fgd": 4,
+"focus group discussion": 4,
+
+"penandatanganan mou": 5,
+"kerja sama": 5,
+
+"penyerahan penghargaan": 6,
+"peningkatan pelayanan": 6,
+"peningkatan kinerja": 6
+```
+
 }
 
-
 # ============================================================
-# KONTEKS NEGATIF
+
+# KONTEKS NEGATIF KUAT
+
 # ============================================================
 
 STRONG_NEGATIVE_CONTEXT = [
 
-    "skandal perselingkuhan",
-    "dugaan perselingkuhan",
-    "perselingkuhan oknum",
-    "oknum jaksa selingkuh",
+```
+"skandal perselingkuhan",
+"dugaan perselingkuhan",
+"perselingkuhan oknum",
+"oknum jaksa selingkuh",
 
-    "papan bunga pelakor",
-    "karangan bunga pelakor",
+"papan bunga pelakor",
+"karangan bunga pelakor",
 
-    "papan bunga sindiran",
-    "karangan bunga sindiran",
+"papan bunga sindiran",
+"karangan bunga sindiran",
 
-    "kajari dicopot",
-    "kajari dicopot kejagung",
-    "kejagung copot kajari",
+"kajari dicopot",
+"kajari dicopot kejagung",
+"kejagung copot kajari",
 
-    "pencopotan kajari",
+"pencopotan kajari",
 
-    "pelanggaran etik",
-    "pelanggaran kode etik",
+"pelanggaran etik",
+"pelanggaran kode etik",
 
-    "didesak mundur",
-    "didesak dicopot",
-    "didesak bebaskan",
+"didesak mundur",
+"didesak dicopot",
+"didesak bebaskan",
 
-    "kejari didesak",
+"kejari didesak",
 
-    "menuai sorotan",
-    "di tengah sorotan",
+"menuai sorotan",
+"di tengah sorotan",
 
-    "sorotan kasus narkotika",
+"sorotan kasus narkotika",
 
-    "bongkar dugaan skandal",
+"bongkar dugaan skandal",
 
-    "heboh karangan bunga",
-    "heboh papan bunga",
+"heboh karangan bunga",
+"heboh papan bunga",
 
-    "28 cpns batal dilantik",
-    "28 cpns gagal dilantik",
+"28 cpns batal dilantik",
+"28 cpns gagal dilantik",
 
-    "pelantikan 28 cpns ditunda",
+"pelantikan 28 cpns ditunda",
 
-    "gagal dilantik imbas",
-    "batal dilantik imbas"
+"gagal dilantik imbas",
+"batal dilantik imbas",
+
+"dugaan pemerasan",
+"dugaan suap",
+"dugaan gratifikasi",
+"dugaan pungli",
+
+"mafia hukum",
+"penyalahgunaan wewenang",
+"maladministrasi"
+```
+
 ]
 
-
 # ============================================================
+
 # KONTEKS PENANGANAN
+
 # ============================================================
 
 HANDLING_CONTEXT = [
 
-    "diperiksa kejagung",
-    "dipanggil kejagung",
-    "dipanggil ke kejagung",
-    "diperiksa kejaksaan agung",
+```
+"diperiksa kejagung",
+"dipanggil kejagung",
+"dipanggil ke kejagung",
+"diperiksa kejaksaan agung",
 
-    "kejagung periksa",
-    "kejagung memeriksa",
+"kejagung periksa",
+"kejagung memeriksa",
 
-    "penyelidikan",
-    "penyidikan",
+"penyelidikan",
+"penyidikan",
 
-    "mengusut kasus",
-    "mengusut dugaan",
+"mengusut kasus",
+"mengusut dugaan",
 
-    "menangani kasus",
-    "menangani dugaan",
+"menangani kasus",
+"menangani dugaan",
 
-    "menetapkan tersangka",
+"menetapkan tersangka",
 
-    "kasus narkotika",
-    "kasus korupsi",
+"kasus narkotika",
+"kasus korupsi",
 
-    "narapidana kabur",
-    "terpidana kabur",
+"narapidana kabur",
+"terpidana kabur",
 
-    "dilaporkan masyarakat",
-    "pengaduan masyarakat",
+"dilaporkan masyarakat",
+"pengaduan masyarakat",
 
-    "didesak bebaskan"
+"didesak bebaskan",
+
+"dugaan pelanggaran",
+"dugaan penyalahgunaan",
+"dugaan penyelewengan",
+
+"perkara hukum",
+"sengketa hukum",
+"konflik hukum"
+```
+
 ]
 
-
 # ============================================================
-# POSITIVE ACTION
+
+# AKSI POSITIF PENEGAKAN HUKUM
+
 # ============================================================
 
 POSITIVE_ACTION_CONTEXT = [
 
-    "mengusut dugaan korupsi",
-    "usut dugaan korupsi",
-    "mengusut kasus korupsi",
+```
+"mengusut dugaan korupsi",
+"usut dugaan korupsi",
+"mengusut kasus korupsi",
 
-    "menangani kasus korupsi",
-    "menangani dugaan korupsi",
+"menangani kasus korupsi",
+"menangani dugaan korupsi",
 
-    "melakukan penyelidikan",
-    "melakukan penyidikan",
+"melakukan penyelidikan",
+"melakukan penyidikan",
 
-    "penyelidikan dugaan korupsi",
-    "penyidikan kasus korupsi",
+"penyelidikan dugaan korupsi",
+"penyidikan kasus korupsi",
 
-    "berhasil mengungkap kasus",
-    "berhasil mengungkap korupsi",
+"berhasil mengungkap kasus",
+"berhasil mengungkap korupsi",
 
-    "berhasil menangkap tersangka",
-    "berhasil mengamankan tersangka",
+"berhasil menangkap tersangka",
+"berhasil mengamankan tersangka",
 
-    "menetapkan tersangka",
-    "menindak pelaku",
+"menetapkan tersangka",
+"menindak pelaku",
 
-    "mengungkap kasus narkotika",
-    "menangkap pelaku"
+"mengungkap kasus narkotika",
+"menangkap pelaku",
+
+"berhasil mengamankan barang bukti",
+"berhasil menyita barang bukti",
+
+"menuntut terdakwa",
+"mengajukan tuntutan"
+```
+
 ]
 
-
 # ============================================================
+
 # UTIL
+
 # ============================================================
 
 def normalize_text(text):
 
-    if not text:
-        return ""
+```
+if not text:
+    return ""
 
-    text = html.unescape(
-        str(text)
-    )
+text = html.unescape(str(text))
 
-    text = text.lower()
+text = text.lower()
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
+text = re.sub(
+    r"\s+",
+    " ",
+    text
+)
 
-    return text.strip()
-
+return text.strip()
+```
 
 def parse_indonesian_date(text):
 
-    if not text:
+```
+if not text:
+    return None
+
+bulan = {
+
+    "januari": 1,
+    "februari": 2,
+    "maret": 3,
+    "april": 4,
+    "mei": 5,
+    "juni": 6,
+    "juli": 7,
+    "agustus": 8,
+    "september": 9,
+    "oktober": 10,
+    "november": 11,
+    "desember": 12,
+
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "jun": 6,
+    "jul": 7,
+    "agu": 8,
+    "sep": 9,
+    "okt": 10,
+    "nov": 11,
+    "des": 12
+}
+
+text = normalize_text(text)
+
+match = re.search(
+    r"(\d{1,2})\s+([a-z]+)\s+(\d{4})",
+    text
+)
+
+if not match:
+    return None
+
+try:
+
+    day = int(match.group(1))
+    month_name = match.group(2)
+    year = int(match.group(3))
+
+    if month_name not in bulan:
         return None
 
-    bulan = {
-
-        "januari": 1,
-        "februari": 2,
-        "maret": 3,
-        "april": 4,
-        "mei": 5,
-        "juni": 6,
-        "juli": 7,
-        "agustus": 8,
-        "september": 9,
-        "oktober": 10,
-        "november": 11,
-        "desember": 12,
-
-        "jan": 1,
-        "feb": 2,
-        "mar": 3,
-        "apr": 4,
-        "jun": 6,
-        "jul": 7,
-        "agu": 8,
-        "sep": 9,
-        "okt": 10,
-        "nov": 11,
-        "des": 12
-    }
-
-    text = normalize_text(text)
-
-    match = re.search(
-        r"(\d{1,2})\s+([a-z]+)\s+(\d{4})",
-        text
+    return datetime.datetime(
+        year,
+        bulan[month_name],
+        day
     )
 
-    if not match:
-        return None
+except Exception:
 
-    try:
-
-        day = int(
-            match.group(1)
-        )
-
-        month_name = match.group(2)
-
-        year = int(
-            match.group(3)
-        )
-
-        if month_name not in bulan:
-            return None
-
-        return datetime.datetime(
-            year,
-            bulan[month_name],
-            day
-        )
-
-    except Exception:
-
-        return None
-
+    return None
+```
 
 def parse_date_safe(value):
 
-    if not value:
-        return None
+```
+if not value:
+    return None
 
-    try:
+try:
 
-        dt = parser.parse(
-            str(value),
-            fuzzy=True,
-            dayfirst=True
-        )
+    dt = parser.parse(
+        str(value),
+        fuzzy=True,
+        dayfirst=True
+    )
 
-        if dt.tzinfo:
+    if dt.tzinfo:
 
-            dt = (
-                dt.astimezone(
-                    datetime.timezone.utc
-                )
-                .replace(tzinfo=None)
+        dt = (
+            dt.astimezone(
+                datetime.timezone.utc
             )
-
-        return dt
-
-    except Exception:
-
-        return parse_indonesian_date(
-            str(value)
+            .replace(tzinfo=None)
         )
 
+    return dt
+
+except Exception:
+
+    return parse_indonesian_date(
+        str(value)
+    )
+```
 
 # ============================================================
+
 # DATE EXTRACTION
+
 # ============================================================
 
 def extract_published_date(soup):
 
-    candidates = []
+```
+candidates = []
 
+for script in soup.find_all(
+    "script",
+    attrs={
+        "type": re.compile(
+            r"application/ld\+json",
+            re.I
+        )
+    }
+):
 
-    # JSON LD
-    for script in soup.find_all(
-        "script",
-        attrs={
-            "type": re.compile(
-                r"application/ld\+json",
-                re.I
-            )
-        }
-    ):
+    try:
 
-        try:
-
-            raw = (
-                script.string
-                or script.get_text()
-            )
-
-            if not raw:
-                continue
-
-            data = json.loads(raw)
-
-            objects = []
-
-            if isinstance(data, dict):
-
-                objects.append(data)
-
-                graph = data.get("@graph")
-
-                if isinstance(graph, list):
-                    objects.extend(graph)
-
-            elif isinstance(data, list):
-
-                objects = data
-
-
-            for obj in objects:
-
-                if not isinstance(obj, dict):
-                    continue
-
-                for key in [
-                    "datePublished",
-                    "dateCreated"
-                ]:
-
-                    value = obj.get(key)
-
-                    if value:
-                        candidates.append(value)
-
-        except Exception:
-            continue
-
-
-    # META
-    selectors = [
-
-        {"property": "article:published_time"},
-        {"property": "og:article:published_time"},
-        {"name": "article:published_time"},
-        {"name": "publishdate"},
-        {"name": "pubdate"},
-        {"name": "datePublished"},
-        {"itemprop": "datePublished"}
-
-    ]
-
-    for attrs in selectors:
-
-        element = soup.find(
-            "meta",
-            attrs=attrs
+        raw = (
+            script.string
+            or script.get_text()
         )
 
-        if element:
+        if not raw:
+            continue
 
-            value = (
-                element.get("content")
-                or element.get("datetime")
-                or element.get_text(
-                    " ",
-                    strip=True
-                )
-            )
+        data = json.loads(raw)
 
-            if value:
-                candidates.append(value)
+        objects = []
 
+        if isinstance(data, dict):
 
-    # TIME
-    for tag in soup.find_all("time"):
+            objects.append(data)
+
+            graph = data.get("@graph")
+
+            if isinstance(graph, list):
+                objects.extend(graph)
+
+        elif isinstance(data, list):
+
+            objects = data
+
+        for obj in objects:
+
+            if not isinstance(obj, dict):
+                continue
+
+            for key in [
+                "datePublished",
+                "dateCreated"
+            ]:
+
+                value = obj.get(key)
+
+                if value:
+                    candidates.append(value)
+
+    except Exception:
+
+        continue
+
+selectors = [
+
+    {"property": "article:published_time"},
+    {"property": "og:article:published_time"},
+    {"name": "article:published_time"},
+    {"name": "publishdate"},
+    {"name": "pubdate"},
+    {"name": "datePublished"},
+    {"itemprop": "datePublished"}
+
+]
+
+for attrs in selectors:
+
+    element = soup.find(
+        "meta",
+        attrs=attrs
+    )
+
+    if element:
 
         value = (
-            tag.get("datetime")
-            or tag.get_text(
+            element.get("content")
+            or element.get("datetime")
+            or element.get_text(
                 " ",
                 strip=True
             )
@@ -638,1873 +696,2007 @@ def extract_published_date(soup):
         if value:
             candidates.append(value)
 
+for tag in soup.find_all("time"):
 
-    for value in candidates:
+    value = (
+        tag.get("datetime")
+        or tag.get_text(
+            " ",
+            strip=True
+        )
+    )
+
+    if value:
+        candidates.append(value)
+
+for value in candidates:
+
+    dt = parse_date_safe(value)
+
+    if dt:
+        return dt
+
+return None
+```
+
+# ============================================================
+
+# RSS DATE
+
+# ============================================================
+
+def get_rss_date(entry):
+
+```
+for attr in [
+    "published_parsed",
+    "updated_parsed"
+]:
+
+    value = getattr(
+        entry,
+        attr,
+        None
+    )
+
+    if value:
+
+        try:
+
+            return datetime.datetime(
+                value.tm_year,
+                value.tm_mon,
+                value.tm_mday,
+                value.tm_hour,
+                value.tm_min,
+                value.tm_sec
+            )
+
+        except Exception:
+
+            pass
+
+for attr in [
+    "published",
+    "updated",
+    "created"
+]:
+
+    value = getattr(
+        entry,
+        attr,
+        None
+    )
+
+    if value:
 
         dt = parse_date_safe(value)
 
         if dt:
             return dt
 
-    return None
-
-
-# ============================================================
-# RSS DATE
-# ============================================================
-
-def get_rss_date(entry):
-
-    for attr in [
-        "published_parsed",
-        "updated_parsed"
-    ]:
-
-        value = getattr(
-            entry,
-            attr,
-            None
-        )
-
-        if value:
-
-            try:
-
-                return datetime.datetime(
-                    value.tm_year,
-                    value.tm_mon,
-                    value.tm_mday,
-                    value.tm_hour,
-                    value.tm_min,
-                    value.tm_sec
-                )
-
-            except Exception:
-                pass
-
-
-    for attr in [
-        "published",
-        "updated",
-        "created"
-    ]:
-
-        value = getattr(
-            entry,
-            attr,
-            None
-        )
-
-        if value:
-
-            dt = parse_date_safe(value)
-
-            if dt:
-                return dt
-
-    return None
-
+return None
+```
 
 # ============================================================
+
 # VALIDASI DATE
+
 # ============================================================
 
 def validate_date(
-    article_date,
-    rss_date
+article_date,
+rss_date
 ):
 
-    now = datetime.datetime.now()
+```
+now = datetime.datetime.now()
 
-    # Artikel date prioritas
-    if article_date:
+if article_date:
 
-        if article_date.year != TAHUN_TARGET:
-            return False, article_date
+    if article_date.year != TAHUN_TARGET:
+        return False, article_date
 
-        if article_date > now + datetime.timedelta(
-            days=1
-        ):
-            return False, article_date
+    if article_date > now + datetime.timedelta(
+        days=1
+    ):
+        return False, article_date
 
-        return True, article_date
+    return True, article_date
 
+if rss_date:
 
-    # RSS fallback
-    if rss_date:
+    if rss_date.year != TAHUN_TARGET:
+        return False, rss_date
 
-        if rss_date.year != TAHUN_TARGET:
-            return False, rss_date
+    if rss_date > now + datetime.timedelta(
+        days=1
+    ):
+        return False, rss_date
 
-        if rss_date > now + datetime.timedelta(
-            days=1
-        ):
-            return False, rss_date
+    return True, rss_date
 
-        return True, rss_date
-
-
-    return False, None
-
+return False, None
+```
 
 # ============================================================
+
 # FETCH
+
 # ============================================================
 
 def fetch_webpage(url):
 
-    headers = {
+```
+headers = {
 
-        "User-Agent":
-            "Mozilla/5.0 "
-            "(Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 "
-            "(KHTML, like Gecko) "
-            "Chrome/131.0 Safari/537.36",
+    "User-Agent":
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/131.0 Safari/537.36",
 
-        "Accept-Language":
-            "id-ID,id;q=0.9,en;q=0.8"
+    "Accept-Language":
+        "id-ID,id;q=0.9,en;q=0.8"
 
-    }
+}
 
-    try:
+try:
 
-        response = requests.get(
-            url,
-            headers=headers,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True
-        )
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=True
+    )
 
-        if response.status_code == 200:
+    if response.status_code == 200:
 
-            return {
+        return {
 
-                "html": response.text,
+            "html": response.text,
 
-                "final_url":
-                    response.url
+            "final_url":
+                response.url
 
-            }
+        }
 
-    except Exception:
-        pass
+except Exception:
 
-    return None
+    pass
 
+return None
+```
 
 # ============================================================
+
 # REDIRECT
+
 # ============================================================
 
 def resolve_redirect_url(url):
 
-    if not url:
-        return ""
+```
+if not url:
+    return ""
 
-    try:
+try:
 
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent":
-                    "Mozilla/5.0"
-            },
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-            stream=True
-        )
+    response = requests.get(
+        url,
+        headers={
+            "User-Agent":
+                "Mozilla/5.0"
+        },
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=True,
+        stream=True
+    )
 
-        final_url = (
-            response.url
-            or url
-        )
+    final_url = (
+        response.url
+        or url
+    )
 
-        response.close()
+    response.close()
 
-        return final_url
+    return final_url
 
-    except Exception:
+except Exception:
 
-        return url
-
+    return url
+```
 
 # ============================================================
+
 # ARTICLE TEXT
+
 # ============================================================
 
 def extract_article_text(soup):
 
-    copy_soup = BeautifulSoup(
-        str(soup),
-        "html.parser"
-    )
+```
+copy_soup = BeautifulSoup(
+    str(soup),
+    "html.parser"
+)
 
-    for tag in copy_soup([
-        "script",
-        "style",
-        "noscript",
-        "svg",
-        "nav",
-        "footer",
-        "header",
-        "form",
-        "aside",
-        "iframe"
-    ]):
+for tag in copy_soup([
+    "script",
+    "style",
+    "noscript",
+    "svg",
+    "nav",
+    "footer",
+    "header",
+    "form",
+    "aside",
+    "iframe"
+]):
 
-        tag.decompose()
+    tag.decompose()
 
+article = (
+    copy_soup.find("article")
+    or copy_soup.find("main")
+)
 
-    article = (
-        copy_soup.find("article")
-        or copy_soup.find("main")
-    )
+if article:
 
-
-    if article:
-
-        text = article.get_text(
-            " ",
-            strip=True
-        )
-
-    else:
-
-        text = copy_soup.get_text(
-            " ",
-            strip=True
-        )
-
-
-    text = re.sub(
-        r"\s+",
+    text = article.get_text(
         " ",
-        text
+        strip=True
     )
 
-    return text.strip()
+else:
 
+    text = copy_soup.get_text(
+        " ",
+        strip=True
+    )
+
+text = re.sub(
+    r"\s+",
+    " ",
+    text
+)
+
+return text.strip()
+```
 
 # ============================================================
+
 # SATKER
+
 # ============================================================
 
 def find_satker_matches(
-    title,
-    snippet,
-    content
+title,
+snippet,
+content
 ):
 
-    text = normalize_text(
-        f"{title} {snippet} {content}"
-    )
+```
+text = normalize_text(
+    f"{title} {snippet} {content}"
+)
 
-    matches = []
+matches = []
 
-    for keyword in TARGET_KEJARI_KEYWORDS:
+for keyword in TARGET_KEJARI_KEYWORDS:
 
-        if keyword in text:
+    if keyword in text:
 
-            matches.append(keyword)
+        matches.append(keyword)
 
-    return list(
-        dict.fromkeys(matches)
-    )
-
+return list(
+    dict.fromkeys(matches)
+)
+```
 
 # ============================================================
-# SCORE
+
+# SCORE ENGINE
+
 # ============================================================
 
 def calculate_rule_score(
-    text,
-    rules
+text,
+rules
 ):
 
-    score = 0
+```
+score = 0
 
-    detected = []
+detected = []
 
-    for keyword, weight in rules.items():
+for keyword, weight in rules.items():
 
-        if keyword in text:
+    if keyword in text:
 
-            score += weight
+        score += weight
 
-            detected.append(keyword)
+        detected.append(keyword)
 
-    return score, detected
-
+return score, detected
+```
 
 # ============================================================
-# CLASSIFIER
+
+# CLASSIFIER VERSI TERBARU
+
 # ============================================================
 
 def classify_article(
+title,
+snippet,
+content
+):
+
+```
+title_n = normalize_text(title)
+snippet_n = normalize_text(snippet)
+content_n = normalize_text(content)
+
+full_text = (
+    f"{title_n} "
+    f"{snippet_n} "
+    f"{content_n}"
+)
+
+satker_matches = find_satker_matches(
     title,
     snippet,
     content
-):
+)
 
-    title_n = normalize_text(title)
+# --------------------------------------------------------
+# Jika tidak terkait satker
+# --------------------------------------------------------
 
-    snippet_n = normalize_text(snippet)
-
-    content_n = normalize_text(content)
-
-    full_text = (
-        f"{title_n} "
-        f"{snippet_n} "
-        f"{content_n}"
-    )
-
-
-    satker_matches = find_satker_matches(
-        title,
-        snippet,
-        content
-    )
-
-
-    if not satker_matches:
-
-        return {
-
-            "category": "Netral",
-            "priority": "RENDAH",
-            "negative_score": 0,
-            "handling_score": 0,
-            "positive_score": 0,
-            "detected_keywords": [],
-            "satker_matches": [],
-            "strong_context": [],
-            "positive_context": []
-
-        }
-
-
-    # --------------------------------------------------------
-    # SCORE DASAR
-    # --------------------------------------------------------
-
-    strong_score, strong_keywords = (
-        calculate_rule_score(
-            full_text,
-            NEGATIVE_STRONG_RULES
-        )
-    )
-
-    handling_score, handling_keywords = (
-        calculate_rule_score(
-            full_text,
-            HANDLING_RULES
-        )
-    )
-
-    positive_score, positive_keywords = (
-        calculate_rule_score(
-            full_text,
-            POSITIVE_RULES
-        )
-    )
-
-
-    # --------------------------------------------------------
-    # TITLE SCORE
-    # --------------------------------------------------------
-
-    title_strong_score, title_strong_keywords = (
-        calculate_rule_score(
-            title_n,
-            NEGATIVE_STRONG_RULES
-        )
-    )
-
-    title_handling_score, title_handling_keywords = (
-        calculate_rule_score(
-            title_n,
-            HANDLING_RULES
-        )
-    )
-
-
-    # --------------------------------------------------------
-    # STRONG CONTEXT
-    # --------------------------------------------------------
-
-    strong_context_matches = []
-
-    for phrase in STRONG_NEGATIVE_CONTEXT:
-
-        if phrase in full_text:
-
-            strong_context_matches.append(
-                phrase
-            )
-
-
-    # --------------------------------------------------------
-    # HANDLING CONTEXT
-    # --------------------------------------------------------
-
-    handling_context_matches = []
-
-    for phrase in HANDLING_CONTEXT:
-
-        if phrase in full_text:
-
-            handling_context_matches.append(
-                phrase
-            )
-
-
-    # --------------------------------------------------------
-    # POSITIVE ACTION
-    # --------------------------------------------------------
-
-    positive_action_matches = []
-
-    for phrase in POSITIVE_ACTION_CONTEXT:
-
-        if phrase in full_text:
-
-            positive_action_matches.append(
-                phrase
-            )
-
-
-    # ========================================================
-    # CONTEXTUAL BOOST
-    # ========================================================
-
-    # Judul sangat penting.
-    if title_strong_score > 0:
-
-        strong_score += (
-            title_strong_score * 2
-        )
-
-
-    if title_handling_score > 0:
-
-        handling_score += (
-            title_handling_score
-        )
-
-
-    # Frasa eksplisit negatif sangat kuat.
-    if strong_context_matches:
-
-        strong_score += (
-            len(strong_context_matches) * 8
-        )
-
-
-    # Pemeriksaan / pemanggilan / perkara
-    # minimal perlu perhatian.
-    if handling_context_matches:
-
-        handling_score += (
-            len(handling_context_matches) * 4
-        )
-
-
-    # ========================================================
-    # PRIORITAS
-    # ========================================================
-
-    category = "Netral"
-
-    priority = "RENDAH"
-
-
-    # ========================================================
-    # NEGATIF KUAT
-    # ========================================================
-
-    if strong_context_matches:
-
-        category = "Negatif Kuat"
-
-        priority = "KRITIS"
-
-
-    elif title_strong_score >= 8:
-
-        category = "Negatif Kuat"
-
-        priority = "KRITIS"
-
-
-    elif strong_score >= 14:
-
-        category = "Negatif Kuat"
-
-        priority = "KRITIS"
-
-
-    # ========================================================
-    # PERLU PENANGANAN
-    # ========================================================
-
-    elif title_handling_score >= 7:
-
-        category = "Perlu Penanganan"
-
-        priority = "TINGGI"
-
-
-    elif handling_score >= 12:
-
-        category = "Perlu Penanganan"
-
-        priority = "TINGGI"
-
-
-    elif handling_score >= 7:
-
-        category = "Perlu Penanganan"
-
-        priority = "SEDANG"
-
-
-    # ========================================================
-    # POSITIF
-    # ========================================================
-
-    elif positive_score >= 6:
-
-        category = "Positif"
-
-        priority = "RENDAH"
-
-
-    # ========================================================
-    # NETRAL
-    # ========================================================
-
-    else:
-
-        category = "Netral"
-
-        priority = "RENDAH"
-
-
-    # ========================================================
-    # KOREKSI:
-    #
-    # Artikel penegakan hukum jangan otomatis menjadi
-    # negatif kuat hanya karena kata "korupsi".
-    # ========================================================
-
-    if (
-        category == "Negatif Kuat"
-        and positive_action_matches
-        and not strong_context_matches
-        and title_strong_score < 8
-    ):
-
-        category = "Perlu Penanganan"
-
-        priority = "TINGGI"
-
-
-    # ========================================================
-    # KOREKSI EKSTRA UNTUK BERITA YANG BERISIKO
-    # ========================================================
-
-    title_lower = title_n
-
-
-    danger_title_terms = [
-
-        "dicopot",
-        "dipanggil kejagung",
-        "diperiksa kejagung",
-        "skandal",
-        "perselingkuhan",
-        "pelakor",
-        "didesak",
-        "bongkar",
-        "sorotan",
-        "kasus narkotika",
-        "papan bunga",
-        "karangan bunga",
-        "batal dilantik",
-        "gagal dilantik"
-
-    ]
-
-
-    danger_hits = [
-
-        term
-        for term in danger_title_terms
-        if term in title_lower
-
-    ]
-
-
-    if danger_hits:
-
-        if (
-            "dicopot" in title_lower
-            or "skandal" in title_lower
-            or "perselingkuhan" in title_lower
-            or "pelakor" in title_lower
-            or "didesak" in title_lower
-            or "papan bunga" in title_lower
-            or "karangan bunga" in title_lower
-            or "batal dilantik" in title_lower
-            or "gagal dilantik" in title_lower
-        ):
-
-            category = "Negatif Kuat"
-
-            priority = "KRITIS"
-
-        elif category == "Netral":
-
-            category = "Perlu Penanganan"
-
-            priority = "TINGGI"
-
-
-    # ========================================================
-    # FALLBACK ANTI-NETRAL
-    #
-    # Artikel yang mengandung minimal dua indikator risiko
-    # tidak boleh terlalu mudah masuk Netral.
-    # ========================================================
-
-    risk_indicators = 0
-
-    risk_indicators += len(
-        strong_keywords
-    )
-
-    risk_indicators += len(
-        handling_keywords
-    )
-
-    risk_indicators += len(
-        strong_context_matches
-    )
-
-    risk_indicators += len(
-        handling_context_matches
-    )
-
-
-    if (
-        category == "Netral"
-        and risk_indicators >= 2
-    ):
-
-        category = "Perlu Penanganan"
-
-        priority = "SEDANG"
-
-
-    detected = list(
-        dict.fromkeys(
-
-            strong_keywords
-            + handling_keywords
-            + positive_keywords
-            + strong_context_matches
-            + handling_context_matches
-            + positive_action_matches
-            + title_strong_keywords
-            + title_handling_keywords
-
-        )
-    )
-
+if not satker_matches:
 
     return {
 
-        "category":
-            category,
+        "category": "Netral",
+        "priority": "RENDAH",
 
-        "priority":
-            priority,
+        "negative_score": 0,
+        "handling_score": 0,
+        "positive_score": 0,
 
-        "negative_score":
-            int(strong_score),
+        "detected_keywords": [],
+        "satker_matches": [],
 
-        "handling_score":
-            int(handling_score),
-
-        "positive_score":
-            int(positive_score),
-
-        "detected_keywords":
-            detected[:50],
-
-        "satker_matches":
-            satker_matches,
-
-        "strong_context":
-            strong_context_matches,
-
-        "positive_context":
-            positive_action_matches,
-
-        "handling_context":
-            handling_context_matches
+        "strong_context": [],
+        "positive_context": [],
+        "handling_context": []
 
     }
 
+# --------------------------------------------------------
+# SCORE
+# --------------------------------------------------------
+
+strong_score, strong_keywords = (
+    calculate_rule_score(
+        full_text,
+        NEGATIVE_STRONG_RULES
+    )
+)
+
+handling_score, handling_keywords = (
+    calculate_rule_score(
+        full_text,
+        HANDLING_RULES
+    )
+)
+
+positive_score, positive_keywords = (
+    calculate_rule_score(
+        full_text,
+        POSITIVE_RULES
+    )
+)
+
+# --------------------------------------------------------
+# TITLE SCORE
+# --------------------------------------------------------
+
+title_strong_score, title_strong_keywords = (
+    calculate_rule_score(
+        title_n,
+        NEGATIVE_STRONG_RULES
+    )
+)
+
+title_handling_score, title_handling_keywords = (
+    calculate_rule_score(
+        title_n,
+        HANDLING_RULES
+    )
+)
+
+title_positive_score, title_positive_keywords = (
+    calculate_rule_score(
+        title_n,
+        POSITIVE_RULES
+    )
+)
+
+# --------------------------------------------------------
+# CONTEXT
+# --------------------------------------------------------
+
+strong_context_matches = [
+
+    phrase
+
+    for phrase in STRONG_NEGATIVE_CONTEXT
+
+    if phrase in full_text
+
+]
+
+handling_context_matches = [
+
+    phrase
+
+    for phrase in HANDLING_CONTEXT
+
+    if phrase in full_text
+
+]
+
+positive_action_matches = [
+
+    phrase
+
+    for phrase in POSITIVE_ACTION_CONTEXT
+
+    if phrase in full_text
+
+]
+
+# ========================================================
+# BOOST
+# ========================================================
+
+# Judul mempunyai bobot lebih tinggi.
+if title_strong_score > 0:
+
+    strong_score += (
+        title_strong_score * 2
+    )
+
+if title_handling_score > 0:
+
+    handling_score += (
+        title_handling_score * 2
+    )
+
+if title_positive_score > 0:
+
+    positive_score += (
+        title_positive_score * 2
+    )
+
+# Konteks negatif eksplisit.
+if strong_context_matches:
+
+    strong_score += (
+        len(strong_context_matches) * 8
+    )
+
+# Konteks penanganan.
+if handling_context_matches:
+
+    handling_score += (
+        len(handling_context_matches) * 4
+    )
+
+# Aksi positif.
+if positive_action_matches:
+
+    positive_score += (
+        len(positive_action_matches) * 3
+    )
+
+# ========================================================
+# DETEKSI RISIKO BERBASIS JUDUL
+# ========================================================
+
+danger_title_terms = [
+
+    "dicopot",
+    "dipanggil kejagung",
+    "diperiksa kejagung",
+    "diperiksa kejaksaan agung",
+
+    "skandal",
+    "perselingkuhan",
+    "pelakor",
+
+    "didesak",
+    "bongkar",
+    "sorotan",
+
+    "kasus narkotika",
+    "kasus korupsi",
+
+    "papan bunga",
+    "karangan bunga",
+
+    "batal dilantik",
+    "gagal dilantik",
+
+    "pelanggaran etik",
+    "pelanggaran kode etik",
+
+    "dugaan suap",
+    "dugaan gratifikasi",
+    "dugaan pungli",
+    "dugaan pemerasan",
+
+    "mafia hukum",
+    "penyalahgunaan wewenang"
+
+]
+
+danger_hits = [
+
+    term
+
+    for term in danger_title_terms
+
+    if term in title_n
+
+]
+
+# ========================================================
+# INDIKATOR RISIKO
+# ========================================================
+
+risk_indicators = 0
+
+risk_indicators += len(
+    strong_keywords
+)
+
+risk_indicators += len(
+    handling_keywords
+)
+
+risk_indicators += len(
+    strong_context_matches
+)
+
+risk_indicators += len(
+    handling_context_matches
+)
+
+# ========================================================
+# KLASIFIKASI AWAL
+# ========================================================
+
+category = "Netral"
+priority = "RENDAH"
+
+# --------------------------------------------------------
+# NEGATIF KUAT
+# --------------------------------------------------------
+
+if strong_context_matches:
+
+    category = "Negatif Kuat"
+    priority = "KRITIS"
+
+elif title_strong_score >= 8:
+
+    category = "Negatif Kuat"
+    priority = "KRITIS"
+
+elif danger_hits:
+
+    category = "Negatif Kuat"
+    priority = "KRITIS"
+
+elif strong_score >= 14:
+
+    category = "Negatif Kuat"
+    priority = "KRITIS"
+
+# --------------------------------------------------------
+# PERLU PENANGANAN
+# --------------------------------------------------------
+
+elif title_handling_score >= 7:
+
+    category = "Perlu Penanganan"
+    priority = "TINGGI"
+
+elif handling_score >= 12:
+
+    category = "Perlu Penanganan"
+    priority = "TINGGI"
+
+elif handling_score >= 7:
+
+    category = "Perlu Penanganan"
+    priority = "SEDANG"
+
+# --------------------------------------------------------
+# POSITIF
+# --------------------------------------------------------
+
+elif positive_score >= 6:
+
+    category = "Positif"
+    priority = "RENDAH"
+
+# --------------------------------------------------------
+# NETRAL
+# --------------------------------------------------------
+
+else:
+
+    category = "Netral"
+    priority = "RENDAH"
+
+# ========================================================
+# KOREKSI BERITA PENEGAKAN HUKUM POSITIF
+# ========================================================
+
+if (
+    category == "Negatif Kuat"
+    and positive_action_matches
+    and not strong_context_matches
+    and title_strong_score < 8
+    and not danger_hits
+):
+
+    category = "Perlu Penanganan"
+    priority = "TINGGI"
+
+# ========================================================
+# KOREKSI BERITA KEGIATAN NORMAL / POSITIF
+# ========================================================
+
+normal_activity_terms = [
+
+    "upacara",
+    "apel",
+    "kunjungan kerja",
+    "silaturahmi",
+    "rapat koordinasi",
+    "koordinasi",
+    "konsolidasi",
+    "fgd",
+    "focus group discussion",
+    "penandatanganan mou",
+    "kerja sama",
+    "peresmian",
+    "penyuluhan hukum",
+    "sosialisasi hukum",
+    "penerangan hukum",
+    "jaksa masuk sekolah",
+    "pelayanan publik",
+    "pelayanan prima",
+    "penghargaan",
+    "prestasi",
+    "capaian kinerja",
+    "program unggulan"
+]
+
+normal_activity_hits = [
+
+    term
+
+    for term in normal_activity_terms
+
+    if term in title_n
+
+]
+
+# Jika judul jelas kegiatan normal dan tidak ada
+# indikator risiko kuat, jangan salah klasifikasi.
+if (
+    category == "Netral"
+    and normal_activity_hits
+    and not strong_context_matches
+    and not danger_hits
+    and risk_indicators < 2
+):
+
+    category = "Positif"
+    priority = "RENDAH"
+
+# ========================================================
+# FALLBACK ANTI-NETRAL
+# ========================================================
+
+if (
+    category == "Netral"
+    and risk_indicators >= 2
+):
+
+    category = "Perlu Penanganan"
+    priority = "SEDANG"
+
+# ========================================================
+# KOREKSI ISU HUKUM
+# ========================================================
+
+legal_risk_terms = [
+
+    "korupsi",
+    "narkotika",
+    "tersangka",
+    "terlapor",
+    "diperiksa",
+    "dipanggil",
+    "penyelidikan",
+    "penyidikan",
+    "pengaduan",
+    "dilaporkan",
+    "pencopotan",
+    "dicopot",
+    "pelanggaran",
+    "pemerasan",
+    "suap",
+    "gratifikasi",
+    "pungli",
+    "penyelewengan",
+    "mafia hukum",
+    "penyalahgunaan wewenang",
+    "sengketa",
+    "konflik"
+]
+
+legal_hits = [
+
+    term
+
+    for term in legal_risk_terms
+
+    if term in full_text
+
+]
+
+# Berita terkait isu hukum yang cukup kuat
+# jangan terlalu mudah menjadi Netral.
+if (
+    category == "Netral"
+    and len(legal_hits) >= 2
+):
+
+    category = "Perlu Penanganan"
+    priority = "SEDANG"
+
+# ========================================================
+# PRIORITAS TAMBAHAN
+# ========================================================
+
+if category == "Perlu Penanganan":
+
+    if (
+        title_strong_score >= 5
+        or len(danger_hits) >= 1
+    ):
+
+        priority = "TINGGI"
+
+    elif handling_score >= 15:
+
+        priority = "TINGGI"
+
+# ========================================================
+# DETECTED KEYWORDS
+# ========================================================
+
+detected = list(
+    dict.fromkeys(
+
+        strong_keywords
+        + handling_keywords
+        + positive_keywords
+        + strong_context_matches
+        + handling_context_matches
+        + positive_action_matches
+        + title_strong_keywords
+        + title_handling_keywords
+        + title_positive_keywords
+        + danger_hits
+        + legal_hits
+
+    )
+)
+
+# ========================================================
+# RETURN
+# ========================================================
+
+return {
+
+    "category":
+        category,
+
+    "priority":
+        priority,
+
+    "negative_score":
+        int(strong_score),
+
+    "handling_score":
+        int(handling_score),
+
+    "positive_score":
+        int(positive_score),
+
+    "detected_keywords":
+        detected[:50],
+
+    "satker_matches":
+        satker_matches,
+
+    "strong_context":
+        strong_context_matches,
+
+    "positive_context":
+        positive_action_matches,
+
+    "handling_context":
+        handling_context_matches
+
+}
+```
 
 # ============================================================
+
 # GOOGLE NEWS
+
 # ============================================================
 
 def search_google_news(
-    query
+query
 ):
 
-    encoded_query = urllib.parse.quote(
-        query
+```
+encoded_query = urllib.parse.quote(
+    query
+)
+
+rss_url = (
+    "https://news.google.com/rss/search?"
+    f"q={encoded_query}"
+    "&hl=id-ID"
+    "&gl=ID"
+    "&ceid=ID:id"
+)
+
+try:
+
+    feed = feedparser.parse(
+        rss_url
     )
 
-    rss_url = (
-        "https://news.google.com/rss/search?"
-        f"q={encoded_query}"
-        "&hl=id-ID"
-        "&gl=ID"
-        "&ceid=ID:id"
-    )
+    results = []
 
+    for entry in feed.entries:
 
-    try:
-
-        feed = feedparser.parse(
-            rss_url
+        title = getattr(
+            entry,
+            "title",
+            ""
         )
 
-        results = []
-
-        for entry in feed.entries:
-
-            title = getattr(
-                entry,
-                "title",
-                ""
-            )
-
-            link = getattr(
-                entry,
-                "link",
-                ""
-            )
-
-            summary = getattr(
-                entry,
-                "summary",
-                ""
-            )
-
-
-            summary = BeautifulSoup(
-                summary,
-                "html.parser"
-            ).get_text(
-                " ",
-                strip=True
-            )
-
-
-            rss_date = get_rss_date(
-                entry
-            )
-
-
-            if not link:
-                continue
-
-
-            results.append({
-
-                "title":
-                    title,
-
-                "link":
-                    link,
-
-                "snippet":
-                    summary,
-
-                "rss_date":
-                    rss_date
-
-            })
-
-
-        return results
-
-
-    except Exception as e:
-
-        print(
-            f"[RSS ERROR] {e}"
-        )
-
-        return []
-
-
-# ============================================================
-# QUERY
-# ============================================================
-
-def generate_queries():
-
-    queries = []
-
-    for target in SEARCH_TARGETS:
-
-        queries.append(
-            f"{target} "
-            f"after:2025-12-31 "
-            f"before:2027-01-01"
-        )
-
-
-    return list(
-        dict.fromkeys(
-            queries
-        )
-    )
-
-
-# ============================================================
-# COLLECT
-# ============================================================
-
-def collect_candidates():
-
-    all_candidates = []
-
-    queries = generate_queries()
-
-
-    for query in queries:
-
-        print(
-            f"[SEARCH] {query}"
-        )
-
-        results = search_google_news(
-            query
-        )
-
-        all_candidates.extend(
-            results
-        )
-
-
-    # URL dedup
-    unique = {}
-
-    for item in all_candidates:
-
-        link = item.get(
+        link = getattr(
+            entry,
             "link",
             ""
-        ).strip()
+        )
+
+        summary = getattr(
+            entry,
+            "summary",
+            ""
+        )
+
+        summary = BeautifulSoup(
+            summary,
+            "html.parser"
+        ).get_text(
+            " ",
+            strip=True
+        )
+
+        rss_date = get_rss_date(
+            entry
+        )
 
         if not link:
             continue
 
-        if link not in unique:
+        results.append({
 
-            unique[link] = item
+            "title":
+                title,
 
+            "link":
+                link,
 
-    return list(
-        unique.values()
+            "snippet":
+                summary,
+
+            "rss_date":
+                rss_date
+
+        })
+
+    return results
+
+except Exception as e:
+
+    print(
+        f"[RSS ERROR] {e}"
     )
 
+    return []
+```
 
 # ============================================================
+
+# QUERY
+
+# ============================================================
+
+def generate_queries():
+
+```
+queries = []
+
+for target in SEARCH_TARGETS:
+
+    queries.append(
+        f"{target} "
+        f"after:2025-12-31 "
+        f"before:2027-01-01"
+    )
+
+return list(
+    dict.fromkeys(
+        queries
+    )
+)
+```
+
+# ============================================================
+
+# COLLECT
+
+# ============================================================
+
+def collect_candidates():
+
+```
+all_candidates = []
+
+queries = generate_queries()
+
+for query in queries:
+
+    print(
+        f"[SEARCH] {query}"
+    )
+
+    results = search_google_news(
+        query
+    )
+
+    all_candidates.extend(
+        results
+    )
+
+unique = {}
+
+for item in all_candidates:
+
+    link = item.get(
+        "link",
+        ""
+    ).strip()
+
+    if not link:
+        continue
+
+    if link not in unique:
+
+        unique[link] = item
+
+return list(
+    unique.values()
+)
+```
+
+# ============================================================
+
 # PROCESS ARTICLE
+
 # ============================================================
 
 def process_candidate(item):
 
-    original_url = item.get(
-        "link",
-        ""
+```
+original_url = item.get(
+    "link",
+    ""
+)
+
+title = item.get(
+    "title",
+    "Tanpa Judul"
+)
+
+snippet = item.get(
+    "snippet",
+    ""
+)
+
+rss_date = item.get(
+    "rss_date"
+)
+
+if not original_url:
+    return None
+
+final_url = resolve_redirect_url(
+    original_url
+)
+
+result = fetch_webpage(
+    final_url
+)
+
+if not result:
+    return None
+
+html_content = result.get(
+    "html",
+    ""
+)
+
+real_url = (
+    result.get(
+        "final_url"
+    )
+    or final_url
+)
+
+try:
+
+    soup = BeautifulSoup(
+        html_content,
+        "html.parser"
     )
 
-    title = item.get(
-        "title",
-        "Tanpa Judul"
+except Exception:
+
+    return None
+
+article_date = extract_published_date(
+    soup
+)
+
+valid_date, published_date = (
+    validate_date(
+        article_date,
+        rss_date
+    )
+)
+
+if not valid_date:
+    return None
+
+content = extract_article_text(
+    soup
+)
+
+if len(content) < 100:
+
+    content = (
+        f"{snippet} {content}"
     )
 
-    snippet = item.get(
-        "snippet",
-        ""
-    )
+classification = classify_article(
+    title,
+    snippet,
+    content
+)
 
-    rss_date = item.get(
-        "rss_date"
-    )
+return {
 
-
-    if not original_url:
-        return None
-
-
-    # --------------------------------------------------------
-    # REDIRECT
-    # --------------------------------------------------------
-
-    final_url = resolve_redirect_url(
-        original_url
-    )
-
-
-    # --------------------------------------------------------
-    # FETCH
-    # --------------------------------------------------------
-
-    result = fetch_webpage(
-        final_url
-    )
-
-
-    if not result:
-        return None
-
-
-    html_content = result.get(
-        "html",
-        ""
-    )
-
-    real_url = (
-        result.get(
-            "final_url"
-        )
-        or final_url
-    )
-
-
-    try:
-
-        soup = BeautifulSoup(
-            html_content,
-            "html.parser"
-        )
-
-    except Exception:
-
-        return None
-
-
-    # --------------------------------------------------------
-    # DATE
-    # --------------------------------------------------------
-
-    article_date = extract_published_date(
-        soup
-    )
-
-
-    valid_date, published_date = (
-        validate_date(
-            article_date,
-            rss_date
-        )
-    )
-
-
-    if not valid_date:
-
-        return None
-
-
-    # --------------------------------------------------------
-    # CONTENT
-    # --------------------------------------------------------
-
-    content = extract_article_text(
-        soup
-    )
-
-
-    if len(content) < 100:
-
-        content = (
-            f"{snippet} {content}"
-        )
-
-
-    # --------------------------------------------------------
-    # CLASSIFY
-    # --------------------------------------------------------
-
-    classification = classify_article(
+    "title":
         title,
+
+    "link":
+        real_url,
+
+    "google_news_url":
+        original_url,
+
+    "snippet":
         snippet,
-        content
-    )
 
+    "content":
+        content[:10000],
 
-    return {
+    "published_date":
+        published_date.isoformat(),
 
-        "title":
-            title,
+    "category":
+        classification[
+            "category"
+        ],
 
-        "link":
-            real_url,
+    "priority":
+        classification[
+            "priority"
+        ],
 
-        "google_news_url":
-            original_url,
+    "negative_score":
+        classification[
+            "negative_score"
+        ],
 
-        "snippet":
-            snippet,
+    "handling_score":
+        classification[
+            "handling_score"
+        ],
 
-        "content":
-            content[:10000],
+    "positive_score":
+        classification[
+            "positive_score"
+        ],
 
-        "published_date":
-            published_date.isoformat(),
+    "detected_keywords":
+        classification[
+            "detected_keywords"
+        ],
 
-        "category":
-            classification[
-                "category"
-            ],
+    "satker_matches":
+        classification[
+            "satker_matches"
+        ],
 
-        "priority":
-            classification[
-                "priority"
-            ],
+    "strong_context":
+        classification.get(
+            "strong_context",
+            []
+        ),
 
-        "negative_score":
-            classification[
-                "negative_score"
-            ],
+    "positive_context":
+        classification.get(
+            "positive_context",
+            []
+        ),
 
-        "handling_score":
-            classification[
-                "handling_score"
-            ],
+    "handling_context":
+        classification.get(
+            "handling_context",
+            []
+        ),
 
-        "positive_score":
-            classification[
-                "positive_score"
-            ],
+    "detected_time":
+        datetime.datetime.now().isoformat(),
 
-        "detected_keywords":
-            classification[
-                "detected_keywords"
-            ],
+    "source":
+        "Google News RSS"
 
-        "satker_matches":
-            classification[
-                "satker_matches"
-            ],
-
-        "strong_context":
-            classification.get(
-                "strong_context",
-                []
-            ),
-
-        "positive_context":
-            classification.get(
-                "positive_context",
-                []
-            ),
-
-        "handling_context":
-            classification.get(
-                "handling_context",
-                []
-            ),
-
-        "detected_time":
-            datetime.datetime.now().isoformat(),
-
-        "source":
-            "Google News RSS"
-
-    }
+}
+```
 
 # ============================================================
-# REKLASIFIKASI SELURUH DATABASE
+
+# REKLASIFIKASI DATABASE
+
 # ============================================================
 
 def rekategorisasi_semua_database():
 
-    print()
-    print("==========================================")
-    print("REKLASIFIKASI DATABASE SUPABASE")
-    print("==========================================")
+```
+print()
+print("==========================================")
+print("REKLASIFIKASI DATABASE SUPABASE")
+print("==========================================")
 
-    counter = {
-        "Negatif Kuat": 0,
-        "Perlu Penanganan": 0,
-        "Netral": 0,
-        "Positif": 0
+counter = {
+
+    "Negatif Kuat": 0,
+    "Perlu Penanganan": 0,
+    "Netral": 0,
+    "Positif": 0
+
+}
+
+updated = 0
+failed = 0
+
+try:
+
+    articles = get_all_articles()
+
+except Exception as e:
+
+    print(
+        f"[RECLASSIFY ERROR] "
+        f"Gagal mengambil artikel dari Supabase: {e}"
+    )
+
+    return {
+
+        "total": 0,
+        "updated": 0,
+        "failed": 1,
+        "counts": counter
+
     }
 
-    updated = 0
-    failed = 0
+total = len(articles)
 
-    # --------------------------------------------------------
-    # AMBIL SELURUH ARTIKEL
-    # --------------------------------------------------------
+print(
+    f"[SUPABASE] Total artikel: {total}"
+)
+
+if total == 0:
+
+    print(
+        "[RECLASSIFY] Tidak ada artikel."
+    )
+
+    return {
+
+        "total": 0,
+        "updated": 0,
+        "failed": 0,
+        "counts": counter
+
+    }
+
+for index, article in enumerate(
+    articles,
+    start=1
+):
 
     try:
 
-        articles = get_all_articles()
-
-    except Exception as e:
-
-        print(
-            f"[RECLASSIFY ERROR] "
-            f"Gagal mengambil artikel dari Supabase: {e}"
+        title = (
+            article.get(
+                "title"
+            )
+            or ""
         )
 
-        return {
-            "total": 0,
-            "updated": 0,
-            "failed": 1,
-            "counts": counter
-        }
-
-    total = len(articles)
-
-    print(
-        f"[SUPABASE] Total artikel: {total}"
-    )
-
-    if total == 0:
-
-        print(
-            "[RECLASSIFY] Tidak ada artikel."
+        snippet = (
+            article.get(
+                "snippet"
+            )
+            or ""
         )
 
-        return {
-            "total": 0,
-            "updated": 0,
-            "failed": 0,
-            "counts": counter
-        }
-
-    # --------------------------------------------------------
-    # PROSES SEMUA ARTIKEL
-    # --------------------------------------------------------
-
-    for index, article in enumerate(
-        articles,
-        start=1
-    ):
-
-        try:
-
-            title = (
-                article.get("title")
-                or ""
+        content = (
+            article.get(
+                "content"
             )
+            or ""
+        )
 
-            snippet = (
-                article.get("snippet")
-                or ""
+        link = (
+            article.get(
+                "link"
             )
+            or ""
+        )
 
-            content = (
-                article.get("content")
-                or ""
+        if not link:
+
+            print(
+                f"[SKIP] Artikel "
+                f"{index}/{total} "
+                f"tidak memiliki link."
             )
-
-            link = (
-                article.get("link")
-                or ""
-            )
-
-            if not link:
-
-                print(
-                    f"[SKIP] Artikel {index}/{total} "
-                    f"tidak memiliki link."
-                )
-
-                failed += 1
-
-                continue
-
-            # ------------------------------------------------
-            # CLASSIFY ULANG
-            # ------------------------------------------------
-
-            classification = classify_article(
-                title,
-                snippet,
-                content
-            )
-
-            updates = {
-
-                "category":
-                    classification.get(
-                        "category",
-                        "Netral"
-                    ),
-
-                "priority":
-                    classification.get(
-                        "priority",
-                        "RENDAH"
-                    ),
-
-                "negative_score":
-                    int(
-                        classification.get(
-                            "negative_score",
-                            0
-                        )
-                    ),
-
-                "handling_score":
-                    int(
-                        classification.get(
-                            "handling_score",
-                            0
-                        )
-                    ),
-
-                "positive_score":
-                    int(
-                        classification.get(
-                            "positive_score",
-                            0
-                        )
-                    ),
-
-                "detected_keywords":
-                    classification.get(
-                        "detected_keywords",
-                        []
-                    ),
-
-                "satker_matches":
-                    classification.get(
-                        "satker_matches",
-                        []
-                    ),
-
-                "strong_context":
-                    classification.get(
-                        "strong_context",
-                        []
-                    ),
-
-                "positive_context":
-                    classification.get(
-                        "positive_context",
-                        []
-                    ),
-
-                "handling_context":
-                    classification.get(
-                        "handling_context",
-                        []
-                    )
-            }
-
-            # ------------------------------------------------
-            # UPDATE SUPABASE
-            # ------------------------------------------------
-
-            update_article(
-                link,
-                updates
-            )
-
-            category = updates["category"]
-
-            if category not in counter:
-
-                category = "Netral"
-
-            counter[category] += 1
-
-            updated += 1
-
-        except Exception as e:
 
             failed += 1
 
-            print(
-                f"[RECLASSIFY ERROR] "
-                f"{index}/{total}: {e}"
-            )
+            continue
 
-        # ----------------------------------------------------
-        # PROGRESS
-        # ----------------------------------------------------
-
-        if (
-            index % 25 == 0
-            or index == total
-        ):
-
-            print(
-                f"Progress: "
-                f"{index}/{total}"
-            )
-
-    # --------------------------------------------------------
-    # HASIL
-    # --------------------------------------------------------
-
-    print()
-    print("==========================================")
-    print("REKLASIFIKASI SELESAI")
-    print("==========================================")
-
-    print(
-        json.dumps(
-            counter,
-            indent=2,
-            ensure_ascii=False
+        classification = classify_article(
+            title,
+            snippet,
+            content
         )
+
+        updates = {
+
+            "category":
+                classification.get(
+                    "category",
+                    "Netral"
+                ),
+
+            "priority":
+                classification.get(
+                    "priority",
+                    "RENDAH"
+                ),
+
+            "negative_score":
+                int(
+                    classification.get(
+                        "negative_score",
+                        0
+                    )
+                ),
+
+            "handling_score":
+                int(
+                    classification.get(
+                        "handling_score",
+                        0
+                    )
+                ),
+
+            "positive_score":
+                int(
+                    classification.get(
+                        "positive_score",
+                        0
+                    )
+                ),
+
+            "detected_keywords":
+                classification.get(
+                    "detected_keywords",
+                    []
+                ),
+
+            "satker_matches":
+                classification.get(
+                    "satker_matches",
+                    []
+                ),
+
+            "strong_context":
+                classification.get(
+                    "strong_context",
+                    []
+                ),
+
+            "positive_context":
+                classification.get(
+                    "positive_context",
+                    []
+                ),
+
+            "handling_context":
+                classification.get(
+                    "handling_context",
+                    []
+                )
+        }
+
+        update_article(
+            link,
+            updates
+        )
+
+        category = updates[
+            "category"
+        ]
+
+        if category not in counter:
+
+            category = "Netral"
+
+        counter[
+            category
+        ] += 1
+
+        updated += 1
+
+    except Exception as e:
+
+        failed += 1
+
+        print(
+            f"[RECLASSIFY ERROR] "
+            f"{index}/{total}: {e}"
+        )
+
+    if (
+        index % 25 == 0
+        or index == total
+    ):
+
+        print(
+            f"Progress: "
+            f"{index}/{total}"
+        )
+
+print()
+print("==========================================")
+print("REKLASIFIKASI SELESAI")
+print("==========================================")
+
+print(
+    json.dumps(
+        counter,
+        indent=2,
+        ensure_ascii=False
     )
+)
 
-    print(
-        f"Total artikel : {total}"
-    )
+print(
+    f"Total artikel : {total}"
+)
 
-    print(
-        f"Berhasil      : {updated}"
-    )
+print(
+    f"Berhasil      : {updated}"
+)
 
-    print(
-        f"Gagal         : {failed}"
-    )
+print(
+    f"Gagal         : {failed}"
+)
 
-    print("==========================================")
+print("==========================================")
 
-    return {
-        "total": total,
-        "updated": updated,
-        "failed": failed,
-        "counts": counter
-    }# ============================================================
+return {
+
+    "total":
+        total,
+
+    "updated":
+        updated,
+
+    "failed":
+        failed,
+
+    "counts":
+        counter
+
+}
+```
+
+# ============================================================
+
 # TELEGRAM
+
 # ============================================================
 
 def send_telegram(
-    finding
+finding
 ):
 
-    if not TELEGRAM_TOKEN or not CHAT_ID:
+```
+if not TELEGRAM_TOKEN or not CHAT_ID:
 
-        return False
+    return False
 
+category = finding.get(
+    "category",
+    "Netral"
+)
 
-    category = finding.get(
-        "category",
-        "Netral"
+priority = finding.get(
+    "priority",
+    "RENDAH"
+)
+
+if category == "Negatif Kuat":
+
+    emoji = "🔴"
+
+elif category == "Perlu Penanganan":
+
+    emoji = "🟠"
+
+else:
+
+    emoji = "🟡"
+
+keywords = finding.get(
+    "detected_keywords",
+    []
+)
+
+message = (
+
+    f"{emoji} <b>PATROLI SIBER 2026</b>\n\n"
+
+    f"<b>Satker:</b> "
+    f"{html.escape(NAMA_SATKER)}\n\n"
+
+    f"<b>Kategori:</b> "
+    f"{html.escape(category)}\n"
+
+    f"<b>Prioritas:</b> "
+    f"{html.escape(priority)}\n\n"
+
+    f"<b>Judul:</b>\n"
+    f"{html.escape(finding.get('title', '-'))}\n\n"
+
+    f"<b>Tanggal:</b>\n"
+    f"{html.escape(finding.get('published_date', '-'))}\n\n"
+
+    f"<b>Indikator:</b>\n"
+    f"{html.escape(', '.join(keywords[:20]) or '-')}\n\n"
+
+    f"<b>Link:</b>\n"
+    f"<a href=\""
+    f"{html.escape(finding.get('link', ''), quote=True)}"
+    f"\">Buka Artikel</a>\n\n"
+
+    f"<i>Verifikasi isi berita tetap diperlukan.</i>"
+
+)
+
+url = (
+    "https://api.telegram.org/"
+    f"bot{TELEGRAM_TOKEN}/sendMessage"
+)
+
+try:
+
+    response = requests.post(
+        url,
+        json={
+
+            "chat_id":
+                CHAT_ID,
+
+            "text":
+                message,
+
+            "parse_mode":
+                "HTML",
+
+            "disable_web_page_preview":
+                False
+
+        },
+        timeout=15
     )
 
-    priority = finding.get(
-        "priority",
-        "RENDAH"
+    result = response.json()
+
+    return bool(
+        result.get("ok")
     )
 
+except Exception:
 
-    if category == "Negatif Kuat":
-
-        emoji = "🔴"
-
-    elif category == "Perlu Penanganan":
-
-        emoji = "🟠"
-
-    else:
-
-        emoji = "🟡"
-
-
-    keywords = finding.get(
-        "detected_keywords",
-        []
-    )
-
-
-    message = (
-
-        f"{emoji} <b>PATROLI SIBER 2026</b>\n\n"
-
-        f"<b>Satker:</b> "
-        f"{html.escape(NAMA_SATKER)}\n\n"
-
-        f"<b>Kategori:</b> "
-        f"{html.escape(category)}\n"
-
-        f"<b>Prioritas:</b> "
-        f"{html.escape(priority)}\n\n"
-
-        f"<b>Judul:</b>\n"
-        f"{html.escape(finding.get('title', '-'))}\n\n"
-
-        f"<b>Tanggal:</b>\n"
-        f"{html.escape(finding.get('published_date', '-'))}\n\n"
-
-        f"<b>Indikator:</b>\n"
-        f"{html.escape(', '.join(keywords[:20]) or '-')}\n\n"
-
-        f"<b>Link:</b>\n"
-        f"<a href=\"{html.escape(finding.get('link', ''), quote=True)}\">"
-        f"Buka Artikel"
-        f"</a>\n\n"
-
-        f"<i>Verifikasi isi berita tetap diperlukan.</i>"
-
-    )
-
-
-    url = (
-        "https://api.telegram.org/"
-        f"bot{TELEGRAM_TOKEN}/sendMessage"
-    )
-
-
-    try:
-
-        response = requests.post(
-            url,
-            json={
-
-                "chat_id":
-                    CHAT_ID,
-
-                "text":
-                    message,
-
-                "parse_mode":
-                    "HTML",
-
-                "disable_web_page_preview":
-                    False
-
-            },
-            timeout=15
-        )
-
-
-        result = response.json()
-
-        return bool(
-            result.get("ok")
-        )
-
-
-    except Exception:
-
-        return False
-
+    return False
+```
 
 # ============================================================
-# PATROLI
-# ============================================================
 
-# ============================================================
 # PATROLI UTAMA
+
 # ============================================================
 
 def jalankan_patroli():
 
-    start = time.time()
+```
+start = time.time()
 
-    print()
-    print("==========================================")
-    print("MEMULAI PATROLI SIBER 2026")
-    print("==========================================")
-    print(f"TARGET: {NAMA_SATKER}")
-    print("==========================================")
-    print()
+print()
+print("==========================================")
+print("MEMULAI PATROLI SIBER 2026")
+print("==========================================")
+print(
+    f"TARGET: {NAMA_SATKER}"
+)
+print("==========================================")
+print()
 
-    # ========================================================
-    # 1. AMBIL KANDIDAT DARI GOOGLE NEWS
-    # ========================================================
+# ========================================================
+# 1. GOOGLE NEWS
+# ========================================================
 
-    candidates = collect_candidates()
+candidates = collect_candidates()
 
-    print(
-        f"[PATROLI] Kandidat ditemukan: "
-        f"{len(candidates)}"
-    )
+print(
+    f"[PATROLI] Kandidat ditemukan: "
+    f"{len(candidates)}"
+)
 
-    # ========================================================
-    # 2. PROSES ARTIKEL
-    # ========================================================
+# ========================================================
+# 2. PROCESS
+# ========================================================
 
-    results = []
+results = []
 
-    with ThreadPoolExecutor(
-        max_workers=MAX_WORKERS
-    ) as executor:
+with ThreadPoolExecutor(
+    max_workers=MAX_WORKERS
+) as executor:
 
-        futures = [
-            executor.submit(
-                process_candidate,
-                item
-            )
-            for item in candidates
-        ]
+    futures = [
 
-        for future in as_completed(futures):
+        executor.submit(
+            process_candidate,
+            item
+        )
 
-            try:
+        for item in candidates
 
-                result = future.result()
+    ]
 
-                if result:
-                    results.append(result)
+    for future in as_completed(
+        futures
+    ):
 
-            except Exception as e:
+        try:
 
-                print(
-                    f"[WORKER ERROR] {e}"
+            result = future.result()
+
+            if result:
+
+                results.append(
+                    result
                 )
 
-    print(
-        f"[PATROLI] Artikel valid: "
-        f"{len(results)}"
-    )
-
-    # ========================================================
-    # 3. SIMPAN / UPDATE ARTIKEL BARU
-    # ========================================================
-
-    save_success = 0
-    save_failed = 0
-
-    for article in results:
-
-        try:
-
-            upsert_article(article)
-
-            save_success += 1
-
-        except Exception as e:
-
-            save_failed += 1
-
-            print(
-                f"[SUPABASE ERROR] {e}"
-            )
-
-    print(
-        f"[SUPABASE] Berhasil disimpan/update: "
-        f"{save_success}"
-    )
-
-    print(
-        f"[SUPABASE] Gagal: "
-        f"{save_failed}"
-    )
-
-    # ========================================================
-    # 4. REKLASIFIKASI SELURUH DATABASE
-    # ========================================================
-
-    print()
-    print(
-        "[PATROLI] Memulai reklasifikasi "
-        "seluruh database..."
-    )
-
-    reclass_result = (
-        rekategorisasi_semua_database()
-    )
-
-    # ========================================================
-    # 5. TELEGRAM
-    #
-    # Telegram tetap menggunakan hasil artikel yang
-    # ditemukan pada patroli ini.
-    #
-    # Tujuannya agar artikel lama tidak mengirim
-    # notifikasi Telegram berulang-ulang setiap patroli.
-    # ========================================================
-
-    telegram_count = 0
-
-    for article in results:
-
-        category = article.get(
-            "category",
-            "Netral"
-        )
-
-        if category not in [
-            "Negatif Kuat",
-            "Perlu Penanganan"
-        ]:
-
-            continue
-
-        priority = article.get(
-            "priority",
-            "RENDAH"
-        )
-
-        if priority not in [
-            "KRITIS",
-            "TINGGI"
-        ]:
-
-            continue
-
-        try:
-
-            if send_telegram(article):
-
-                telegram_count += 1
-
         except Exception as e:
 
             print(
-                f"[TELEGRAM ERROR] {e}"
+                f"[WORKER ERROR] {e}"
             )
 
-    # ========================================================
-    # 6. STATISTIK
-    # ========================================================
+print(
+    f"[PATROLI] Artikel valid: "
+    f"{len(results)}"
+)
 
-    elapsed = (
-        time.time()
-        - start
-    )
+# ========================================================
+# 3. SIMPAN
+# ========================================================
 
-    counts = (
-        reclass_result.get(
-            "counts",
-            {
-                "Negatif Kuat": 0,
-                "Perlu Penanganan": 0,
-                "Netral": 0,
-                "Positif": 0
-            }
-        )
-    )
+save_success = 0
+save_failed = 0
 
-    # ========================================================
-    # 7. LOG
-    # ========================================================
-
-    log_data = {
-
-        "duration_seconds":
-            round(elapsed, 2),
-
-        "candidate_count":
-            len(candidates),
-
-        "valid_count":
-            len(results),
-
-        "saved_count":
-            save_success,
-
-        "save_failed":
-            save_failed,
-
-        "database_total":
-            reclass_result.get(
-                "total",
-                0
-            ),
-
-        "reclassified_count":
-            reclass_result.get(
-                "updated",
-                0
-            ),
-
-        "reclassify_failed":
-            reclass_result.get(
-                "failed",
-                0
-            ),
-
-        "negative_count":
-            counts.get(
-                "Negatif Kuat",
-                0
-            ),
-
-        "handling_count":
-            counts.get(
-                "Perlu Penanganan",
-                0
-            ),
-
-        "neutral_count":
-            counts.get(
-                "Netral",
-                0
-            ),
-
-        "positive_count":
-            counts.get(
-                "Positif",
-                0
-            ),
-
-        "telegram_count":
-            telegram_count,
-
-        "status":
-            "SELESAI"
-
-    }
+for article in results:
 
     try:
 
-        save_run_log(
-            log_data
+        upsert_article(
+            article
         )
+
+        save_success += 1
+
+    except Exception as e:
+
+        save_failed += 1
+
+        print(
+            f"[SUPABASE ERROR] {e}"
+        )
+
+print(
+    f"[SUPABASE] Berhasil disimpan/update: "
+    f"{save_success}"
+)
+
+print(
+    f"[SUPABASE] Gagal: "
+    f"{save_failed}"
+)
+
+# ========================================================
+# 4. REKLASIFIKASI
+# ========================================================
+
+print()
+print(
+    "[PATROLI] Memulai reklasifikasi "
+    "seluruh database..."
+)
+
+reclass_result = (
+    rekategorisasi_semua_database()
+)
+
+# ========================================================
+# 5. TELEGRAM
+# ========================================================
+
+telegram_count = 0
+
+for article in results:
+
+    category = article.get(
+        "category",
+        "Netral"
+    )
+
+    if category not in [
+
+        "Negatif Kuat",
+        "Perlu Penanganan"
+
+    ]:
+
+        continue
+
+    priority = article.get(
+        "priority",
+        "RENDAH"
+    )
+
+    if priority not in [
+
+        "KRITIS",
+        "TINGGI"
+
+    ]:
+
+        continue
+
+    try:
+
+        if send_telegram(
+            article
+        ):
+
+            telegram_count += 1
 
     except Exception as e:
 
         print(
-            f"[LOG ERROR] {e}"
+            f"[TELEGRAM ERROR] {e}"
         )
 
-    # ========================================================
-    # 8. OUTPUT AKHIR
-    # ========================================================
+# ========================================================
+# 6. STATISTIK
+# ========================================================
 
-    print()
-    print("==========================================")
-    print("PATROLI SELESAI")
-    print("==========================================")
+elapsed = (
+    time.time()
+    - start
+)
 
-    print(
-        f"Durasi              : "
-        f"{elapsed:.1f} detik"
+counts = reclass_result.get(
+    "counts",
+    {
+
+        "Negatif Kuat": 0,
+        "Perlu Penanganan": 0,
+        "Netral": 0,
+        "Positif": 0
+
+    }
+)
+
+# ========================================================
+# 7. RUN LOG
+#
+# PENTING:
+# run_logs Supabase Anda hanya mempunyai:
+#
+# id
+# created_at
+# duration_seconds
+# candidate_count
+# valid_count
+# negative_count
+# handling_count
+# neutral_count
+# positive_count
+# telegram_count
+# status
+#
+# Karena itu JANGAN kirim:
+# database_total
+# reclassified_count
+# save_failed
+# reclassify_failed
+# ========================================================
+
+log_data = {
+
+    "duration_seconds":
+        round(
+            elapsed,
+            2
+        ),
+
+    "candidate_count":
+        len(
+            candidates
+        ),
+
+    "valid_count":
+        len(
+            results
+        ),
+
+    "negative_count":
+        counts.get(
+            "Negatif Kuat",
+            0
+        ),
+
+    "handling_count":
+        counts.get(
+            "Perlu Penanganan",
+            0
+        ),
+
+    "neutral_count":
+        counts.get(
+            "Netral",
+            0
+        ),
+
+    "positive_count":
+        counts.get(
+            "Positif",
+            0
+        ),
+
+    "telegram_count":
+        telegram_count,
+
+    "status":
+        "SELESAI"
+
+}
+
+try:
+
+    save_run_log(
+        log_data
     )
 
-    print(
-        f"Kandidat            : "
-        f"{len(candidates)}"
-    )
+except Exception as e:
 
     print(
-        f"Artikel valid       : "
-        f"{len(results)}"
+        f"[LOG ERROR] {e}"
     )
 
-    print(
-        f"Berhasil disimpan   : "
-        f"{save_success}"
-    )
+# ========================================================
+# 8. OUTPUT AKHIR
+# ========================================================
 
-    print(
-        f"Gagal disimpan      : "
-        f"{save_failed}"
-    )
+print()
+print("==========================================")
+print("PATROLI SELESAI")
+print("==========================================")
 
-    print(
-        f"Database             : "
-        f"{reclass_result.get('total', 0)}"
-    )
+print(
+    f"Durasi              : "
+    f"{elapsed:.1f} detik"
+)
 
-    print(
-        f"Direklasifikasi     : "
-        f"{reclass_result.get('updated', 0)}"
-    )
+print(
+    f"Kandidat            : "
+    f"{len(candidates)}"
+)
 
-    print(
-        f"Reclass gagal       : "
-        f"{reclass_result.get('failed', 0)}"
-    )
+print(
+    f"Artikel valid       : "
+    f"{len(results)}"
+)
 
-    print(
-        f"Negatif Kuat       : "
-        f"{counts.get('Negatif Kuat', 0)}"
-    )
+print(
+    f"Berhasil disimpan   : "
+    f"{save_success}"
+)
 
-    print(
-        f"Perlu Penanganan   : "
-        f"{counts.get('Perlu Penanganan', 0)}"
-    )
+print(
+    f"Gagal disimpan      : "
+    f"{save_failed}"
+)
 
-    print(
-        f"Netral             : "
-        f"{counts.get('Netral', 0)}"
-    )
+print(
+    f"Database            : "
+    f"{reclass_result.get('total', 0)}"
+)
 
-    print(
-        f"Positif            : "
-        f"{counts.get('Positif', 0)}"
-    )
+print(
+    f"Direklasifikasi     : "
+    f"{reclass_result.get('updated', 0)}"
+)
 
-    print(
-        f"Telegram terkirim  : "
-        f"{telegram_count}"
-    )
+print(
+    f"Reclass gagal       : "
+    f"{reclass_result.get('failed', 0)}"
+)
 
-    print("==========================================")
-    print()
+print(
+    f"Negatif Kuat        : "
+    f"{counts.get('Negatif Kuat', 0)}"
+)
 
-    return log_data
+print(
+    f"Perlu Penanganan    : "
+    f"{counts.get('Perlu Penanganan', 0)}"
+)
+
+print(
+    f"Netral              : "
+    f"{counts.get('Netral', 0)}"
+)
+
+print(
+    f"Positif             : "
+    f"{counts.get('Positif', 0)}"
+)
+
+print(
+    f"Telegram terkirim   : "
+    f"{telegram_count}"
+)
+
+print("==========================================")
+print()
+
+return log_data
+```
 
 # ============================================================
+
 # CLI
+
 # ============================================================
 
-if __name__ == "__main__":
+if **name** == "**main**":
 
-    try:
+```
+try:
 
-        if (
-            len(sys.argv) > 1
-            and sys.argv[1].lower()
-            in [
-                "--reclassify",
-                "--rekategorisasi"
-            ]
-        ):
+    if (
+        len(sys.argv) > 1
+        and sys.argv[1].lower()
+        in [
+            "--reclassify",
+            "--rekategorisasi"
+        ]
+    ):
 
-            result = rekategorisasi_semua_database()
+        result = (
+            rekategorisasi_semua_database()
+        )
 
-        else:
+    else:
 
-            result = jalankan_patroli()
+        result = (
+            jalankan_patroli()
+        )
 
-        print()
-        print("==========================================")
-        print("PROGRAM SELESAI NORMAL")
-        print("==========================================")
+    print()
+    print("==========================================")
+    print("PROGRAM SELESAI NORMAL")
+    print("==========================================")
 
-        sys.exit(0)
+    sys.exit(0)
 
-    except KeyboardInterrupt:
+except KeyboardInterrupt:
 
-        print()
-        print("[PATROLI] Dihentikan oleh pengguna.")
+    print()
+    print(
+        "[PATROLI] Dihentikan oleh pengguna."
+    )
 
-        sys.exit(0)
+    sys.exit(0)
 
-    except Exception as e:
+except Exception as e:
 
-        print()
-        print("==========================================")
-        print("FATAL ERROR")
-        print("==========================================")
-        print(str(e))
-        print("==========================================")
+    print()
+    print("==========================================")
+    print("FATAL ERROR")
+    print("==========================================")
+    print(str(e))
+    print("==========================================")
 
-        sys.exit(1)
+    sys.exit(1)
+
