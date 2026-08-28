@@ -17,6 +17,7 @@ from dateutil import parser
 from database import (
     upsert_article,
     get_all_articles,
+    update_article,
     save_run_log
 )
 
@@ -1739,39 +1740,11 @@ def process_candidate(item):
 # ============================================================
 
 def rekategorisasi_semua_database():
-    """
-    Membaca SELURUH artikel yang ada di Supabase,
-    kemudian menjalankan classifier terbaru terhadap
-    setiap artikel.
-
-    Artikel tidak dihapus.
-    Hanya field klasifikasi yang diperbarui.
-    """
 
     print()
     print("==========================================")
-    print("REKLASIFIKASI SELURUH DATABASE")
+    print("REKLASIFIKASI DATABASE SUPABASE")
     print("==========================================")
-
-    try:
-        articles = get_all_articles()
-    except Exception as e:
-        print(f"[RECLASSIFY ERROR] Gagal membaca database: {e}")
-        return {
-            "total": 0,
-            "updated": 0,
-            "failed": 0,
-            "counts": {
-                "Negatif Kuat": 0,
-                "Perlu Penanganan": 0,
-                "Netral": 0,
-                "Positif": 0
-            }
-        }
-
-    total = len(articles)
-
-    print(f"Total artikel di Supabase: {total}")
 
     counter = {
         "Negatif Kuat": 0,
@@ -1783,13 +1756,92 @@ def rekategorisasi_semua_database():
     updated = 0
     failed = 0
 
-    for index, article in enumerate(articles, start=1):
+    # --------------------------------------------------------
+    # AMBIL SELURUH ARTIKEL
+    # --------------------------------------------------------
 
-        title = article.get("title", "") or ""
-        snippet = article.get("snippet", "") or ""
-        content = article.get("content", "") or ""
+    try:
+
+        articles = get_all_articles()
+
+    except Exception as e:
+
+        print(
+            f"[RECLASSIFY ERROR] "
+            f"Gagal mengambil artikel dari Supabase: {e}"
+        )
+
+        return {
+            "total": 0,
+            "updated": 0,
+            "failed": 1,
+            "counts": counter
+        }
+
+    total = len(articles)
+
+    print(
+        f"[SUPABASE] Total artikel: {total}"
+    )
+
+    if total == 0:
+
+        print(
+            "[RECLASSIFY] Tidak ada artikel."
+        )
+
+        return {
+            "total": 0,
+            "updated": 0,
+            "failed": 0,
+            "counts": counter
+        }
+
+    # --------------------------------------------------------
+    # PROSES SEMUA ARTIKEL
+    # --------------------------------------------------------
+
+    for index, article in enumerate(
+        articles,
+        start=1
+    ):
 
         try:
+
+            title = (
+                article.get("title")
+                or ""
+            )
+
+            snippet = (
+                article.get("snippet")
+                or ""
+            )
+
+            content = (
+                article.get("content")
+                or ""
+            )
+
+            link = (
+                article.get("link")
+                or ""
+            )
+
+            if not link:
+
+                print(
+                    f"[SKIP] Artikel {index}/{total} "
+                    f"tidak memiliki link."
+                )
+
+                failed += 1
+
+                continue
+
+            # ------------------------------------------------
+            # CLASSIFY ULANG
+            # ------------------------------------------------
 
             classification = classify_article(
                 title,
@@ -1798,36 +1850,42 @@ def rekategorisasi_semua_database():
             )
 
             updates = {
-                "category": classification.get(
-                    "category",
-                    "Netral"
-                ),
 
-                "priority": classification.get(
-                    "priority",
-                    "RENDAH"
-                ),
-
-                "negative_score": int(
+                "category":
                     classification.get(
-                        "negative_score",
-                        0
-                    )
-                ),
+                        "category",
+                        "Netral"
+                    ),
 
-                "handling_score": int(
+                "priority":
                     classification.get(
-                        "handling_score",
-                        0
-                    )
-                ),
+                        "priority",
+                        "RENDAH"
+                    ),
 
-                "positive_score": int(
-                    classification.get(
-                        "positive_score",
-                        0
-                    )
-                ),
+                "negative_score":
+                    int(
+                        classification.get(
+                            "negative_score",
+                            0
+                        )
+                    ),
+
+                "handling_score":
+                    int(
+                        classification.get(
+                            "handling_score",
+                            0
+                        )
+                    ),
+
+                "positive_score":
+                    int(
+                        classification.get(
+                            "positive_score",
+                            0
+                        )
+                    ),
 
                 "detected_keywords":
                     classification.get(
@@ -1860,15 +1918,9 @@ def rekategorisasi_semua_database():
                     )
             }
 
-            link = article.get("link", "")
-
-            if not link:
-                print(
-                    f"[SKIP] Artikel #{index} "
-                    f"tidak memiliki link."
-                )
-                failed += 1
-                continue
+            # ------------------------------------------------
+            # UPDATE SUPABASE
+            # ------------------------------------------------
 
             update_article(
                 link,
@@ -1878,9 +1930,11 @@ def rekategorisasi_semua_database():
             category = updates["category"]
 
             if category not in counter:
+
                 category = "Netral"
 
             counter[category] += 1
+
             updated += 1
 
         except Exception as e:
@@ -1892,18 +1946,23 @@ def rekategorisasi_semua_database():
                 f"{index}/{total}: {e}"
             )
 
-        # Progress setiap 25 artikel
+        # ----------------------------------------------------
+        # PROGRESS
+        # ----------------------------------------------------
+
         if (
             index % 25 == 0
             or index == total
         ):
 
             print(
-                f"[RECLASSIFY] "
-                f"{index}/{total} "
-                f" | Updated: {updated} "
-                f"| Failed: {failed}"
+                f"Progress: "
+                f"{index}/{total}"
             )
+
+    # --------------------------------------------------------
+    # HASIL
+    # --------------------------------------------------------
 
     print()
     print("==========================================")
@@ -1911,47 +1970,33 @@ def rekategorisasi_semua_database():
     print("==========================================")
 
     print(
-        f"Total database : {total}"
+        json.dumps(
+            counter,
+            indent=2,
+            ensure_ascii=False
+        )
     )
 
     print(
-        f"Berhasil       : {updated}"
+        f"Total artikel : {total}"
     )
 
     print(
-        f"Gagal          : {failed}"
+        f"Berhasil      : {updated}"
     )
 
     print(
-        f"Negatif Kuat   : "
-        f"{counter['Negatif Kuat']}"
-    )
-
-    print(
-        f"Perlu Penanganan: "
-        f"{counter['Perlu Penanganan']}"
-    )
-
-    print(
-        f"Netral         : "
-        f"{counter['Netral']}"
-    )
-
-    print(
-        f"Positif        : "
-        f"{counter['Positif']}"
+        f"Gagal         : {failed}"
     )
 
     print("==========================================")
-    print()
 
     return {
         "total": total,
         "updated": updated,
         "failed": failed,
         "counts": counter
-    } 
-# ============================================================
+    }# ============================================================
 # TELEGRAM
 # ============================================================
 
@@ -2417,203 +2462,49 @@ def jalankan_patroli():
     return log_data
 
 # ============================================================
-# REKLASIFIKASI DATABASE LAMA
-# ============================================================
-
-def rekategorisasi_semua_database():
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        "REKLASIFIKASI DATABASE SUPABASE"
-    )
-
-    print(
-        "=========================================="
-    )
-
-
-    articles = get_all_articles()
-
-
-    print(
-        f"Total artikel: {len(articles)}"
-    )
-
-
-    counter = {
-
-        "Negatif Kuat": 0,
-        "Perlu Penanganan": 0,
-        "Netral": 0,
-        "Positif": 0
-
-    }
-
-
-    for index, article in enumerate(
-        articles,
-        start=1
-    ):
-
-
-        title = article.get(
-            "title",
-            ""
-        )
-
-        snippet = article.get(
-            "snippet",
-            ""
-        )
-
-        content = article.get(
-            "content",
-            ""
-        )
-
-
-        classification = classify_article(
-            title,
-            snippet,
-            content
-        )
-
-
-        updates = {
-
-            "category":
-                classification[
-                    "category"
-                ],
-
-            "priority":
-                classification[
-                    "priority"
-                ],
-
-            "negative_score":
-                classification[
-                    "negative_score"
-                ],
-
-            "handling_score":
-                classification[
-                    "handling_score"
-                ],
-
-            "positive_score":
-                classification[
-                    "positive_score"
-                ],
-
-            "detected_keywords":
-                classification[
-                    "detected_keywords"
-                ],
-
-            "satker_matches":
-                classification[
-                    "satker_matches"
-                ],
-
-            "strong_context":
-                classification.get(
-                    "strong_context",
-                    []
-                ),
-
-            "positive_context":
-                classification.get(
-                    "positive_context",
-                    []
-                ),
-
-            "handling_context":
-                classification.get(
-                    "handling_context",
-                    []
-                )
-
-        }
-
-
-        try:
-
-            from database import update_article
-
-            update_article(
-                article.get(
-                    "link"
-                ),
-                updates
-            )
-
-
-            category = updates[
-                "category"
-            ]
-
-            counter[
-                category
-            ] += 1
-
-
-        except Exception as e:
-
-            print(
-                f"[ERROR] {e}"
-            )
-
-
-        if index % 25 == 0:
-
-            print(
-                f"Progress: "
-                f"{index}/{len(articles)}"
-            )
-
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        "REKLASIFIKASI SELESAI"
-    )
-
-    print(
-        json.dumps(
-            counter,
-            indent=2,
-            ensure_ascii=False
-        )
-    )
-
-    print(
-        "=========================================="
-    )
-
-
-# ============================================================
 # CLI
 # ============================================================
 
 if __name__ == "__main__":
 
-    if (
-        len(sys.argv) > 1
-        and sys.argv[1].lower()
-        in [
-            "--reclassify",
-            "--rekategorisasi"
-        ]
-    ):
+    try:
 
-        rekategorisasi_semua_database()
+        if (
+            len(sys.argv) > 1
+            and sys.argv[1].lower()
+            in [
+                "--reclassify",
+                "--rekategorisasi"
+            ]
+        ):
 
-    else:
+            result = rekategorisasi_semua_database()
 
-        jalankan_patroli()
+        else:
+
+            result = jalankan_patroli()
+
+        print()
+        print("==========================================")
+        print("PROGRAM SELESAI NORMAL")
+        print("==========================================")
+
+        sys.exit(0)
+
+    except KeyboardInterrupt:
+
+        print()
+        print("[PATROLI] Dihentikan oleh pengguna.")
+
+        sys.exit(0)
+
+    except Exception as e:
+
+        print()
+        print("==========================================")
+        print("FATAL ERROR")
+        print("==========================================")
+        print(str(e))
+        print("==========================================")
+
+        sys.exit(1)
