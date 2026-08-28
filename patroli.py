@@ -483,22 +483,22 @@ POSITIVE_ACTION_CONTEXT = [
 
 def normalize_text(text):
 
- 
-if not text:
-    return ""
+    if not text:
+        return ""
 
-text = html.unescape(str(text))
+    text = html.unescape(
+        str(text)
+    )
 
-text = text.lower()
+    text = text.lower()
 
-text = re.sub(
-    r"\s+",
-    " ",
-    text
-)
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
 
-return text.strip()
- 
+    return text.strip() 
 
 def parse_indonesian_date(text):
 
