@@ -54,7 +54,7 @@ os.getenv("CHAT_ID") or ""
 
 TARGET_KEJARI_KEYWORDS = [
 
-```
+
 "kejaksaan negeri deli serdang",
 "kejari deli serdang",
 "kajari deli serdang",
@@ -69,13 +69,13 @@ TARGET_KEJARI_KEYWORDS = [
 "cabang kejaksaan negeri labuhan deli",
 "cabjari labuhan deli",
 "kacabjari labuhan deli"
-```
+
 
 ]
 
 SEARCH_TARGETS = [
 
-```
+ 
 '"Kejaksaan Negeri Deli Serdang"',
 '"Kejari Deli Serdang"',
 '"Kajari Deli Serdang"',
@@ -83,7 +83,7 @@ SEARCH_TARGETS = [
 '"Kejaksaan Deli Serdang"',
 '"Cabjari Pancur Batu"',
 '"Cabjari Labuhan Deli"'
-```
+ 
 
 ]
 
@@ -95,7 +95,7 @@ SEARCH_TARGETS = [
 
 NEGATIVE_STRONG_RULES = {
 
-```
+ 
 "skandal": 12,
 "skandal perselingkuhan": 18,
 "perselingkuhan": 15,
@@ -187,7 +187,7 @@ NEGATIVE_STRONG_RULES = {
 
 "kabur": 7,
 "melarikan diri": 9
-```
+ 
 
 }
 
@@ -199,7 +199,7 @@ NEGATIVE_STRONG_RULES = {
 
 HANDLING_RULES = {
 
-```
+ 
 "korupsi": 8,
 "dugaan korupsi": 10,
 "kasus korupsi": 9,
@@ -258,7 +258,7 @@ HANDLING_RULES = {
 "pelaporan": 6,
 "pengawasan": 4,
 "pemeriksaan": 5
-```
+ 
 
 }
 
@@ -270,7 +270,7 @@ HANDLING_RULES = {
 
 POSITIVE_RULES = {
 
-```
+ 
 "berhasil mengungkap": 8,
 "berhasil menangkap": 8,
 "berhasil mengamankan": 7,
@@ -313,7 +313,7 @@ POSITIVE_RULES = {
 "penyerahan penghargaan": 6,
 "peningkatan pelayanan": 6,
 "peningkatan kinerja": 6
-```
+ 
 
 }
 
@@ -325,7 +325,7 @@ POSITIVE_RULES = {
 
 STRONG_NEGATIVE_CONTEXT = [
 
-```
+ 
 "skandal perselingkuhan",
 "dugaan perselingkuhan",
 "perselingkuhan oknum",
@@ -378,7 +378,7 @@ STRONG_NEGATIVE_CONTEXT = [
 "mafia hukum",
 "penyalahgunaan wewenang",
 "maladministrasi"
-```
+ 
 
 ]
 
@@ -390,7 +390,7 @@ STRONG_NEGATIVE_CONTEXT = [
 
 HANDLING_CONTEXT = [
 
-```
+ 
 "diperiksa kejagung",
 "dipanggil kejagung",
 "dipanggil ke kejagung",
@@ -428,7 +428,7 @@ HANDLING_CONTEXT = [
 "perkara hukum",
 "sengketa hukum",
 "konflik hukum"
-```
+ 
 
 ]
 
@@ -440,7 +440,7 @@ HANDLING_CONTEXT = [
 
 POSITIVE_ACTION_CONTEXT = [
 
-```
+ 
 "mengusut dugaan korupsi",
 "usut dugaan korupsi",
 "mengusut kasus korupsi",
@@ -471,7 +471,7 @@ POSITIVE_ACTION_CONTEXT = [
 
 "menuntut terdakwa",
 "mengajukan tuntutan"
-```
+ 
 
 ]
 
@@ -483,7 +483,7 @@ POSITIVE_ACTION_CONTEXT = [
 
 def normalize_text(text):
 
-```
+ 
 if not text:
     return ""
 
@@ -498,11 +498,11 @@ text = re.sub(
 )
 
 return text.strip()
-```
+ 
 
 def parse_indonesian_date(text):
 
-```
+ 
 if not text:
     return None
 
@@ -562,11 +562,11 @@ try:
 except Exception:
 
     return None
-```
+ 
 
 def parse_date_safe(value):
 
-```
+ 
 if not value:
     return None
 
@@ -594,7 +594,7 @@ except Exception:
     return parse_indonesian_date(
         str(value)
     )
-```
+ 
 
 # ============================================================
 
@@ -604,7 +604,7 @@ except Exception:
 
 def extract_published_date(soup):
 
-```
+ 
 candidates = []
 
 for script in soup.find_all(
@@ -717,7 +717,7 @@ for value in candidates:
         return dt
 
 return None
-```
+ 
 
 # ============================================================
 
@@ -727,7 +727,7 @@ return None
 
 def get_rss_date(entry):
 
-```
+ 
 for attr in [
     "published_parsed",
     "updated_parsed"
@@ -776,7 +776,7 @@ for attr in [
             return dt
 
 return None
-```
+ 
 
 # ============================================================
 
@@ -789,7 +789,7 @@ article_date,
 rss_date
 ):
 
-```
+ 
 now = datetime.datetime.now()
 
 if article_date:
@@ -817,7 +817,7 @@ if rss_date:
     return True, rss_date
 
 return False, None
-```
+ 
 
 # ============================================================
 
@@ -827,7 +827,7 @@ return False, None
 
 def fetch_webpage(url):
 
-```
+ 
 headers = {
 
     "User-Agent":
@@ -867,7 +867,7 @@ except Exception:
     pass
 
 return None
-```
+ 
 
 # ============================================================
 
@@ -877,7 +877,7 @@ return None
 
 def resolve_redirect_url(url):
 
-```
+ 
 if not url:
     return ""
 
@@ -906,7 +906,7 @@ try:
 except Exception:
 
     return url
-```
+ 
 
 # ============================================================
 
@@ -916,7 +916,7 @@ except Exception:
 
 def extract_article_text(soup):
 
-```
+ 
 copy_soup = BeautifulSoup(
     str(soup),
     "html.parser"
@@ -963,7 +963,7 @@ text = re.sub(
 )
 
 return text.strip()
-```
+ 
 
 # ============================================================
 
@@ -977,7 +977,7 @@ snippet,
 content
 ):
 
-```
+ 
 text = normalize_text(
     f"{title} {snippet} {content}"
 )
@@ -993,7 +993,7 @@ for keyword in TARGET_KEJARI_KEYWORDS:
 return list(
     dict.fromkeys(matches)
 )
-```
+ 
 
 # ============================================================
 
@@ -1006,7 +1006,7 @@ text,
 rules
 ):
 
-```
+ 
 score = 0
 
 detected = []
@@ -1020,7 +1020,7 @@ for keyword, weight in rules.items():
         detected.append(keyword)
 
 return score, detected
-```
+ 
 
 # ============================================================
 
@@ -1034,7 +1034,7 @@ snippet,
 content
 ):
 
-```
+ 
 title_n = normalize_text(title)
 snippet_n = normalize_text(snippet)
 content_n = normalize_text(content)
@@ -1550,7 +1550,7 @@ return {
         handling_context_matches
 
 }
-```
+ 
 
 # ============================================================
 
@@ -1562,7 +1562,7 @@ def search_google_news(
 query
 ):
 
-```
+ 
 encoded_query = urllib.parse.quote(
     query
 )
@@ -1643,7 +1643,7 @@ except Exception as e:
     )
 
     return []
-```
+ 
 
 # ============================================================
 
@@ -1653,7 +1653,7 @@ except Exception as e:
 
 def generate_queries():
 
-```
+ 
 queries = []
 
 for target in SEARCH_TARGETS:
@@ -1669,7 +1669,7 @@ return list(
         queries
     )
 )
-```
+ 
 
 # ============================================================
 
@@ -1679,7 +1679,7 @@ return list(
 
 def collect_candidates():
 
-```
+ 
 all_candidates = []
 
 queries = generate_queries()
@@ -1717,7 +1717,7 @@ for item in all_candidates:
 return list(
     unique.values()
 )
-```
+ 
 
 # ============================================================
 
@@ -1727,7 +1727,7 @@ return list(
 
 def process_candidate(item):
 
-```
+ 
 original_url = item.get(
     "link",
     ""
@@ -1894,7 +1894,7 @@ return {
         "Google News RSS"
 
 }
-```
+ 
 
 # ============================================================
 
@@ -1904,7 +1904,7 @@ return {
 
 def rekategorisasi_semua_database():
 
-```
+ 
 print()
 print("==========================================")
 print("REKLASIFIKASI DATABASE SUPABASE")
@@ -2165,7 +2165,7 @@ return {
         counter
 
 }
-```
+ 
 
 # ============================================================
 
@@ -2177,7 +2177,7 @@ def send_telegram(
 finding
 ):
 
-```
+ 
 if not TELEGRAM_TOKEN or not CHAT_ID:
 
     return False
@@ -2276,7 +2276,7 @@ try:
 except Exception:
 
     return False
-```
+ 
 
 # ============================================================
 
@@ -2286,7 +2286,7 @@ except Exception:
 
 def jalankan_patroli():
 
-```
+ 
 start = time.time()
 
 print()
@@ -2641,7 +2641,7 @@ print("==========================================")
 print()
 
 return log_data
-```
+ 
 
 # ============================================================
 
@@ -2651,7 +2651,7 @@ return log_data
 
 if **name** == "**main**":
 
-```
+ 
 try:
 
     if (
