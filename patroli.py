@@ -1,4 +1,3 @@
-
 import os
 import re
 import sys
@@ -81,8 +80,8 @@ SEARCH_TARGETS = [
 # ============================================================
 # NEGATIF KUAT
 #
-# HANYA gunakan istilah yang benar-benar menunjukkan
-# masalah/risiko terhadap satker atau pejabatnya.
+# Hanya digunakan untuk masalah yang benar-benar menyerang
+# reputasi / integritas / kinerja satker atau pejabat.
 # ============================================================
 
 NEGATIVE_STRONG_RULES = {
@@ -105,47 +104,48 @@ NEGATIVE_STRONG_RULES = {
 
     "dicopot": 13,
     "pencopotan": 13,
-    "copot kajari": 15,
-    "kajari dicopot": 17,
+    "copot kajari": 16,
+    "kajari dicopot": 18,
 
-    "kejagung copot kajari": 18,
-    "kajari dicopot kejagung": 18,
+    "kejagung copot kajari": 20,
+    "kajari dicopot kejagung": 20,
 
     "pelanggaran etik": 16,
     "pelanggaran etika": 15,
-    "pelanggaran kode etik": 17,
+    "pelanggaran kode etik": 18,
     "melanggar etik": 15,
 
-    "didesak mundur": 16,
-    "didesak dicopot": 17,
-    "kejari didesak": 15,
+    "didesak mundur": 17,
+    "didesak dicopot": 18,
+    "kejari didesak": 16,
+
+    "maladministrasi": 15,
+    "arogan": 11,
 
     "pemerasan": 14,
-    "dugaan pemerasan": 16,
+    "dugaan pemerasan": 17,
 
     "suap": 13,
-    "dugaan suap": 15,
+    "dugaan suap": 16,
 
     "gratifikasi": 13,
-    "dugaan gratifikasi": 15,
+    "dugaan gratifikasi": 16,
 
     "pungli": 13,
-    "dugaan pungli": 15,
+    "dugaan pungli": 16,
 
-    "mafia hukum": 17,
+    "mafia hukum": 18,
 
     "kolusi": 14,
     "nepotisme": 13,
 
-    "penyalahgunaan wewenang": 15,
-    "penyelewengan": 14,
-
-    "maladministrasi": 14,
-
-    "tidak transparan": 11,
-    "tidak profesional": 11,
+    "penyalahgunaan wewenang": 17,
+    "penyelewengan": 15,
 
     "cacat hukum": 13,
+
+    "tidak transparan": 12,
+    "tidak profesional": 12,
 
     "batal dilantik": 11,
     "gagal dilantik": 11,
@@ -153,183 +153,15 @@ NEGATIVE_STRONG_RULES = {
 
     "pelantikan mendadak ditunda": 14,
 
-    "terlibat skandal": 17,
+    "bongkar dugaan skandal": 18,
 
-    "kejanggalan": 11,
-    "janggal": 8,
-
-    "aip": 5,
-
+    "kabur": 7,
+    "melarikan diri": 9,
 }
 
 
 # ============================================================
-# PERLU PENANGANAN
-#
-# Istilah di bawah TIDAK otomatis negatif.
-# Contoh:
-# "Kejari mengusut kasus korupsi" = isu hukum/penanganan.
-# ============================================================
-
-HANDLING_RULES = {
-
-    "korupsi": 6,
-    "dugaan korupsi": 8,
-    "kasus korupsi": 7,
-
-    "penyelidikan": 5,
-    "penyidikan": 5,
-
-    "diperiksa": 6,
-    "diperiksa kejagung": 10,
-    "diperiksa kejaksaan agung": 10,
-
-    "dipanggil": 5,
-    "dipanggil kejagung": 9,
-    "dipanggil ke kejagung": 9,
-
-    "dilaporkan": 6,
-    "laporan masyarakat": 6,
-    "pengaduan": 5,
-    "pengaduan masyarakat": 7,
-
-    "tersangka": 6,
-    "terlapor": 6,
-
-    "tuntutan": 4,
-    "dituntut": 4,
-
-    "narkotika": 5,
-    "kasus narkotika": 7,
-
-    "narapidana kabur": 8,
-    "terpidana kabur": 8,
-
-    "keluhan pelayanan": 7,
-    "pelayanan buruk": 8,
-
-    "masalah": 3,
-    "bermasalah": 5,
-
-    "dipertanyakan": 6,
-
-    "dugaan": 4,
-    "indikasi": 4,
-    "terindikasi": 5,
-
-    "kasus": 3,
-
-    "perkara": 3,
-    "konflik": 4,
-    "sengketa": 4,
-    "pelaporan": 5,
-
-    "pengawasan": 3,
-    "pemeriksaan": 4,
-
-}
-
-
-# ============================================================
-# POSITIF
-# ============================================================
-
-POSITIVE_RULES = {
-
-    # --------------------------------------------------------
-    # KEBERHASILAN PENEGAKAN HUKUM
-    # --------------------------------------------------------
-
-    "berhasil mengungkap": 10,
-    "berhasil menangkap": 10,
-    "berhasil mengamankan": 9,
-    "berhasil mengusut": 8,
-    "berhasil menyita": 9,
-
-    "mengungkap kasus": 8,
-    "mengungkap kasus korupsi": 9,
-    "mengungkap kasus narkotika": 9,
-
-    "menangkap pelaku": 9,
-    "menangkap tersangka": 9,
-    "mengamankan tersangka": 9,
-
-    "mengamankan barang bukti": 8,
-    "berhasil mengamankan barang bukti": 10,
-    "berhasil menyita barang bukti": 10,
-
-    "menindak pelaku": 8,
-
-    "usut tuntas": 7,
-
-    # --------------------------------------------------------
-    # KEGIATAN RESMI
-    # --------------------------------------------------------
-
-    "upacara": 4,
-    "apel": 4,
-    "kunjungan kerja": 5,
-    "kunjungan": 3,
-    "silaturahmi": 5,
-
-    "rapat koordinasi": 5,
-    "rapat": 3,
-    "koordinasi": 5,
-    "konsolidasi": 5,
-
-    "fgd": 5,
-    "focus group discussion": 5,
-
-    "forum diskusi": 4,
-    "diskusi": 3,
-
-    "penandatanganan mou": 7,
-    "penandatanganan": 5,
-    "kerja sama": 6,
-
-    "peresmian": 6,
-
-    "penyuluhan hukum": 7,
-    "sosialisasi hukum": 7,
-    "penerangan hukum": 7,
-
-    "jaksa masuk sekolah": 7,
-
-    "pelayanan publik": 6,
-    "pelayanan prima": 8,
-    "pelayanan terbaik": 8,
-
-    "peningkatan pelayanan": 8,
-    "peningkatan kinerja": 8,
-
-    "program unggulan": 7,
-    "inovasi pelayanan": 8,
-
-    # --------------------------------------------------------
-    # PRESTASI
-    # --------------------------------------------------------
-
-    "penghargaan": 9,
-    "prestasi": 9,
-    "capaian kinerja": 8,
-    "predikat": 5,
-    "terbaik": 7,
-    "juara": 7,
-
-    "penyerahan penghargaan": 9,
-
-    # --------------------------------------------------------
-    # BARANG BUKTI / HASIL PENEGAKAN
-    # --------------------------------------------------------
-
-    "pemusnahan barang bukti": 8,
-    "penyerahan barang bukti": 7,
-
-}
-
-
-# ============================================================
-# KONTEKS NEGATIF
+# NEGATIF KUAT KONTEKS
 # ============================================================
 
 STRONG_NEGATIVE_CONTEXT = [
@@ -368,12 +200,386 @@ STRONG_NEGATIVE_CONTEXT = [
     "penyalahgunaan wewenang",
     "maladministrasi",
 
-    "terlibat skandal",
+    "tidak transparan",
+    "tidak profesional",
+
+    "penyelewengan wewenang",
+
+    "protes terhadap kejari",
+    "demo terhadap kejari",
+    "demonstrasi terhadap kejari",
 ]
 
 
 # ============================================================
-# KONTEKS HANDLING
+# NEGATIF KONTEKS TAMBAHAN
+#
+# Lebih lunak daripada STRONG_NEGATIVE_CONTEXT.
+# Tidak otomatis mengalahkan berita positif.
+# ============================================================
+
+SOFT_NEGATIVE_CONTEXT = [
+
+    "menuai sorotan",
+    "disorot",
+    "menuai kritik",
+    "kritik keras",
+    "diprotes",
+    "protes",
+    "demonstrasi",
+    "demo",
+    "dipertanyakan",
+    "kejanggalan",
+    "janggal",
+]
+
+
+# ============================================================
+# PERLU PENANGANAN
+#
+# Kata-kata hukum di sini TIDAK otomatis berarti negatif.
+# Digunakan apabila tidak ditemukan konteks keberhasilan.
+# ============================================================
+
+HANDLING_RULES = {
+
+    "korupsi": 7,
+    "dugaan korupsi": 9,
+    "kasus korupsi": 8,
+
+    "penyelidikan": 5,
+    "penyidikan": 5,
+
+    "diperiksa": 7,
+    "diperiksa kejagung": 11,
+    "diperiksa kejaksaan agung": 11,
+
+    "dipanggil": 6,
+    "dipanggil kejagung": 10,
+    "dipanggil ke kejagung": 10,
+
+    "dilaporkan": 7,
+    "laporan masyarakat": 7,
+    "pengaduan": 6,
+    "pengaduan masyarakat": 7,
+
+    "tersangka": 7,
+    "terlapor": 7,
+
+    "tuntutan": 5,
+    "dituntut": 5,
+
+    "narkotika": 6,
+    "kasus narkotika": 8,
+
+    "narapidana kabur": 10,
+    "terpidana kabur": 10,
+
+    "guru honorer": 5,
+    "dibebaskan": 5,
+
+    "keluhan pelayanan": 8,
+    "pelayanan buruk": 10,
+
+    "masalah": 3,
+    "bermasalah": 6,
+
+    "dugaan": 4,
+    "indikasi": 4,
+    "terindikasi": 5,
+
+    "kasus": 3,
+
+    "perkara": 4,
+    "konflik": 5,
+    "sengketa": 5,
+    "pelaporan": 6,
+    "pengawasan": 4,
+    "pemeriksaan": 5,
+}
+
+
+# ============================================================
+# POSITIF
+#
+# Dibuat lebih luas agar kegiatan resmi satker tidak menjadi
+# Netral hanya karena skor keyword hukum kecil.
+# ============================================================
+
+POSITIVE_RULES = {
+
+    # --------------------------------------------------------
+    # KEBERHASILAN PENEGAKAN HUKUM
+    # --------------------------------------------------------
+
+    "berhasil mengungkap": 10,
+    "berhasil menangkap": 10,
+    "berhasil mengamankan": 9,
+    "berhasil mengusut": 9,
+    "berhasil menyita": 9,
+    "berhasil menindak": 9,
+
+    "mengungkap kasus": 8,
+    "mengungkap perkara": 8,
+    "mengungkap korupsi": 9,
+    "mengungkap kasus korupsi": 10,
+    "mengungkap kasus narkotika": 10,
+
+    "menangkap tersangka": 8,
+    "menangkap pelaku": 9,
+    "mengamankan tersangka": 8,
+    "mengamankan pelaku": 8,
+
+    "menyita barang bukti": 8,
+    "mengamankan barang bukti": 8,
+    "berhasil mengamankan barang bukti": 10,
+
+    "menetapkan tersangka": 6,
+    "menindak pelaku": 7,
+
+    "mengusut dugaan korupsi": 8,
+    "usut dugaan korupsi": 8,
+    "mengusut kasus korupsi": 8,
+
+    "menangani kasus korupsi": 7,
+    "menangani dugaan korupsi": 7,
+
+    "melakukan penyelidikan": 6,
+    "melakukan penyidikan": 6,
+
+    "penyelidikan dugaan korupsi": 7,
+    "penyidikan kasus korupsi": 7,
+
+    "menuntut terdakwa": 7,
+    "mengajukan tuntutan": 7,
+
+    # --------------------------------------------------------
+    # PRESTASI
+    # --------------------------------------------------------
+
+    "penghargaan": 9,
+    "prestasi": 9,
+    "capaian kinerja": 9,
+    "kinerja terbaik": 8,
+    "peringkat terbaik": 8,
+    "juara": 8,
+    "terbaik": 7,
+
+    # --------------------------------------------------------
+    # PELAYANAN
+    # --------------------------------------------------------
+
+    "pelayanan prima": 9,
+    "pelayanan publik": 7,
+    "pelayanan terbaik": 9,
+    "peningkatan pelayanan": 8,
+    "peningkatan kualitas pelayanan": 8,
+    "inovasi pelayanan": 9,
+
+    # --------------------------------------------------------
+    # PENERANGAN / PENYULUHAN
+    # --------------------------------------------------------
+
+    "penyuluhan hukum": 8,
+    "sosialisasi hukum": 8,
+    "penerangan hukum": 8,
+    "jaksa masuk sekolah": 9,
+    "jaksa menyapa": 7,
+    "program jaksa masuk sekolah": 9,
+
+    # --------------------------------------------------------
+    # KEGIATAN RESMI
+    # --------------------------------------------------------
+
+    "upacara": 5,
+    "apel": 5,
+    "apel pagi": 6,
+
+    "kunjungan kerja": 7,
+    "kunjungan": 5,
+
+    "silaturahmi": 6,
+
+    "rapat koordinasi": 7,
+    "rapat": 4,
+    "koordinasi": 6,
+    "konsolidasi": 7,
+
+    "fgd": 8,
+    "focus group discussion": 8,
+
+    "forum diskusi": 7,
+    "diskusi": 4,
+
+    "penandatanganan mou": 8,
+    "penandatanganan": 6,
+    "kerja sama": 8,
+    "kerjasama": 8,
+
+    "peresmian": 8,
+    "peresmian gedung": 8,
+
+    "pelantikan": 6,
+    "pengambilan sumpah": 7,
+
+    "bimbingan teknis": 7,
+    "bimtek": 7,
+
+    "pendampingan": 6,
+    "monitoring": 5,
+    "evaluasi": 5,
+
+    # --------------------------------------------------------
+    # BARANG BUKTI / KEGIATAN PENEGAKAN
+    # --------------------------------------------------------
+
+    "pemusnahan barang bukti": 8,
+    "penyerahan barang bukti": 8,
+    "penyerahan barang rampasan": 8,
+
+    # --------------------------------------------------------
+    # PROGRAM
+    # --------------------------------------------------------
+
+    "program unggulan": 8,
+    "program kerja": 5,
+    "inovasi": 7,
+    "transformasi": 6,
+    "digitalisasi pelayanan": 8,
+    "peningkatan kinerja": 8,
+
+    # --------------------------------------------------------
+    # KEGIATAN INTERNAL / KEDINASAN
+    # --------------------------------------------------------
+
+    "rapat pimpinan": 6,
+    "rapat internal": 6,
+    "briefing": 5,
+    "evaluasi kinerja": 7,
+    "monitoring dan evaluasi": 7,
+    "monev": 6,
+
+    "serah terima jabatan": 7,
+    "sertijab": 7,
+
+    "kunjungan kejaksaan": 6,
+    "kunjungan kajari": 7,
+
+    # --------------------------------------------------------
+    # KEGIATAN SOSIAL / PUBLIK
+    # --------------------------------------------------------
+
+    "bakti sosial": 8,
+    "bantuan sosial": 8,
+    "donor darah": 7,
+    "kegiatan sosial": 7,
+    "gotong royong": 6,
+
+    "peringatan hari": 5,
+    "hari bhakti": 7,
+}
+
+
+# ============================================================
+# KONTEKS POSITIF KEGIATAN RESMI
+# ============================================================
+
+OFFICIAL_ACTIVITY_CONTEXT = [
+
+    "upacara",
+    "apel",
+    "apel pagi",
+    "kunjungan kerja",
+    "kunjungan",
+    "silaturahmi",
+    "rapat koordinasi",
+    "rapat pimpinan",
+    "rapat internal",
+    "koordinasi",
+    "konsolidasi",
+    "fgd",
+    "focus group discussion",
+    "forum diskusi",
+    "penandatanganan mou",
+    "penandatanganan kerja sama",
+    "kerja sama",
+    "kerjasama",
+    "peresmian",
+    "pelantikan",
+    "pengambilan sumpah",
+    "bimbingan teknis",
+    "bimtek",
+    "pendampingan",
+    "monitoring",
+    "evaluasi kinerja",
+    "monitoring dan evaluasi",
+    "monev",
+    "serah terima jabatan",
+    "sertijab",
+    "penyuluhan hukum",
+    "sosialisasi hukum",
+    "penerangan hukum",
+    "jaksa masuk sekolah",
+    "jaksa menyapa",
+    "pelayanan publik",
+    "pelayanan prima",
+    "penghargaan",
+    "prestasi",
+    "capaian kinerja",
+    "program unggulan",
+    "inovasi pelayanan",
+    "peningkatan pelayanan",
+    "peningkatan kinerja",
+    "bakti sosial",
+    "bantuan sosial",
+    "donor darah",
+    "kegiatan sosial",
+]
+
+
+# ============================================================
+# KONTEKS KEBERHASILAN PENEGAKAN HUKUM
+# ============================================================
+
+SUCCESS_LAW_ENFORCEMENT_CONTEXT = [
+
+    "berhasil mengungkap",
+    "berhasil menangkap",
+    "berhasil mengamankan",
+    "berhasil mengusut",
+    "berhasil menyita",
+    "berhasil menindak",
+
+    "mengungkap kasus",
+    "mengungkap perkara",
+    "mengungkap korupsi",
+    "mengungkap kasus korupsi",
+    "mengungkap kasus narkotika",
+
+    "menangkap tersangka",
+    "menangkap pelaku",
+
+    "mengamankan tersangka",
+    "mengamankan pelaku",
+
+    "menyita barang bukti",
+    "mengamankan barang bukti",
+    "berhasil mengamankan barang bukti",
+
+    "menetapkan tersangka",
+    "menindak pelaku",
+
+    "menuntut terdakwa",
+    "mengajukan tuntutan",
+
+    "pemusnahan barang bukti",
+    "penyerahan barang bukti",
+    "penyerahan barang rampasan",
+]
+
+
+# ============================================================
+# KONTEKS PENANGANAN
 # ============================================================
 
 HANDLING_CONTEXT = [
@@ -413,123 +619,11 @@ HANDLING_CONTEXT = [
     "perkara hukum",
     "sengketa hukum",
     "konflik hukum",
-
-]
-
-
-# ============================================================
-# AKSI PENEGAKAN HUKUM POSITIF
-#
-# Ini sangat penting.
-# Keyword seperti korupsi/narkotika/tersangka tidak boleh
-# mengalahkan konteks bahwa Kejaksaan berhasil menanganinya.
-# ============================================================
-
-POSITIVE_ACTION_CONTEXT = [
-
-    "berhasil mengungkap kasus",
-    "berhasil mengungkap korupsi",
-    "berhasil mengungkap kasus korupsi",
-    "berhasil mengungkap kasus narkotika",
-
-    "berhasil menangkap tersangka",
-    "berhasil menangkap pelaku",
-    "berhasil mengamankan tersangka",
-    "berhasil mengamankan pelaku",
-
-    "berhasil mengamankan barang bukti",
-    "berhasil menyita barang bukti",
-
-    "mengungkap kasus narkotika",
-    "mengungkap kasus korupsi",
-
-    "menangkap pelaku",
-    "menangkap tersangka",
-
-    "mengamankan tersangka",
-    "mengamankan pelaku",
-
-    "menetapkan tersangka",
-
-    "menindak pelaku",
-
-    "mengusut dugaan korupsi",
-    "usut dugaan korupsi",
-    "mengusut kasus korupsi",
-
-    "menangani kasus korupsi",
-    "menangani dugaan korupsi",
-
-    "melakukan penyelidikan",
-    "melakukan penyidikan",
-
-    "penyelidikan dugaan korupsi",
-    "penyidikan kasus korupsi",
-
-    "menuntut terdakwa",
-    "mengajukan tuntutan",
-
-    "menyita barang bukti",
-    "pemusnahan barang bukti",
-    "penyerahan barang bukti",
-
-]
-
-
-# ============================================================
-# AKTIVITAS NORMAL
-# ============================================================
-
-NORMAL_ACTIVITY_TERMS = [
-
-    "upacara",
-    "apel",
-    "kunjungan kerja",
-    "kunjungan",
-    "silaturahmi",
-
-    "rapat koordinasi",
-    "rapat",
-    "koordinasi",
-    "konsolidasi",
-
-    "fgd",
-    "focus group discussion",
-
-    "forum diskusi",
-    "diskusi",
-
-    "penandatanganan mou",
-    "penandatanganan",
-    "kerja sama",
-
-    "peresmian",
-
-    "penyuluhan hukum",
-    "sosialisasi hukum",
-    "penerangan hukum",
-
-    "jaksa masuk sekolah",
-
-    "pelayanan publik",
-    "pelayanan prima",
-    "pelayanan terbaik",
-
-    "penghargaan",
-    "prestasi",
-    "capaian kinerja",
-
-    "program unggulan",
-    "inovasi pelayanan",
-
 ]
 
 
 # ============================================================
 # ISTILAH RISIKO JUDUL
-#
-# Jangan memasukkan "sorotan", "bongkar", "kasus narkotika",
-# "kasus korupsi" sebagai otomatis negatif.
 # ============================================================
 
 DANGER_TITLE_TERMS = [
@@ -543,14 +637,14 @@ DANGER_TITLE_TERMS = [
     "perselingkuhan",
     "pelakor",
 
-    "didesak mundur",
-    "didesak dicopot",
+    "didesak",
+    "bongkar",
 
-    "papan bunga sindiran",
-    "karangan bunga sindiran",
+    "kasus narkotika",
+    "kasus korupsi",
 
-    "papan bunga pelakor",
-    "karangan bunga pelakor",
+    "papan bunga",
+    "karangan bunga",
 
     "batal dilantik",
     "gagal dilantik",
@@ -565,8 +659,6 @@ DANGER_TITLE_TERMS = [
 
     "mafia hukum",
     "penyalahgunaan wewenang",
-    "maladministrasi",
-
 ]
 
 
@@ -598,7 +690,6 @@ LEGAL_RISK_TERMS = [
     "penyalahgunaan wewenang",
     "sengketa",
     "konflik",
-
 ]
 
 
@@ -607,25 +698,18 @@ LEGAL_RISK_TERMS = [
 # ============================================================
 
 def normalize_text(text):
-    """Normalisasi teks untuk pencarian keyword."""
-
     if not text:
         return ""
 
     text = html.unescape(str(text))
     text = text.lower()
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
 
 def parse_indonesian_date(text):
-    """Parse tanggal Bahasa Indonesia."""
 
     if not text:
         return None
@@ -656,7 +740,6 @@ def parse_indonesian_date(text):
         "okt": 10,
         "nov": 11,
         "des": 12,
-
     }
 
     text = normalize_text(text)
@@ -690,7 +773,6 @@ def parse_indonesian_date(text):
 
 
 def parse_date_safe(value):
-    """Parse tanggal dengan beberapa metode."""
 
     if not value:
         return None
@@ -729,10 +811,7 @@ def extract_published_date(soup):
 
     candidates = []
 
-    # --------------------------------------------------------
     # JSON-LD
-    # --------------------------------------------------------
-
     for script in soup.find_all(
         "script",
         attrs={
@@ -790,10 +869,7 @@ def extract_published_date(soup):
 
             continue
 
-    # --------------------------------------------------------
     # META
-    # --------------------------------------------------------
-
     selectors = [
 
         {"property": "article:published_time"},
@@ -803,7 +879,6 @@ def extract_published_date(soup):
         {"name": "pubdate"},
         {"name": "datePublished"},
         {"itemprop": "datePublished"},
-
     ]
 
     for attrs in selectors:
@@ -827,10 +902,7 @@ def extract_published_date(soup):
             if value:
                 candidates.append(value)
 
-    # --------------------------------------------------------
-    # TIME TAG
-    # --------------------------------------------------------
-
+    # TIME
     for tag in soup.find_all("time"):
 
         value = (
@@ -843,10 +915,6 @@ def extract_published_date(soup):
 
         if value:
             candidates.append(value)
-
-    # --------------------------------------------------------
-    # PARSE
-    # --------------------------------------------------------
 
     for value in candidates:
 
@@ -936,9 +1004,7 @@ def validate_date(
     if date_value.year != TAHUN_TARGET:
         return False, date_value
 
-    if date_value > now + datetime.timedelta(
-        days=1
-    ):
+    if date_value > now + datetime.timedelta(days=1):
         return False, date_value
 
     return True, date_value
@@ -965,7 +1031,6 @@ def get_headers():
         "Accept":
             "text/html,application/xhtml+xml,"
             "application/xml;q=0.9,*/*;q=0.8",
-
     }
 
 
@@ -992,7 +1057,6 @@ def fetch_webpage(url):
 
                 "final_url":
                     response.url,
-
             }
 
     except Exception as e:
@@ -1105,9 +1169,7 @@ def find_satker_matches(
 
     for keyword in TARGET_KEJARI_KEYWORDS:
 
-        keyword_n = normalize_text(
-            keyword
-        )
+        keyword_n = normalize_text(keyword)
 
         if keyword_n in title_text:
             matches.append(keyword)
@@ -1162,48 +1224,79 @@ def find_context_matches(
 
 
 # ============================================================
-# CARI KALIMAT YANG MENGANDUNG FRASA
+# CHECK NEGASI
+#
+# Menghindari kasus:
+# "tidak ada pelanggaran"
+# "tidak terbukti korupsi"
+# "bukan kasus suap"
 # ============================================================
 
-def find_sentence_context(
+def has_negation_near(
     text,
-    phrases,
+    keyword,
+    window=60,
 ):
 
     text = normalize_text(text)
 
-    if not text:
-        return []
+    start = text.find(keyword)
 
-    sentences = re.split(
-        r"(?<=[.!?])\s+",
-        text,
-    )
+    while start != -1:
 
-    matches = []
+        before = text[
+            max(0, start - window):
+            start
+        ]
 
-    for sentence in sentences:
+        negations = [
+            "tidak",
+            "bukan",
+            "tanpa",
+            "belum terbukti",
+            "tidak terbukti",
+            "tidak ditemukan",
+            "menepis",
+            "membantah",
+            "bantah",
+        ]
 
-        sentence = sentence.strip()
+        if any(
+            neg in before
+            for neg in negations
+        ):
 
-        if not sentence:
-            continue
+            return True
 
-        for phrase in phrases:
+        start = text.find(
+            keyword,
+            start + 1,
+        )
 
-            if phrase in sentence:
+    return False
 
-                matches.append(
-                    sentence[:500]
-                )
 
-                break
+def filter_negative_keywords(
+    text,
+    keywords,
+):
 
-    return matches
+    valid = []
+
+    for keyword in keywords:
+
+        if not has_negation_near(
+            text,
+            keyword,
+        ):
+
+            valid.append(keyword)
+
+    return valid
 
 
 # ============================================================
-# CLASSIFIER
+# CLASSIFIER FINAL
 # ============================================================
 
 def classify_article(
@@ -1249,12 +1342,11 @@ def classify_article(
             "strong_context": [],
             "positive_context": [],
             "handling_context": [],
-
         }
 
-    # ========================================================
+    # --------------------------------------------------------
     # SCORE
-    # ========================================================
+    # --------------------------------------------------------
 
     strong_score, strong_keywords = (
         calculate_rule_score(
@@ -1277,9 +1369,9 @@ def classify_article(
         )
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # TITLE SCORE
-    # ========================================================
+    # --------------------------------------------------------
 
     title_strong_score, title_strong_keywords = (
         calculate_rule_score(
@@ -1302,13 +1394,28 @@ def classify_article(
         )
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # CONTEXT
-    # ========================================================
+    # --------------------------------------------------------
 
     strong_context_matches = find_context_matches(
         full_text,
         STRONG_NEGATIVE_CONTEXT,
+    )
+
+    soft_negative_matches = find_context_matches(
+        full_text,
+        SOFT_NEGATIVE_CONTEXT,
+    )
+
+    official_activity_matches = find_context_matches(
+        full_text,
+        OFFICIAL_ACTIVITY_CONTEXT,
+    )
+
+    positive_action_matches = find_context_matches(
+        full_text,
+        SUCCESS_LAW_ENFORCEMENT_CONTEXT,
     )
 
     handling_context_matches = find_context_matches(
@@ -1316,14 +1423,27 @@ def classify_article(
         HANDLING_CONTEXT,
     )
 
-    positive_action_matches = find_context_matches(
+    # --------------------------------------------------------
+    # FILTER NEGATIVE DENGAN NEGASI
+    # --------------------------------------------------------
+
+    strong_keywords = filter_negative_keywords(
         full_text,
-        POSITIVE_ACTION_CONTEXT,
+        strong_keywords,
     )
 
-    # ========================================================
+    strong_context_matches = [
+        x
+        for x in strong_context_matches
+        if not has_negation_near(
+            full_text,
+            x,
+        )
+    ]
+
+    # --------------------------------------------------------
     # TITLE BOOST
-    # ========================================================
+    # --------------------------------------------------------
 
     strong_score += (
         title_strong_score * 2
@@ -1337,12 +1457,12 @@ def classify_article(
         title_positive_score * 2
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # CONTEXT BOOST
-    # ========================================================
+    # --------------------------------------------------------
 
     strong_score += (
-        len(strong_context_matches) * 8
+        len(strong_context_matches) * 10
     )
 
     handling_score += (
@@ -1353,56 +1473,53 @@ def classify_article(
         len(positive_action_matches) * 5
     )
 
-    # ========================================================
-    # DANGER TITLE
-    # ========================================================
+    positive_score += (
+        len(official_activity_matches) * 3
+    )
+
+    # --------------------------------------------------------
+    # TITLE DANGER
+    # --------------------------------------------------------
 
     danger_hits = [
+
         term
         for term in DANGER_TITLE_TERMS
         if term in title_n
+        and not has_negation_near(
+            title_n,
+            term,
+        )
     ]
 
-    # ========================================================
+    # --------------------------------------------------------
     # LEGAL RISK
-    # ========================================================
+    # --------------------------------------------------------
 
     legal_hits = [
+
         term
         for term in LEGAL_RISK_TERMS
         if term in full_text
+        and not has_negation_near(
+            full_text,
+            term,
+        )
     ]
 
-    # ========================================================
-    # NORMAL ACTIVITY
-    # ========================================================
+    # --------------------------------------------------------
+    # INDIKATOR
+    # --------------------------------------------------------
 
-    normal_activity_hits = [
-        term
-        for term in NORMAL_ACTIVITY_TERMS
-        if term in title_n
-    ]
-
-    # ========================================================
-    # PRIORITAS KONTEKS
-    # ========================================================
-
-    has_strong_negative = bool(
-        strong_context_matches
-        or danger_hits
-        or title_strong_score >= 8
-    )
-
-    has_positive_action = bool(
-        positive_action_matches
-    )
-
-    has_normal_activity = bool(
-        normal_activity_hits
+    risk_indicators = (
+        len(strong_keywords)
+        + len(handling_keywords)
+        + len(strong_context_matches)
+        + len(handling_context_matches)
     )
 
     # ========================================================
-    # DEFAULT
+    # KATEGORI AWAL
     # ========================================================
 
     category = "Netral"
@@ -1411,147 +1528,203 @@ def classify_article(
     # ========================================================
     # 1. NEGATIF KUAT
     #
-    # Hanya jika memang ada indikator kuat.
+    # Harus benar-benar ada indikasi masalah.
     # ========================================================
 
-    if has_strong_negative:
+    hard_negative = False
+
+    if strong_context_matches:
+        hard_negative = True
+
+    elif danger_hits:
+        hard_negative = True
+
+    elif title_strong_score >= 8:
+        hard_negative = True
+
+    elif strong_score >= 22:
+        hard_negative = True
+
+    if hard_negative:
 
         category = "Negatif Kuat"
         priority = "KRITIS"
 
     # ========================================================
-    # 2. POSITIF EKPLISIT
+    # 2. POSITIF DOMINAN
     #
-    # PENTING:
-    # Keberhasilan penegakan hukum diprioritaskan.
-    #
-    # Contoh:
-    # "Berhasil menangkap tersangka narkotika"
-    #
-    # Ada kata:
-    # tersangka + narkotika
-    #
-    # tetapi konteks:
-    # berhasil menangkap
-    #
-    # => POSITIF
+    # Jika artikel jelas merupakan kegiatan resmi atau
+    # keberhasilan Kejaksaan, jangan dijadikan negatif hanya
+    # karena ada kata hukum seperti kasus/tersangka/korupsi.
     # ========================================================
 
-    elif has_positive_action:
+    positive_success = (
+        len(positive_action_matches) > 0
+    )
+
+    positive_official = (
+        len(official_activity_matches) > 0
+        and (
+            title_positive_score >= 3
+            or positive_score >= 5
+        )
+    )
+
+    # --------------------------------------------------------
+    # Keberhasilan hukum dapat menjadi Positif.
+    # --------------------------------------------------------
+
+    if positive_success:
+
+        # Tetap negatif jika benar-benar ada skandal /
+        # pencopotan / pelanggaran etik.
+        if not strong_context_matches and not danger_hits:
+
+            category = "Positif"
+            priority = "RENDAH"
+
+    # --------------------------------------------------------
+    # Kegiatan resmi.
+    # --------------------------------------------------------
+
+    elif positive_official:
+
+        if not strong_context_matches and not danger_hits:
+
+            category = "Positif"
+            priority = "RENDAH"
+
+    # ========================================================
+    # 3. NEGATIF KUAT FINAL
+    # ========================================================
+
+    if (
+        hard_negative
+        and not positive_success
+        and not positive_official
+    ):
+
+        category = "Negatif Kuat"
+        priority = "KRITIS"
+
+    # ========================================================
+    # 4. PERLU PENANGANAN
+    # ========================================================
+
+    if category != "Positif":
+
+        if (
+            title_handling_score >= 8
+            and not hard_negative
+        ):
+
+            category = "Perlu Penanganan"
+            priority = "TINGGI"
+
+        elif (
+            handling_score >= 14
+            and not hard_negative
+        ):
+
+            category = "Perlu Penanganan"
+            priority = "TINGGI"
+
+        elif (
+            handling_score >= 7
+            and not hard_negative
+        ):
+
+            category = "Perlu Penanganan"
+            priority = "SEDANG"
+
+    # ========================================================
+    # 5. SUCCESS LAW ENFORCEMENT FINAL OVERRIDE
+    # ========================================================
+
+    if (
+        positive_success
+        and not strong_context_matches
+        and not danger_hits
+    ):
 
         category = "Positif"
         priority = "RENDAH"
 
     # ========================================================
-    # 3. KEGIATAN RESMI
+    # 6. OFFICIAL ACTIVITY FINAL OVERRIDE
     # ========================================================
 
-    elif has_normal_activity:
+    if (
+        positive_official
+        and not strong_context_matches
+        and not danger_hits
+    ):
 
         category = "Positif"
         priority = "RENDAH"
 
     # ========================================================
-    # 4. POSITIVE SCORE
+    # 7. SOFT NEGATIVE
+    #
+    # Sorotan/kritik ringan tidak otomatis Negatif Kuat.
+    # Jika tidak ada keberhasilan/kegiatan positif, maka
+    # dapat menjadi Perlu Penanganan.
     # ========================================================
 
-    elif positive_score >= 6:
-
-        category = "Positif"
-        priority = "RENDAH"
-
-    # ========================================================
-    # 5. PERLU PENANGANAN
-    # ========================================================
-
-    elif title_handling_score >= 7:
-
-        category = "Perlu Penanganan"
-        priority = "TINGGI"
-
-    elif handling_score >= 12:
-
-        category = "Perlu Penanganan"
-        priority = "TINGGI"
-
-    elif handling_score >= 7:
+    if (
+        category == "Netral"
+        and soft_negative_matches
+        and not positive_success
+        and not positive_official
+    ):
 
         category = "Perlu Penanganan"
         priority = "SEDANG"
 
     # ========================================================
-    # 6. FALLBACK LEGAL RISK
-    # ========================================================
-
-    else:
-
-        risk_indicators = (
-            len(handling_keywords)
-            + len(legal_hits)
-        )
-
-        if risk_indicators >= 3:
-
-            category = "Perlu Penanganan"
-            priority = "SEDANG"
-
-        elif len(legal_hits) >= 2:
-
-            category = "Perlu Penanganan"
-            priority = "SEDANG"
-
-    # ========================================================
-    # 7. PERLINDUNGAN POSITIF
-    #
-    # Jika ada konteks keberhasilan yang jelas,
-    # jangan biarkan keyword hukum mengubahnya menjadi
-    # Perlu Penanganan.
+    # 8. FALLBACK ANTI-NETRAL
     # ========================================================
 
     if (
-        has_positive_action
-        and not has_strong_negative
+        category == "Netral"
+        and risk_indicators >= 2
+        and not positive_success
+        and not positive_official
     ):
 
-        category = "Positif"
-        priority = "RENDAH"
+        category = "Perlu Penanganan"
+        priority = "SEDANG"
 
     # ========================================================
-    # 8. KEGIATAN NORMAL
+    # 9. ISU HUKUM
     # ========================================================
 
     if (
-        has_normal_activity
-        and not has_strong_negative
+        category == "Netral"
+        and len(legal_hits) >= 2
+        and not positive_success
+        and not positive_official
     ):
 
-        category = "Positif"
-        priority = "RENDAH"
+        category = "Perlu Penanganan"
+        priority = "SEDANG"
 
     # ========================================================
-    # 9. PRIORITAS NEGATIF
+    # 10. PRIORITAS TAMBAHAN
     # ========================================================
 
-    if category == "Negatif Kuat":
-
-        priority = "KRITIS"
-
-    # ========================================================
-    # 10. PRIORITAS HANDLING
-    # ========================================================
-
-    elif category == "Perlu Penanganan":
+    if category == "Perlu Penanganan":
 
         if (
             title_handling_score >= 10
-            or handling_score >= 15
+            or len(danger_hits) >= 1
         ):
 
             priority = "TINGGI"
 
-        else:
+        elif handling_score >= 15:
 
-            priority = "SEDANG"
+            priority = "TINGGI"
 
     # ========================================================
     # DETECTED KEYWORDS
@@ -1564,7 +1737,9 @@ def classify_article(
             + handling_keywords
             + positive_keywords
             + strong_context_matches
+            + soft_negative_matches
             + handling_context_matches
+            + official_activity_matches
             + positive_action_matches
             + title_strong_keywords
             + title_handling_keywords
@@ -1607,11 +1782,15 @@ def classify_article(
             strong_context_matches,
 
         "positive_context":
-            positive_action_matches,
+            list(
+                dict.fromkeys(
+                    official_activity_matches
+                    + positive_action_matches
+                )
+            ),
 
         "handling_context":
             handling_context_matches,
-
     }
 
 
@@ -1679,13 +1858,9 @@ def search_google_news(query):
             results.append({
 
                 "title": title,
-
                 "link": link,
-
                 "snippet": summary,
-
                 "rss_date": rss_date,
-
             })
 
         return results
@@ -1795,18 +1970,12 @@ def process_candidate(item):
     if not original_url:
         return None
 
-    # --------------------------------------------------------
-    # Resolve Google News URL
-    # --------------------------------------------------------
-
+    # Resolve URL Google News
     final_url = resolve_redirect_url(
         original_url
     )
 
-    # --------------------------------------------------------
     # Fetch
-    # --------------------------------------------------------
-
     result = fetch_webpage(
         final_url
     )
@@ -1826,10 +1995,6 @@ def process_candidate(item):
         or final_url
     )
 
-    # --------------------------------------------------------
-    # Parse
-    # --------------------------------------------------------
-
     try:
 
         soup = BeautifulSoup(
@@ -1841,10 +2006,7 @@ def process_candidate(item):
 
         return None
 
-    # --------------------------------------------------------
     # Date
-    # --------------------------------------------------------
-
     article_date = extract_published_date(
         soup
     )
@@ -1859,10 +2021,7 @@ def process_candidate(item):
     if not valid_date:
         return None
 
-    # --------------------------------------------------------
     # Content
-    # --------------------------------------------------------
-
     content = extract_article_text(
         soup
     )
@@ -1873,29 +2032,18 @@ def process_candidate(item):
             f"{snippet} {content}"
         ).strip()
 
-    # --------------------------------------------------------
     # Classification
-    # --------------------------------------------------------
-
     classification = classify_article(
         title,
         snippet,
         content,
     )
 
-    # --------------------------------------------------------
-    # Jika tidak terkait satker
-    # --------------------------------------------------------
-
     if not classification.get(
         "satker_matches"
     ):
 
         return None
-
-    # --------------------------------------------------------
-    # Result
-    # --------------------------------------------------------
 
     return {
 
@@ -1949,7 +2097,6 @@ def process_candidate(item):
 
         "source":
             "Google News RSS",
-
     }
 
 
@@ -1970,7 +2117,6 @@ def rekategorisasi_semua_database():
         "Perlu Penanganan": 0,
         "Netral": 0,
         "Positif": 0,
-
     }
 
     updated = 0
@@ -1993,7 +2139,6 @@ def rekategorisasi_semua_database():
             "updated": 0,
             "failed": 1,
             "counts": counter,
-
         }
 
     total = len(articles)
@@ -2010,7 +2155,6 @@ def rekategorisasi_semua_database():
             "updated": 0,
             "failed": 0,
             "counts": counter,
-
         }
 
     for index, article in enumerate(
@@ -2118,7 +2262,6 @@ def rekategorisasi_semua_database():
                         "handling_context",
                         [],
                     ),
-
             }
 
             update_article(
@@ -2126,16 +2269,13 @@ def rekategorisasi_semua_database():
                 updates,
             )
 
-            category = updates[
-                "category"
-            ]
+            category = updates["category"]
 
             if category not in counter:
 
                 category = "Netral"
 
             counter[category] += 1
-
             updated += 1
 
         except Exception as e:
@@ -2191,7 +2331,6 @@ def rekategorisasi_semua_database():
         "failed": failed,
 
         "counts": counter,
-
     }
 
 
@@ -2229,7 +2368,7 @@ def send_telegram(finding):
 
     else:
 
-        emoji = "🟢"
+        emoji = "🟡"
 
     keywords = finding.get(
         "detected_keywords",
@@ -2273,7 +2412,6 @@ def send_telegram(finding):
         f"<a href=\"{safe_link}\">Buka Artikel</a>\n\n"
 
         f"<i>Verifikasi isi berita tetap diperlukan.</i>"
-
     )
 
     url = (
@@ -2294,7 +2432,6 @@ def send_telegram(finding):
                 "parse_mode": "HTML",
 
                 "disable_web_page_preview": False,
-
             },
             timeout=15,
         )
@@ -2334,17 +2471,15 @@ def jalankan_patroli():
     print("==========================================")
     print("MEMULAI PATROLI SIBER 2026")
     print("==========================================")
-
     print(
         f"TARGET: {NAMA_SATKER}"
     )
-
     print("==========================================")
     print()
 
-    # ========================================================
+    # --------------------------------------------------------
     # 1. GOOGLE NEWS
-    # ========================================================
+    # --------------------------------------------------------
 
     candidates = collect_candidates()
 
@@ -2353,9 +2488,9 @@ def jalankan_patroli():
         f"{len(candidates)}"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 2. PROCESS
-    # ========================================================
+    # --------------------------------------------------------
 
     results = []
 
@@ -2371,7 +2506,6 @@ def jalankan_patroli():
             )
 
             for item in candidates
-
         ]
 
         for future in as_completed(
@@ -2399,9 +2533,9 @@ def jalankan_patroli():
         f"{len(results)}"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 3. SIMPAN
-    # ========================================================
+    # --------------------------------------------------------
 
     save_success = 0
     save_failed = 0
@@ -2435,12 +2569,11 @@ def jalankan_patroli():
         f"{save_failed}"
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 4. REKLASIFIKASI
-    # ========================================================
+    # --------------------------------------------------------
 
     print()
-
     print(
         "[PATROLI] Memulai reklasifikasi "
         "seluruh database..."
@@ -2450,9 +2583,9 @@ def jalankan_patroli():
         rekategorisasi_semua_database()
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 5. TELEGRAM
-    # ========================================================
+    # --------------------------------------------------------
 
     telegram_count = 0
 
@@ -2496,9 +2629,9 @@ def jalankan_patroli():
                 f"[TELEGRAM ERROR] {e}"
             )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 6. STATISTIK
-    # ========================================================
+    # --------------------------------------------------------
 
     elapsed = (
         time.time()
@@ -2513,13 +2646,12 @@ def jalankan_patroli():
             "Perlu Penanganan": 0,
             "Netral": 0,
             "Positif": 0,
-
         }
     )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 7. RUN LOG
-    # ========================================================
+    # --------------------------------------------------------
 
     log_data = {
 
@@ -2564,7 +2696,6 @@ def jalankan_patroli():
 
         "status":
             "SELESAI",
-
     }
 
     try:
@@ -2579,9 +2710,9 @@ def jalankan_patroli():
             f"[LOG ERROR] {e}"
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # 8. OUTPUT
-    # ========================================================
+    # --------------------------------------------------------
 
     print()
     print("==========================================")
@@ -2709,10 +2840,7 @@ if __name__ == "__main__":
         print("==========================================")
         print("FATAL ERROR")
         print("==========================================")
-
         print(str(e))
-
         print("==========================================")
 
         sys.exit(1)
-
