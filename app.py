@@ -174,49 +174,21 @@ if "role" not in st.session_state:
 # ============================================================
 # LOGIN PAGE
 # ============================================================
-
 if not st.session_state.logged_in:
 
-    st.markdown(
-        "<br><br>",
-        unsafe_allow_html=True
-    )
+    st.markdown("<br><br>", unsafe_allow_html=True)
 
-    col_left, col_center, col_right = st.columns(
-        [1, 2, 1]
-    )
+    col_left, col_center, col_right = st.columns([1, 2, 1])
 
     with col_center:
 
-        st.markdown(
-            """
-            <div style="
-                text-align:center;
-                padding:20px;
-            ">
-                <div style="
-                    font-size:60px;
-                ">
-                    🛡️
-                </div>
+        st.title("🛡️ Dashboard Patroli Siber 2026")
 
-                <h1>
-                    Dashboard Patroli Siber 2026
-                </h1>
-
-                <p>
-                    Sistem Monitoring Pemberitaan
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
+        st.write("Sistem Monitoring Pemberitaan")
 
         st.divider()
 
-        st.subheader(
-            "🔐 Login Sistem"
-        )
+        st.subheader("🔐 Login Sistem")
 
         username = st.text_input(
             "Username",
@@ -261,14 +233,8 @@ if not st.session_state.logged_in:
                 else:
 
                     st.session_state.logged_in = True
-
-                    st.session_state.username = (
-                        user["username"]
-                    )
-
-                    st.session_state.role = (
-                        user["role"]
-                    )
+                    st.session_state.username = user["username"]
+                    st.session_state.role = user["role"]
 
                     st.rerun()
 
@@ -279,8 +245,6 @@ if not st.session_state.logged_in:
         )
 
     st.stop()
-
-
 # ============================================================
 # CURRENT USER
 # ============================================================
