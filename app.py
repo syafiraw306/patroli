@@ -1,6 +1,6 @@
 import datetime
-import os
 import html
+import os
 import re
 
 import pandas as pd
@@ -312,50 +312,41 @@ if "role" not in st.session_state:
 
 def clean_text(value):
     """
-    Membersihkan HTML dari data artikel.
-
-    Contoh:
-    <p>Berita terbaru</p>
-    menjadi:
-    Berita terbaru
+    Membersihkan HTML dan merapikan entitas teks dari data artikel.
     """
-
     if value is None:
         return ""
 
     text = str(value)
 
-    # Ubah beberapa tag umum menjadi spasi/baris
+    # Hapus tag script dan style beserta isinya
     text = re.sub(
-        r"<\s*(br|p|div|li|tr)\s*/?\s*>",
+        r"<(script|style)[^>]*>.*?</\1>",
+        "",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    # Ubah tag pemisah paragraf/baris menjadi newline
+    text = re.sub(
+        r"<\s*(br|p|div|li|tr|h[1-6])\s*/?\s*>",
         "\n",
         text,
         flags=re.IGNORECASE,
     )
 
-    # Hapus seluruh tag HTML
-    text = re.sub(
-        r"<[^>]+>",
-        "",
-        text,
-    )
+    # Hapus seluruh tag HTML tersisa secara berulang
+    while re.search(r"<[^>]+>", text):
+        text = re.sub(r"<[^>]+>", "", text)
 
     # Decode HTML entity
     text = html.unescape(text)
 
-    # Rapikan spasi
-    text = re.sub(
-        r"[ \t]+",
-        " ",
-        text,
-    )
+    # Rapikan spasi berlebih
+    text = re.sub(r"[ \t]+", " ", text)
 
     # Rapikan baris kosong
-    text = re.sub(
-        r"\n\s*\n+",
-        "\n",
-        text,
-    )
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
 
     return text.strip()
 
@@ -635,7 +626,15 @@ def load_articles():
     if not data:
         return []
 
-    return data
+    cleaned_articles = []
+    for item in data:
+        article = dict(item)
+        article["title"] = clean_text(article.get("title", ""))
+        article["snippet"] = clean_text(article.get("snippet", ""))
+        article["content"] = clean_text(article.get("content", ""))
+        cleaned_articles.append(article)
+
+    return cleaned_articles
 
 
 @st.cache_data(ttl=30)
@@ -1363,7 +1362,6 @@ def render_article(item):
         )
 
         # SNIPPET
-        # Menggunakan st.write agar isi HTML tidak dieksekusi
 
         if snippet:
 
@@ -1659,157 +1657,82 @@ with tab_analytics:
 
     st.markdown(
         '<div class="section-title">'
-        '📊 Analisis Pemberitaan'
+        '📊 Analisis Sentiment & Tren'
         '</div>',
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        '<div class="section-description">'
-        'Visualisasi distribusi kategori dan tingkat prioritas.'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    if filtered:
 
-    chart_data = pd.DataFrame(
-        {
-            "Kategori": [
-                "Negatif Kuat",
-                "Perlu Penanganan",
-                "Netral",
-                "Positif",
-            ],
-            "Jumlah": [
-                len(negative),
-                len(handling),
-                len(neutral),
-                len(positive),
-            ],
-        }
-    )
+        df = pd.DataFrame(filtered)
 
-    col_chart1, col_chart2 = st.columns(2)
+        col_chart1, col_chart2 = st.columns(2)
 
-    with col_chart1:
+        with col_chart1:
 
-        if chart_data["Jumlah"].sum() > 0:
+            if "category" in df.columns:
 
-            fig = px.pie(
-                chart_data,
-                names="Kategori",
-                values="Jumlah",
-                hole=0.50,
-                title="Distribusi Kategori",
-            )
+                cat_counts = (
+                    df["category"]
+                    .value_counts()
+                    .reset_index()
+                )
 
-            fig.update_layout(
-                margin=dict(
-                    l=10,
-                    r=10,
-                    t=50,
-                    b=10,
-                ),
-                legend_title_text="",
-            )
+                cat_counts.columns = ["Kategori", "Jumlah"]
 
-            st.plotly_chart(
-                fig,
-                use_container_width=True,
-            )
+                fig_pie = px.pie(
+                    cat_counts,
+                    names="Kategori",
+                    values="Jumlah",
+                    title="Proporsi Kategori Pemberitaan",
+                    color_discrete_sequence=px.colors.qualitative.Set2,
+                )
 
-        else:
+                st.plotly_chart(
+                    fig_pie,
+                    use_container_width=True,
+                )
 
-            st.info(
-                "Belum ada data."
-            )
+        with col_chart2:
 
-    with col_chart2:
+            if "published_date" in df.columns:
 
-        priority_df = pd.DataFrame(
-            {
-                "Prioritas": [
-                    "KRITIS",
-                    "TINGGI",
-                    "SEDANG",
-                    "RENDAH",
-                ],
-                "Jumlah": [
-                    len([
-                        x for x in filtered
-                        if x.get("priority")
-                        == "KRITIS"
-                    ]),
-                    len([
-                        x for x in filtered
-                        if x.get("priority")
-                        == "TINGGI"
-                    ]),
-                    len([
-                        x for x in filtered
-                        if x.get("priority")
-                        == "SEDANG"
-                    ]),
-                    len([
-                        x for x in filtered
-                        if x.get("priority")
-                        == "RENDAH"
-                    ]),
-                ],
-            }
-        )
+                df["date_parsed"] = df["published_date"].apply(parse_date)
 
-        fig_priority = px.bar(
-            priority_df,
-            x="Prioritas",
-            y="Jumlah",
-            title="Distribusi Prioritas",
-            text="Jumlah",
-        )
+                df_valid_dates = df.dropna(subset=["date_parsed"])
 
-        fig_priority.update_layout(
-            margin=dict(
-                l=10,
-                r=10,
-                t=50,
-                b=10,
-            )
-        )
+                if not df_valid_dates.empty:
 
-        st.plotly_chart(
-            fig_priority,
-            use_container_width=True,
-        )
+                    df_valid_dates["date_only"] = df_valid_dates[
+                        "date_parsed"
+                    ].dt.date
 
-    st.markdown(
-        "### 📋 Rekapitulasi"
-    )
+                    timeline = (
+                        df_valid_dates.groupby("date_only")
+                        .size()
+                        .reset_index(name="Jumlah")
+                    )
 
-    summary_df = pd.DataFrame(
-        {
-            "Kategori": [
-                "🔴 Negatif Kuat",
-                "🟠 Perlu Penanganan",
-                "🟡 Netral",
-                "🟢 Positif",
-            ],
-            "Jumlah": [
-                len(negative),
-                len(handling),
-                len(neutral),
-                len(positive),
-            ],
-        }
-    )
+                    fig_line = px.line(
+                        timeline,
+                        x="date_only",
+                        y="Jumlah",
+                        title="Tren Volume Pemberitaan",
+                        markers=True,
+                    )
 
-    st.dataframe(
-        summary_df,
-        use_container_width=True,
-        hide_index=True,
-    )
+                    st.plotly_chart(
+                        fig_line,
+                        use_container_width=True,
+                    )
+
+    else:
+
+        st.info("Tidak ada data untuk ditampilkan pada grafik analisis.")
 
 
 # ============================================================
-# LOG ADMIN
+# LOGS (ADMIN ONLY)
 # ============================================================
 
 if IS_ADMIN and tab_logs is not None:
@@ -1818,56 +1741,20 @@ if IS_ADMIN and tab_logs is not None:
 
         st.markdown(
             '<div class="section-title">'
-            '📜 Log Patroli'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            '<div class="section-description">'
-            'Riwayat proses patroli otomatis dan klasifikasi artikel.'
+            '📜 Log Riwayat Patroli'
             '</div>',
             unsafe_allow_html=True,
         )
 
         if logs:
 
+            df_logs = pd.DataFrame(logs)
+
             st.dataframe(
-                pd.DataFrame(logs),
+                df_logs,
                 use_container_width=True,
-                hide_index=True,
             )
 
         else:
 
-            st.info(
-                "Belum ada log patroli."
-            )
-
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.divider()
-
-st.markdown(
-    f"""
-    <div class="footer">
-
-        🛡️ <b>Patroli Siber 2026</b><br>
-
-        Sistem merupakan alat bantu monitoring dan
-        klasifikasi awal. Artikel <b>Negatif Kuat</b> dan
-        <b>Perlu Penanganan</b> tetap perlu diverifikasi
-        terhadap isi, sumber, dan fakta.<br><br>
-
-        {html.escape(NAMA_SATKER)}
-        • Login: {html.escape(CURRENT_USERNAME)}
-        ({html.escape(CURRENT_ROLE.upper())})
-
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
+            st.info("Tidak ada log eksekusi yang tersimpan.")
