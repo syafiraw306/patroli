@@ -70,7 +70,7 @@ def clean_html(raw_html: Any) -> str:
 
     text = html.unescape(str(raw_html))
 
-    # Hapus script/style terlebih dahulu
+    # Hapus script dan style
     text = re.sub(
         r"<(script|style).*?>.*?</\1>",
         " ",
@@ -78,7 +78,7 @@ def clean_html(raw_html: Any) -> str:
         flags=re.I | re.S
     )
 
-    # Hapus seluruh tag HTML
+    # Hapus tag HTML lainnya
     text = re.sub(
         r"<[^>]+>",
         " ",
@@ -95,54 +95,80 @@ def clean_html(raw_html: Any) -> str:
     return text.strip()
 
 
+# ============================================================
+# CLEAN ARTICLE PAYLOAD
+# ============================================================
+
 def clean_article_payload(
     article: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Membersihkan field teks artikel sebelum disimpan.
+    Membersihkan data artikel sebelum dikirim ke Supabase.
+
+    PENTING:
+    Kolom 'keywords' TIDAK dikirim ke tabel articles karena
+    schema Supabase saat ini tidak memiliki kolom tersebut.
+
+    Jika patroli.py menghasilkan 'keywords', field tersebut
+    akan dibuang secara otomatis.
     """
 
     data = dict(article)
+
+    # --------------------------------------------------------
+    # Bersihkan title
+    # --------------------------------------------------------
 
     if "title" in data:
         data["title"] = clean_html(
             data.get("title")
         )
 
+    # --------------------------------------------------------
+    # Bersihkan content
+    # --------------------------------------------------------
+
     if "content" in data:
         data["content"] = clean_html(
             data.get("content")
         )
 
-    if "keywords" in data:
-        if data["keywords"] is None:
-            data["keywords"] = []
+    # --------------------------------------------------------
+    # HAPUS keywords
+    #
+    # Supabase articles TIDAK memiliki kolom keywords.
+    # --------------------------------------------------------
+
+    data.pop(
+        "keywords",
+        None
+    )
 
     return data
 
 
 # ============================================================
-# URL / LINK
+# NORMALIZE LINK
 # ============================================================
 
-def normalize_link(link: str) -> str:
+def normalize_link(link: Any) -> str:
     """
     Membersihkan link artikel.
     """
 
-    if not link:
+    if link is None:
         return ""
 
     return str(link).strip()
 
 
 # ============================================================
-# TIME
+# CURRENT UTC TIME
 # ============================================================
 
 def now_iso() -> str:
     """
-    Waktu UTC ISO.
+    Menghasilkan waktu UTC dalam format ISO.
     """
 
     return datetime.now(
@@ -155,6 +181,9 @@ def now_iso() -> str:
 # ============================================================
 
 def test_connection() -> bool:
+    """
+    Menguji koneksi ke Supabase.
+    """
 
     try:
 
@@ -170,7 +199,10 @@ def test_connection() -> bool:
 
         rows = response.data or []
 
-        print("[SUPABASE] Koneksi berhasil.")
+        print(
+            "[SUPABASE] Koneksi berhasil."
+        )
+
         print(
             f"[SUPABASE] Test response: "
             f"{len(rows)} row."
@@ -194,6 +226,9 @@ def test_connection() -> bool:
 def get_all_articles(
     page_size: int = 1000
 ) -> List[Dict[str, Any]]:
+    """
+    Mengambil seluruh artikel dari Supabase secara bertahap.
+    """
 
     client = get_supabase()
 
@@ -258,6 +293,9 @@ def get_all_articles(
 def get_article_by_link(
     link: str
 ) -> Optional[Dict[str, Any]]:
+    """
+    Mengambil satu artikel berdasarkan link.
+    """
 
     link = normalize_link(link)
 
@@ -272,7 +310,10 @@ def get_article_by_link(
             client
             .table("articles")
             .select("*")
-            .eq("link", link)
+            .eq(
+                "link",
+                link
+            )
             .limit(1)
             .execute()
         )
@@ -300,6 +341,9 @@ def get_article_by_link(
 def article_exists(
     link: str
 ) -> bool:
+    """
+    Mengecek apakah artikel sudah ada berdasarkan link.
+    """
 
     link = normalize_link(link)
 
@@ -314,12 +358,17 @@ def article_exists(
             client
             .table("articles")
             .select("link")
-            .eq("link", link)
+            .eq(
+                "link",
+                link
+            )
             .limit(1)
             .execute()
         )
 
-        return bool(response.data)
+        return bool(
+            response.data
+        )
 
     except Exception as e:
 
@@ -337,19 +386,43 @@ def article_exists(
 def upsert_article(
     article: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
+    """
+    Insert atau update artikel berdasarkan link.
+
+    Field yang tidak terdapat di schema Supabase seperti
+    'keywords' akan dibuang sebelum request.
+    """
 
     client = get_supabase()
 
-    data = clean_article_payload(article)
+    # --------------------------------------------------------
+    # Bersihkan payload
+    # --------------------------------------------------------
+
+    data = clean_article_payload(
+        article
+    )
+
+    # --------------------------------------------------------
+    # Normalisasi link
+    # --------------------------------------------------------
 
     data["link"] = normalize_link(
-        data.get("link", "")
+        data.get(
+            "link",
+            ""
+        )
     )
 
     if not data["link"]:
+
         raise ValueError(
             "Artikel tidak memiliki link."
         )
+
+    # --------------------------------------------------------
+    # Timestamp
+    # --------------------------------------------------------
 
     current_time = now_iso()
 
@@ -359,6 +432,10 @@ def upsert_article(
     )
 
     data["updated_at"] = current_time
+
+    # --------------------------------------------------------
+    # Upsert
+    # --------------------------------------------------------
 
     try:
 
@@ -395,6 +472,9 @@ def upsert_article(
 def insert_articles(
     articles: List[Dict[str, Any]]
 ) -> int:
+    """
+    Menyimpan banyak artikel.
+    """
 
     if not articles:
         return 0
@@ -435,19 +515,43 @@ def update_article(
     link: str,
     updates: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
+    """
+    Mengupdate artikel berdasarkan link.
 
-    link = normalize_link(link)
+    Field keywords otomatis dibuang karena tidak tersedia
+    di tabel articles.
+    """
+
+    link = normalize_link(
+        link
+    )
 
     if not link:
         return None
 
     client = get_supabase()
 
+    # --------------------------------------------------------
+    # Bersihkan update
+    # --------------------------------------------------------
+
     data = clean_article_payload(
         updates
     )
 
+    # --------------------------------------------------------
+    # Timestamp
+    # --------------------------------------------------------
+
     data["updated_at"] = now_iso()
+
+    # --------------------------------------------------------
+    # Jangan melakukan update jika tidak ada data
+    # selain updated_at.
+    # --------------------------------------------------------
+
+    if len(data) == 1 and "updated_at" in data:
+        return None
 
     try:
 
@@ -455,7 +559,10 @@ def update_article(
             client
             .table("articles")
             .update(data)
-            .eq("link", link)
+            .eq(
+                "link",
+                link
+            )
             .execute()
         )
 
@@ -464,13 +571,15 @@ def update_article(
         if rows:
             return rows[0]
 
+        return None
+
     except Exception as e:
 
         print(
             f"[DB UPDATE ERROR] {e}"
         )
 
-    return None
+        return None
 
 
 # ============================================================
@@ -478,6 +587,9 @@ def update_article(
 # ============================================================
 
 def delete_all_articles() -> bool:
+    """
+    Menghapus seluruh artikel.
+    """
 
     client = get_supabase()
 
@@ -487,7 +599,10 @@ def delete_all_articles() -> bool:
             client
             .table("articles")
             .delete()
-            .neq("link", "")
+            .neq(
+                "link",
+                ""
+            )
             .execute()
         )
 
@@ -516,6 +631,9 @@ def get_filtered_articles(
     search_query: Optional[str] = None,
     limit: int = 1000
 ) -> List[Dict[str, Any]]:
+    """
+    Mengambil artikel berdasarkan filter.
+    """
 
     client = get_supabase()
 
@@ -527,29 +645,48 @@ def get_filtered_articles(
             .select("*")
         )
 
+        # ----------------------------------------------------
+        # Filter kategori
+        # ----------------------------------------------------
+
         if (
             category
             and category != "Semua Kategori"
         ):
+
             query = query.eq(
                 "category",
                 category
             )
 
+        # ----------------------------------------------------
+        # Filter prioritas
+        # ----------------------------------------------------
+
         if (
             priority
             and priority != "Semua Prioritas"
         ):
+
             query = query.eq(
                 "priority",
                 priority
             )
 
+        # ----------------------------------------------------
+        # Search judul
+        # ----------------------------------------------------
+
         if search_query:
+
             query = query.ilike(
                 "title",
                 f"%{search_query}%"
             )
+
+        # ----------------------------------------------------
+        # Execute
+        # ----------------------------------------------------
 
         response = (
             query
@@ -579,10 +716,20 @@ def get_filtered_articles(
 def save_run_log(
     log_data: Dict[str, Any]
 ) -> bool:
+    """
+    Menyimpan log setiap proses patroli.
+
+    Hanya kolom yang kompatibel dengan tabel run_logs
+    yang dikirim ke Supabase.
+    """
 
     try:
 
         client = get_supabase()
+
+        # ----------------------------------------------------
+        # Kolom yang diperbolehkan di run_logs
+        # ----------------------------------------------------
 
         allowed_columns = {
             "id",
@@ -601,17 +748,28 @@ def save_run_log(
             "status"
         }
 
+        # ----------------------------------------------------
+        # Filter payload
+        # ----------------------------------------------------
+
         data = {
             key: value
-            for key, value
-            in log_data.items()
+            for key, value in log_data.items()
             if key in allowed_columns
         }
+
+        # ----------------------------------------------------
+        # created_at
+        # ----------------------------------------------------
 
         data.setdefault(
             "created_at",
             now_iso()
         )
+
+        # ----------------------------------------------------
+        # Insert log
+        # ----------------------------------------------------
 
         (
             client
@@ -632,6 +790,7 @@ def save_run_log(
             f"[DB LOG ERROR] {e}"
         )
 
+        # Error run log tidak menghentikan patroli
         print(
             "[DB LOG] Error log diabaikan."
         )
@@ -646,6 +805,9 @@ def save_run_log(
 def get_run_logs(
     limit: int = 200
 ) -> List[Dict[str, Any]]:
+    """
+    Mengambil riwayat run log.
+    """
 
     try:
 
@@ -683,8 +845,12 @@ def get_category_counts(
         List[Dict[str, Any]]
     ] = None
 ) -> Dict[str, int]:
+    """
+    Menghitung jumlah artikel berdasarkan kategori.
+    """
 
     if articles is None:
+
         articles = get_all_articles()
 
     counts = {
@@ -702,8 +868,437 @@ def get_category_counts(
         )
 
         if category not in counts:
+
             category = "Netral"
 
         counts[category] += 1
 
     return counts
+
+
+# ============================================================
+# CATEGORY COUNT FROM DATABASE
+# ============================================================
+
+def get_category_count_from_db(
+    category: str
+) -> int:
+    """
+    Mengambil jumlah artikel berdasarkan kategori langsung
+    dari Supabase.
+    """
+
+    if not category:
+        return 0
+
+    try:
+
+        client = get_supabase()
+
+        response = (
+            client
+            .table("articles")
+            .select(
+                "link",
+                count="exact"
+            )
+            .eq(
+                "category",
+                category
+            )
+            .execute()
+        )
+
+        return int(
+            response.count or 0
+        )
+
+    except Exception as e:
+
+        print(
+            f"[DB CATEGORY COUNT ERROR] {e}"
+        )
+
+        return 0
+
+
+# ============================================================
+# TOTAL ARTICLE COUNT
+# ============================================================
+
+def get_total_article_count() -> int:
+    """
+    Mengambil jumlah seluruh artikel.
+    """
+
+    try:
+
+        client = get_supabase()
+
+        response = (
+            client
+            .table("articles")
+            .select(
+                "link",
+                count="exact"
+            )
+            .execute()
+        )
+
+        return int(
+            response.count or 0
+        )
+
+    except Exception as e:
+
+        print(
+            f"[DB TOTAL COUNT ERROR] {e}"
+        )
+
+        return 0
+
+
+# ============================================================
+# UPDATE CATEGORY
+# ============================================================
+
+def update_article_category(
+    link: str,
+    category: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Update kategori artikel tanpa menyentuh field lain.
+    """
+
+    return update_article(
+        link,
+        {
+            "category": category
+        }
+    )
+
+
+# ============================================================
+# UPDATE PRIORITY
+# ============================================================
+
+def update_article_priority(
+    link: str,
+    priority: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Update prioritas artikel.
+    """
+
+    return update_article(
+        link,
+        {
+            "priority": priority
+        }
+    )
+
+
+# ============================================================
+# UPDATE CATEGORY + PRIORITY
+# ============================================================
+
+def update_article_classification(
+    link: str,
+    category: Optional[str] = None,
+    priority: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Update klasifikasi artikel.
+
+    Bisa mengubah:
+    - category
+    - priority
+    """
+
+    updates: Dict[str, Any] = {}
+
+    if category is not None:
+
+        updates["category"] = category
+
+    if priority is not None:
+
+        updates["priority"] = priority
+
+    if not updates:
+
+        return None
+
+    return update_article(
+        link,
+        updates
+    )
+
+
+# ============================================================
+# GET ARTICLES BY CATEGORY
+# ============================================================
+
+def get_articles_by_category(
+    category: str,
+    limit: int = 1000
+) -> List[Dict[str, Any]]:
+    """
+    Mengambil artikel berdasarkan kategori.
+    """
+
+    if not category:
+        return []
+
+    client = get_supabase()
+
+    try:
+
+        response = (
+            client
+            .table("articles")
+            .select("*")
+            .eq(
+                "category",
+                category
+            )
+            .order(
+                "published_date",
+                desc=True
+            )
+            .limit(limit)
+            .execute()
+        )
+
+        return response.data or []
+
+    except Exception as e:
+
+        print(
+            f"[DB CATEGORY ERROR] {e}"
+        )
+
+        return []
+
+
+# ============================================================
+# GET ARTICLES BY PRIORITY
+# ============================================================
+
+def get_articles_by_priority(
+    priority: str,
+    limit: int = 1000
+) -> List[Dict[str, Any]]:
+    """
+    Mengambil artikel berdasarkan prioritas.
+    """
+
+    if not priority:
+        return []
+
+    client = get_supabase()
+
+    try:
+
+        response = (
+            client
+            .table("articles")
+            .select("*")
+            .eq(
+                "priority",
+                priority
+            )
+            .order(
+                "published_date",
+                desc=True
+            )
+            .limit(limit)
+            .execute()
+        )
+
+        return response.data or []
+
+    except Exception as e:
+
+        print(
+            f"[DB PRIORITY ERROR] {e}"
+        )
+
+        return []
+
+
+# ============================================================
+# SEARCH ARTICLES
+# ============================================================
+
+def search_articles(
+    search_query: str,
+    limit: int = 100
+) -> List[Dict[str, Any]]:
+    """
+    Mencari artikel berdasarkan judul.
+    """
+
+    if not search_query:
+        return []
+
+    client = get_supabase()
+
+    try:
+
+        response = (
+            client
+            .table("articles")
+            .select("*")
+            .ilike(
+                "title",
+                f"%{search_query}%"
+            )
+            .order(
+                "published_date",
+                desc=True
+            )
+            .limit(limit)
+            .execute()
+        )
+
+        return response.data or []
+
+    except Exception as e:
+
+        print(
+            f"[DB SEARCH ERROR] {e}"
+        )
+
+        return []
+
+
+# ============================================================
+# GET LATEST ARTICLES
+# ============================================================
+
+def get_latest_articles(
+    limit: int = 20
+) -> List[Dict[str, Any]]:
+    """
+    Mengambil artikel terbaru.
+    """
+
+    try:
+
+        client = get_supabase()
+
+        response = (
+            client
+            .table("articles")
+            .select("*")
+            .order(
+                "published_date",
+                desc=True
+            )
+            .limit(limit)
+            .execute()
+        )
+
+        return response.data or []
+
+    except Exception as e:
+
+        print(
+            f"[DB LATEST ERROR] {e}"
+        )
+
+        return []
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+def health_check() -> Dict[str, Any]:
+    """
+    Mengecek kondisi koneksi database dan jumlah artikel.
+    """
+
+    result = {
+        "connected": False,
+        "articles": 0,
+        "error": None
+    }
+
+    try:
+
+        client = get_supabase()
+
+        response = (
+            client
+            .table("articles")
+            .select(
+                "link",
+                count="exact"
+            )
+            .limit(1)
+            .execute()
+        )
+
+        result["connected"] = True
+
+        result["articles"] = int(
+            response.count or 0
+        )
+
+        return result
+
+    except Exception as e:
+
+        result["error"] = str(e)
+
+        print(
+            f"[DB HEALTH ERROR] {e}"
+        )
+
+        return result
+
+
+# ============================================================
+# MAIN TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    print(
+        "=" * 60
+    )
+
+    print(
+        "DATABASE.PY - SUPABASE TEST"
+    )
+
+    print(
+        "=" * 60
+    )
+
+    if test_connection():
+
+        health = health_check()
+
+        print(
+            f"[DATABASE] Connected : "
+            f"{health.get('connected')}"
+        )
+
+        print(
+            f"[DATABASE] Articles  : "
+            f"{health.get('articles')}"
+        )
+
+    else:
+
+        print(
+            "[DATABASE] Koneksi database gagal."
+        )
+
+    print(
+        "=" * 60
+    )
+
