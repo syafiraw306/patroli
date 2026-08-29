@@ -1,9 +1,14 @@
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from dotenv import load_dotenv
 from supabase import create_client, Client
+
+
+# ============================================================
+# LOAD ENVIRONMENT
+# ============================================================
 
 load_dotenv()
 
@@ -13,29 +18,52 @@ SUPABASE_KEY = (os.getenv("SUPABASE_KEY") or "").strip()
 _supabase: Optional[Client] = None
 
 
+# ============================================================
+# SUPABASE CLIENT
+# ============================================================
+
 def get_supabase() -> Client:
+    """
+    Membuat dan mengembalikan client Supabase.
+    Client dibuat satu kali dan digunakan kembali.
+    """
+
     global _supabase
 
     if _supabase is not None:
         return _supabase
 
     if not SUPABASE_URL:
-        raise RuntimeError("SUPABASE_URL belum dikonfigurasi.")
+        raise RuntimeError(
+            "SUPABASE_URL belum dikonfigurasi."
+        )
 
     if not SUPABASE_KEY:
-        raise RuntimeError("SUPABASE_KEY belum dikonfigurasi.")
+        raise RuntimeError(
+            "SUPABASE_KEY belum dikonfigurasi."
+        )
 
     _supabase = create_client(
         SUPABASE_URL,
         SUPABASE_KEY
     )
 
-    print("[SUPABASE] Client berhasil dibuat.")
+    print(
+        "[SUPABASE] Client berhasil dibuat."
+    )
 
     return _supabase
 
 
+# ============================================================
+# UTILITAS
+# ============================================================
+
 def normalize_link(link: str) -> str:
+    """
+    Normalisasi dasar URL/link.
+    """
+
     if not link:
         return ""
 
@@ -43,11 +71,26 @@ def normalize_link(link: str) -> str:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    """
+    Waktu UTC dalam format ISO.
+    """
 
+    return datetime.now(
+        timezone.utc
+    ).isoformat()
+
+
+# ============================================================
+# TEST CONNECTION
+# ============================================================
 
 def test_connection() -> bool:
+    """
+    Mengecek koneksi ke tabel articles.
+    """
+
     try:
+
         client = get_supabase()
 
         response = (
@@ -58,26 +101,42 @@ def test_connection() -> bool:
             .execute()
         )
 
-        print("[SUPABASE] Koneksi berhasil.")
         print(
-            f"[SUPABASE] Test response: "
+            "[SUPABASE] Koneksi berhasil."
+        )
+
+        print(
+            "[SUPABASE] Test response: "
             f"{len(response.data or [])} row."
         )
 
         return True
 
     except Exception as e:
-        print(f"[SUPABASE TEST ERROR] {e}")
+
+        print(
+            f"[SUPABASE TEST ERROR] {e}"
+        )
+
         return False
 
+
+# ============================================================
+# GET ALL ARTICLES
+# ============================================================
 
 def get_all_articles(
     page_size: int = 1000
 ) -> List[Dict[str, Any]]:
+    """
+    Mengambil seluruh artikel dari Supabase.
+    Pagination digunakan agar database besar tetap bisa dibaca.
+    """
 
     client = get_supabase()
 
-    results = []
+    results: List[Dict[str, Any]] = []
+
     start = 0
 
     while True:
@@ -98,7 +157,7 @@ def get_all_articles(
         results.extend(rows)
 
         print(
-            f"[SUPABASE] Mengambil "
+            "[SUPABASE] Mengambil "
             f"{len(rows)} artikel "
             f"(offset {start})."
         )
@@ -109,16 +168,60 @@ def get_all_articles(
         start += page_size
 
     print(
-        f"[SUPABASE] Total artikel: "
+        "[SUPABASE] Total artikel: "
         f"{len(results)}"
     )
 
     return results
 
 
+# ============================================================
+# GET EXISTING LINKS
+# ============================================================
+
+def get_existing_article_links() -> Set[str]:
+    """
+    Mengambil seluruh link artikel yang sudah ada di database.
+
+    Fungsi ini digunakan oleh patroli.py untuk menentukan
+    apakah sebuah artikel merupakan artikel BARU.
+
+    PENTING:
+    Fungsi ini hanya digunakan untuk mendeteksi artikel baru.
+    Reklasifikasi database tetap dilakukan terhadap seluruh artikel.
+    """
+
+    articles = get_all_articles()
+
+    links: Set[str] = set()
+
+    for article in articles:
+
+        link = normalize_link(
+            article.get("link", "")
+        )
+
+        if link:
+            links.add(link)
+
+    print(
+        "[SUPABASE] Link artikel existing: "
+        f"{len(links)}"
+    )
+
+    return links
+
+
+# ============================================================
+# GET ARTICLE BY LINK
+# ============================================================
+
 def get_article_by_link(
     link: str
 ) -> Optional[Dict[str, Any]]:
+    """
+    Mengambil satu artikel berdasarkan link.
+    """
 
     link = normalize_link(link)
 
@@ -133,7 +236,10 @@ def get_article_by_link(
             client
             .table("articles")
             .select("*")
-            .eq("link", link)
+            .eq(
+                "link",
+                link
+            )
             .limit(1)
             .execute()
         )
@@ -147,14 +253,28 @@ def get_article_by_link(
 
     except Exception as e:
 
-        print(f"[DB GET ERROR] {e}")
+        print(
+            "[DB GET ERROR] "
+            f"{e}"
+        )
 
         return None
 
 
+# ============================================================
+# UPSERT ARTICLE
+# ============================================================
+
 def upsert_article(
     article: Dict[str, Any]
 ) -> Dict[str, Any]:
+    """
+    Insert artikel baru atau update artikel yang link-nya
+    sudah ada.
+
+    Database harus mempunyai UNIQUE constraint pada kolom link
+    agar on_conflict='link' berjalan dengan benar.
+    """
 
     client = get_supabase()
 
@@ -171,11 +291,13 @@ def upsert_article(
 
     current_time = now_iso()
 
+    # created_at hanya dibuat jika belum ada.
     data.setdefault(
         "created_at",
         current_time
     )
 
+    # updated_at selalu diperbarui.
     data["updated_at"] = current_time
 
     response = (
@@ -196,9 +318,16 @@ def upsert_article(
     return data
 
 
+# ============================================================
+# INSERT ARTICLES
+# ============================================================
+
 def insert_articles(
     articles: List[Dict[str, Any]]
 ) -> int:
+    """
+    Menyimpan banyak artikel.
+    """
 
     if not articles:
         return 0
@@ -208,26 +337,39 @@ def insert_articles(
     for article in articles:
 
         try:
-            upsert_article(article)
+
+            upsert_article(
+                article
+            )
+
             success += 1
 
         except Exception as e:
+
             print(
-                f"[SUPABASE] Gagal menyimpan artikel: {e}"
+                "[SUPABASE] Gagal menyimpan artikel: "
+                f"{e}"
             )
 
     print(
-        f"[SUPABASE] Berhasil menyimpan "
+        "[SUPABASE] Berhasil menyimpan "
         f"{success}/{len(articles)} artikel."
     )
 
     return success
 
 
+# ============================================================
+# UPDATE ARTICLE
+# ============================================================
+
 def update_article(
     link: str,
     updates: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
+    """
+    Update artikel berdasarkan link.
+    """
 
     link = normalize_link(link)
 
@@ -244,7 +386,10 @@ def update_article(
         client
         .table("articles")
         .update(data)
-        .eq("link", link)
+        .eq(
+            "link",
+            link
+        )
         .execute()
     )
 
@@ -256,7 +401,15 @@ def update_article(
     return None
 
 
+# ============================================================
+# DELETE ALL ARTICLES
+# ============================================================
+
 def delete_all_articles():
+    """
+    Menghapus seluruh artikel.
+    Gunakan hanya jika memang diperlukan.
+    """
 
     client = get_supabase()
 
@@ -264,7 +417,10 @@ def delete_all_articles():
         client
         .table("articles")
         .delete()
-        .neq("link", "")
+        .neq(
+            "link",
+            ""
+        )
         .execute()
     )
 
@@ -273,9 +429,16 @@ def delete_all_articles():
     )
 
 
+# ============================================================
+# SAVE RUN LOG
+# ============================================================
+
 def save_run_log(
     log_data: Dict[str, Any]
 ):
+    """
+    Menyimpan log workflow ke tabel run_logs.
+    """
 
     try:
 
@@ -329,9 +492,16 @@ def save_run_log(
         )
 
 
+# ============================================================
+# GET RUN LOGS
+# ============================================================
+
 def get_run_logs(
     limit: int = 200
 ) -> List[Dict[str, Any]]:
+    """
+    Mengambil riwayat run workflow.
+    """
 
     try:
 
@@ -360,11 +530,18 @@ def get_run_logs(
         return []
 
 
+# ============================================================
+# CATEGORY COUNTS
+# ============================================================
+
 def get_category_counts(
     articles: Optional[
         List[Dict[str, Any]]
     ] = None
 ):
+    """
+    Menghitung jumlah artikel berdasarkan kategori.
+    """
 
     if articles is None:
         articles = get_all_articles()
