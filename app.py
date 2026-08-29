@@ -1,68 +1,64 @@
-import datetime
-import html
-import os
-import re
-
-import pandas as pd
-import plotly.express as px
 import streamlit as st
-
-from database import (
-    get_all_articles,
-    get_run_logs,
-)
-
-
-# ============================================================
-# KONFIGURASI
-# ============================================================
+import pandas as pd
+from database import get_filtered_articles, get_all_articles, clean_html
 
 st.set_page_config(
-    page_title="Patroli Siber 2026",
-    page_icon="🛡️",
-    layout="wide",
-    initial_sidebar_state="expanded",
+    page_title="Dashboard Patroli Siber 2026",
+    page_icon="⚖️",
+    layout="wide"
 )
 
-NAMA_SATKER = os.getenv(
-    "NAMA_SATKER",
-    "Kejaksaan Negeri Deli Serdang",
+st.title("⚖️ Dashboard Patroli Siber - Kejaksaan Negeri Deli Serdang")
+st.markdown("Sistem Pemantauan dan Klasifikasi Media Berita Otomatis")
+
+# Sidebar Filter
+st.sidebar.header("🔍 Filter Data")
+category_filter = st.sidebar.selectbox("Kategori", ["Semua Kategori", "Negatif Kuat", "Perlu Penanganan", "Positif", "Netral"])
+priority_filter = st.sidebar.selectbox("Prioritas", ["Semua Prioritas", "TINGGI", "SEDANG", "RENDAH"])
+search_query = st.sidebar.text_input("Cari Judul Berita")
+
+# Ambil data dari database
+articles = get_filtered_articles(
+    category=category_filter,
+    priority=priority_filter,
+    search_query=search_query
 )
 
-TAHUN_TARGET = 2026
+# Hitung statistik ringkas
+total_art = len(articles)
+neg_count = sum(1 for a in articles if a.get("category") == "Negatif Kuat")
+hand_count = sum(1 for a in articles if a.get("category") == "Perlu Penanganan")
+pos_count = sum(1 for a in articles if a.get("category") == "Positif")
 
+# Tampilan KPI
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Berita", total_art)
+col2.metric("🔴 Negatif Kuat", neg_count)
+col3.metric("🟡 Perlu Penanganan", hand_count)
+col4.metric("🟢 Positif", pos_count)
 
-# ============================================================
-# CSS
-# ============================================================
+st.markdown("---")
 
-st.markdown(
-    """
-    <style>
-
-    /* =====================================================
-       GLOBAL
-       ===================================================== */
-
-    .stApp {
-        background: #f5f7fb;
-    }
-
-    .block-container {
-        max-width: 1500px;
-        padding-top: 1.5rem;
-        padding-bottom: 3rem;
-    }
-
-    section[data-testid="stSidebar"] {
-        background: #ffffff;
-        border-right: 1px solid #e5e7eb;
-    }
-
-    section[data-testid="stSidebar"] > div {
-        padding-top: 1.5rem;
-    }
-
+# Tampilan Utama Berita
+if not articles:
+    st.info("Tidak ada berita yang sesuai dengan filter.")
+else:
+    for art in articles:
+        # Bersihkan sisa tag HTML untuk memastikan tampilan rapi
+        clean_title = clean_html(art.get("title", "Tanpa Judul"))
+        clean_content = clean_html(art.get("content", ""))
+        
+        category = art.get("category", "Netral")
+        badge = "🔴" if category == "Negatif Kuat" else "🟡" if category == "Perlu Penanganan" else "🟢"
+        
+        with st.expander(f"{badge} {clean_title}"):
+            st.write(f"**Kategori:** {category} | **Prioritas:** {art.get('priority', 'RENDAH')} | **Tanggal:** {art.get('published_date', '-')}")
+            if art.get("keywords"):
+                st.write(f"**Kata Kunci Terdeteksi:** {', '.join(art['keywords'])}")
+            
+            # Menampilkan potongan konten yang sudah bersih dari HTML
+            st.write(clean_content[:400] + ("..." if len(clean_content) > 400 else ""))
+            st.markdown(f"[🔗 Baca Berita Selengkapnya]({art.get('url')})")
 
     /* =====================================================
        HEADER
