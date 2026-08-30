@@ -243,7 +243,14 @@ def update_article(link: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any
     if len(data) == 1:
         return None
     try:
-        response = get_supabase().table("articles").update(data).eq("link", link).execute()
+        response = (
+            get_supabase()
+            .table("articles")
+            .update(data)
+            .eq("link", link)
+            .select("*")
+            .execute()
+        )
         rows = response.data or []
         return rows[0] if rows else None
     except Exception as e:
