@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 
 from database import (
     get_all_articles,
-    get_article_by_link,
     save_run_log,
     upsert_article,
     update_article_classification,
@@ -530,15 +529,6 @@ def collect_candidates() -> List[Dict[str, Any]]:
 def process_candidate(
     candidate: Dict[str, Any]
 ) -> Dict[str, Any]:
-    """
-    Memproses satu kandidat berita.
-
-    Aturan penting:
-    - summary RSS hanya digunakan sementara sebagai fallback.
-    - summary TIDAK pernah dikirim ke Supabase.
-    - keywords TIDAK pernah dikirim sebagai kolom "keywords".
-    - hasil klasifikasi disimpan pada field yang didukung database.py.
-    """
 
     title = normalize_text(
         candidate.get("title")
@@ -554,23 +544,21 @@ def process_candidate(
 
     result = {
         "ok": False,
-        "saved": False,
-        "telegram": False,
         "article": None,
         "reason": "",
     }
 
-    # ========================================================
-    # 1. VALIDASI LINK
-    # ========================================================
+    # --------------------------------------------------------
+    # LINK
+    # --------------------------------------------------------
 
     if not rss_link:
         result["reason"] = "link kosong"
         return result
 
-    # ========================================================
-    # 2. VALIDASI TANGGAL RSS
-    # ========================================================
+    # --------------------------------------------------------
+    # TANGGAL RSS
+    # --------------------------------------------------------
 
     if (
         rss_date
@@ -579,9 +567,9 @@ def process_candidate(
         result["reason"] = "bukan tahun target"
         return result
 
-    # ========================================================
-    # 3. FETCH HALAMAN ARTIKEL
-    # ========================================================
+    # --------------------------------------------------------
+    # FETCH
+    # --------------------------------------------------------
 
     final_url, raw_html = fetch_webpage_content(
         rss_link
@@ -594,30 +582,21 @@ def process_candidate(
     if not final_url:
         final_url = rss_link
 
-    # ========================================================
-    # 4. EKSTRAK KONTEN
-    # ========================================================
+    # --------------------------------------------------------
+    # CONTENT
+    # --------------------------------------------------------
 
     content = extract_article_text(
         raw_html
     )
 
-    # --------------------------------------------------------
-    # FALLBACK:
-    # RSS description hanya dipakai dalam memori.
-    # TIDAK disimpan ke kolom "summary".
-    # --------------------------------------------------------
-
     if len(content) < MIN_CONTENT_LENGTH:
 
-        rss_description = normalize_text(
+        content = normalize_text(
             candidate.get(
                 "rss_description"
             )
         )
-
-        if len(rss_description) >= MIN_CONTENT_LENGTH:
-            content = rss_description
 
     if len(content) < MIN_CONTENT_LENGTH:
 
@@ -627,9 +606,9 @@ def process_candidate(
 
         return result
 
-    # ========================================================
-    # 5. CEK RELEVANSI SATKER
-    # ========================================================
+    # --------------------------------------------------------
+    # SATKER
+    # --------------------------------------------------------
 
     if not check_satker_relevance(
         title,
@@ -642,17 +621,14 @@ def process_candidate(
 
         return result
 
-    # ========================================================
-    # 6. TANGGAL ARTIKEL
-    # ========================================================
+    # --------------------------------------------------------
+    # TANGGAL
+    # --------------------------------------------------------
 
-    published = rss_date
-
-    if not published:
-
-        published = datetime.now(
-            timezone.utc
-        )
+    published = (
+        rss_date
+        or datetime.now(timezone.utc)
+    )
 
     if not is_article_2026(
         published
@@ -664,156 +640,87 @@ def process_candidate(
 
         return result
 
-    # ========================================================
-    # 7. KLASIFIKASI
-    # ========================================================
+    # --------------------------------------------------------
+    # CLASSIFICATION
+    # --------------------------------------------------------
 
     classification = classify_article(
         title,
         content
     )
 
-    # ========================================================
-    # 8. PAYLOAD SUPABASE
-    #
-    # JANGAN tambahkan:
-    #   summary
-    #   keywords
-    #
-    # Field harus sesuai schema articles.
-    # ========================================================
+    # --------------------------------------------------------
+    # PAYLOAD
+    # --------------------------------------------------------
 
     article = {
         "title": title,
-
         "link": final_url,
-
         "content": content[:15000],
-
-        "published_date":
-            published.isoformat(),
-
-        "source":
-            (
-                normalize_text(
-                    candidate.get("source")
-                )
-                or "Google News"
-            ),
-
-        "category":
+        "published_date": published.isoformat(),
+        "source": (
+            normalize_text(
+                candidate.get("source")
+            )
+            or "Google News"
+        ),
+        "category": classification.get(
+            "category",
+            "Netral"
+        ),
+        "priority": classification.get(
+            "priority",
+            "RENDAH"
+        ),
+        "negative_score": int(
             classification.get(
-                "category",
-                "Netral"
-            ),
-
-        "priority":
+                "negative_score",
+                0
+            )
+        ),
+        "handling_score": int(
             classification.get(
-                "priority",
-                "RENDAH"
-            ),
-
-        "negative_score":
-            int(
-                classification.get(
-                    "negative_score",
-                    0
-                )
-            ),
-
-        "handling_score":
-            int(
-                classification.get(
-                    "handling_score",
-                    0
-                )
-            ),
-
-        "positive_score":
-            int(
-                classification.get(
-                    "positive_score",
-                    0
-                )
-            ),
-
-        "detected_keywords":
+                "handling_score",
+                0
+            )
+        ),
+        "positive_score": int(
             classification.get(
-                "keywords",
-                []
-            ),
-
-        "satker_matches":
-            classification.get(
-                "satker_matches",
-                []
-            ),
-
-        "satker_match_location":
-            classification.get(
-                "satker_match_location",
-                ""
-            ),
-
-        "strong_context":
-            classification.get(
-                "strong_context",
-                []
-            ),
-
-        "positive_context":
-            classification.get(
-                "positive_context",
-                []
-            ),
-
-        "handling_context":
-            classification.get(
-                "handling_context",
-                []
-            ),
+                "positive_score",
+                0
+            )
+        ),
+        "detected_keywords": classification.get(
+            "keywords",
+            []
+        ),
+        "satker_matches": classification.get(
+            "satker_matches",
+            []
+        ),
+        "satker_match_location": classification.get(
+            "satker_match_location",
+            ""
+        ),
+        "strong_context": classification.get(
+            "strong_context",
+            []
+        ),
+        "positive_context": classification.get(
+            "positive_context",
+            []
+        ),
+        "handling_context": classification.get(
+            "handling_context",
+            []
+        ),
     }
 
-    # ========================================================
-    # 9. SIMPAN KE DATABASE
-    # ========================================================
+    result["ok"] = True
+    result["article"] = article
 
-    try:
-
-        saved = upsert_article(
-            article
-        )
-
-        if saved is None:
-
-            result["reason"] = (
-                "gagal upsert"
-            )
-
-            return result
-
-        result.update(
-            {
-                "ok": True,
-                "saved": True,
-                "article": article,
-            }
-        )
-
-        return result
-
-    except Exception as exc:
-
-        result["reason"] = str(
-            exc
-        )
-
-        print(
-            "[UPSERT ERROR] "
-            f"{final_url}: {exc}"
-        )
-
-        return result
+    return result
+    
 def telegram_enabled() -> bool:
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
@@ -1041,57 +948,372 @@ def reclassify_all() -> Dict[str, Any]:
 
 
 def run_once() -> Dict[str, Any]:
-    started = time.perf_counter()
-    candidates = collect_candidates()
-    valid = 0
-    saved = 0
-    failed = 0
-    telegram_count = 0
-    results: List[Dict[str, Any]] = []
 
-    with ThreadPoolExecutor(max_workers=max(1, MAX_WORKERS)) as executor:
-        futures = [executor.submit(process_candidate, candidate) for candidate in candidates]
-        for future in as_completed(futures):
+    started = time.perf_counter()
+
+    print("=" * 70)
+    print("MEMULAI PATROLI SIBER")
+    print("=" * 70)
+
+    # ========================================================
+    # 1. AMBIL SNAPSHOT LINK DATABASE SEBELUM RUN
+    # ========================================================
+
+    existing_articles = get_all_articles()
+
+    existing_links = {
+        normalize_url(
+            article.get("link")
+        )
+        for article in existing_articles
+        if normalize_url(
+            article.get("link")
+        )
+    }
+
+    print(
+        f"[DATABASE] Link sebelum run: "
+        f"{len(existing_links)}"
+    )
+
+    # ========================================================
+    # 2. SEARCH
+    # ========================================================
+
+    candidates = collect_candidates()
+
+    # ========================================================
+    # 3. PROCESS ARTIKEL
+    #
+    # HANYA FETCH + CLASSIFY
+    # Tidak menulis database dari worker.
+    # ========================================================
+
+    valid_articles = []
+    failed = 0
+
+    with ThreadPoolExecutor(
+        max_workers=max(
+            1,
+            MAX_WORKERS
+        )
+    ) as executor:
+
+        futures = [
+            executor.submit(
+                process_candidate,
+                candidate
+            )
+            for candidate in candidates
+        ]
+
+        for future in as_completed(
+            futures
+        ):
+
             try:
+
                 result = future.result()
-            except Exception as e:
-                result = {"ok": False, "saved": False, "telegram": False, "article": None, "reason": str(e)}
-            results.append(result)
-            if result.get("ok"):
-                valid += 1
-            if result.get("saved"):
-                saved += 1
-                article = result.get("article") or {}
-                if send_alert_if_needed(article):
-                    telegram_count += 1
-            else:
+
+                if result.get("ok"):
+
+                    article = (
+                        result.get("article")
+                    )
+
+                    if article:
+                        valid_articles.append(
+                            article
+                        )
+
+                else:
+
+                    failed += 1
+
+                    reason = result.get(
+                        "reason",
+                        ""
+                    )
+
+                    if reason:
+                        print(
+                            f"[FILTER] {reason}"
+                        )
+
+            except Exception as exc:
+
                 failed += 1
 
-    # Pastikan statistik klasifikasi berasal dari database setelah penyimpanan.
-    articles = get_all_articles()
-    counts = {"Negatif Kuat": 0, "Perlu Penanganan": 0, "Netral": 0, "Positif": 0}
-    for article in articles:
-        category = article.get("category") or "Netral"
-        counts[category if category in counts else "Netral"] += 1
+                print(
+                    f"[WORKER ERROR] {exc}"
+                )
 
-    duration = round(time.perf_counter() - started, 2)
+    print(
+        f"[PATROLI] Artikel valid: "
+        f"{len(valid_articles)}"
+    )
+
+    # ========================================================
+    # 4. DEDUP LINK HASIL
+    # ========================================================
+
+    unique_articles = {}
+
+    for article in valid_articles:
+
+        link = normalize_url(
+            article.get("link")
+        )
+
+        if not link:
+            continue
+
+        unique_articles.setdefault(
+            link,
+            article
+        )
+
+    valid_articles = list(
+        unique_articles.values()
+    )
+
+    # ========================================================
+    # 5. SIMPAN SEQUENTIAL
+    #
+    # Tidak lagi melakukan upsert bersamaan.
+    # ========================================================
+
+    saved_count = 0
+    save_failed = 0
+    new_articles = []
+
+    for article in valid_articles:
+
+        link = normalize_url(
+            article.get("link")
+        )
+
+        if not link:
+            continue
+
+        was_existing = (
+            link in existing_links
+        )
+
+        try:
+
+            saved = upsert_article(
+                article
+            )
+
+            if saved is None:
+
+                save_failed += 1
+
+                print(
+                    f"[SAVE ERROR] "
+                    f"Gagal menyimpan: {link}"
+                )
+
+                continue
+
+            saved_count += 1
+
+            # -----------------------------------------------
+            # HANYA LINK YANG BELUM ADA SEBELUM RUN
+            # -----------------------------------------------
+
+            if not was_existing:
+
+                new_articles.append(
+                    article
+                )
+
+        except Exception as exc:
+
+            save_failed += 1
+
+            print(
+                f"[SAVE ERROR] "
+                f"{link}: {exc}"
+            )
+
+    print(
+        f"[DATABASE] Berhasil disimpan/update: "
+        f"{saved_count}"
+    )
+
+    print(
+        f"[DATABASE] Gagal: "
+        f"{save_failed}"
+    )
+
+    print(
+        f"[DATABASE] Artikel baru: "
+        f"{len(new_articles)}"
+    )
+
+    # ========================================================
+    # 6. TELEGRAM
+    #
+    # HANYA ARTIKEL YANG BELUM ADA SEBELUM RUN.
+    # ========================================================
+
+    telegram_count = 0
+
+    if telegram_enabled():
+
+        print(
+            f"[TELEGRAM] Kandidat artikel baru: "
+            f"{len(new_articles)}"
+        )
+
+        for article in new_articles:
+
+            if not send_alert_if_needed(
+                article
+            ):
+                continue
+
+            telegram_count += 1
+
+            print(
+                "[TELEGRAM] Terkirim: "
+                f"{article.get('title', '')[:100]}"
+            )
+
+    else:
+
+        print(
+            "[TELEGRAM] Tidak aktif. "
+            "Periksa TELEGRAM_BOT_TOKEN dan "
+            "TELEGRAM_CHAT_ID."
+        )
+
+    # ========================================================
+    # 7. REKLASIFIKASI SELURUH DATABASE
+    #
+    # SELALU DIJALANKAN SETIAP WORKFLOW.
+    # ========================================================
+
+    counts = reclassify_all()
+
+    # ========================================================
+    # 8. HITUNG TOTAL DATABASE TERKINI
+    # ========================================================
+
+    final_articles = get_all_articles()
+
+    duration = round(
+        time.perf_counter() - started,
+        2
+    )
+
+    # ========================================================
+    # 9. LOG
+    # ========================================================
+
     log = {
         "duration_seconds": duration,
         "candidate_count": len(candidates),
-        "valid_count": valid,
-        "saved_count": saved,
-        "failed_count": failed,
-        "reclassified_count": len(articles),
-        "negative_count": counts["Negatif Kuat"],
-        "handling_count": counts["Perlu Penanganan"],
-        "neutral_count": counts["Netral"],
-        "positive_count": counts["Positif"],
+        "valid_count": len(valid_articles),
+        "saved_count": saved_count,
+        "failed_count": (
+            failed + save_failed
+        ),
+        "reclassified_count": len(
+            final_articles
+        ),
+        "negative_count": counts.get(
+            "Negatif Kuat",
+            0
+        ),
+        "handling_count": counts.get(
+            "Perlu Penanganan",
+            0
+        ),
+        "neutral_count": counts.get(
+            "Netral",
+            0
+        ),
+        "positive_count": counts.get(
+            "Positif",
+            0
+        ),
         "telegram_count": telegram_count,
         "status": "Selesai",
     }
-    save_run_log(log)
+
+    save_run_log(
+        log
+    )
+
+    # ========================================================
+    # 10. SUMMARY
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print("PATROLI SELESAI")
+    print("=" * 70)
+
+    print(
+        f"Durasi            : {duration} detik"
+    )
+
+    print(
+        f"Kandidat           : {len(candidates)}"
+    )
+
+    print(
+        f"Artikel valid      : {len(valid_articles)}"
+    )
+
+    print(
+        f"Berhasil disimpan  : {saved_count}"
+    )
+
+    print(
+        f"Gagal              : "
+        f"{failed + save_failed}"
+    )
+
+    print(
+        f"Artikel baru       : {len(new_articles)}"
+    )
+
+    print(
+        f"Database           : {len(final_articles)}"
+    )
+
+    print(
+        f"Negatif Kuat       : "
+        f"{counts.get('Negatif Kuat', 0)}"
+    )
+
+    print(
+        f"Perlu Penanganan   : "
+        f"{counts.get('Perlu Penanganan', 0)}"
+    )
+
+    print(
+        f"Netral             : "
+        f"{counts.get('Netral', 0)}"
+    )
+
+    print(
+        f"Positif            : "
+        f"{counts.get('Positif', 0)}"
+    )
+
+    print(
+        f"Telegram terkirim  : {telegram_count}"
+    )
 
     print("=" * 70)
+
+    return log   
+    
     print("PATROLI SELESAI")
     print(f"Durasi            : {duration} detik")
     print(f"Kandidat           : {len(candidates)}")
