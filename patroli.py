@@ -337,18 +337,77 @@ def classify_article(title: str, content: str) -> Dict[str, Any]:
         "keywords": sorted({w for w in LEGAL_EVENT_TERMS if re.search(r"\b" + re.escape(w) + r"\b", full, re.I)}),
     }
 
+def extract_feed_date(
+    entry: Any
+) -> Optional[datetime]:
+    """
+    Mengambil tanggal publikasi dari entry Google News RSS.
 
+    Urutan:
+    1. published_parsed
+    2. updated_parsed
+    3. created_parsed
+    4. published
+    5. updated
+    6. created
+    """
+
+    # ========================================================
+    # FORMAT PARSED
+    # ========================================================
+
+    for key in (
+        "published_parsed",
+        "updated_parsed",
+        "created_parsed",
+    ):
+        value = entry.get(key)
+
+        if value:
+            try:
+                return datetime(
+                    value.tm_year,
+                    value.tm_mon,
+                    value.tm_mday,
+                    value.tm_hour,
+                    value.tm_min,
+                    value.tm_sec,
+                    tzinfo=timezone.utc,
+                )
+            except Exception:
+                pass
+
+    # ========================================================
+    # FORMAT STRING
+    # ========================================================
+
+    for key in (
+        "published",
+        "updated",
+        "created",
+    ):
+        value = entry.get(key)
+
+        if value:
+
+            parsed = parse_date_safe(
+                value
+            )
+
+            if parsed:
+                return parsed
+
+    return None
+    
 def parse_google_news_feed(
     query: str
 ) -> List[Dict[str, Any]]:
     """
     Mengambil kandidat berita dari Google News RSS.
 
-    CATATAN:
-    - 'summary' TIDAK disimpan sebagai field database.
-    - RSS description hanya disimpan sementara sebagai
-      'rss_description' untuk fallback apabila isi halaman
-      artikel terlalu pendek.
+    summary RSS hanya digunakan sementara sebagai
+    rss_description dan tidak disimpan sebagai kolom
+    summary di tabel articles.
     """
 
     encoded = urllib.parse.quote_plus(
@@ -401,8 +460,8 @@ def parse_google_news_feed(
                 entry
             )
 
-            source_value = (
-                entry.get("source")
+            source_value = entry.get(
+                "source"
             )
 
             if isinstance(
@@ -414,7 +473,10 @@ def parse_google_news_feed(
                     ""
                 )
             else:
-                source = source_value or ""
+                source = (
+                    source_value
+                    or ""
+                )
 
             rss_description = normalize_text(
                 entry.get("summary")
@@ -438,8 +500,6 @@ def parse_google_news_feed(
                         source
                     ),
 
-                    # Hanya digunakan sebagai fallback
-                    # saat scraping artikel gagal/pendek.
                     "rss_description":
                         rss_description,
                 }
