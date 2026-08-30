@@ -450,17 +450,8 @@ def extract_feed_date(
 def parse_google_news_feed(
     query: str
 ) -> List[Dict[str, Any]]:
-    """
-    Mengambil kandidat berita dari Google News RSS.
 
-    summary RSS hanya digunakan sementara sebagai
-    rss_description dan tidak disimpan sebagai kolom
-    summary di tabel articles.
-    """
-
-    encoded = urllib.parse.quote_plus(
-        query
-    )
+    encoded = urllib.parse.quote_plus(query)
 
     url = (
         "https://news.google.com/rss/search?"
@@ -471,31 +462,52 @@ def parse_google_news_feed(
     )
 
     try:
-
-        feed = feedparser.parse(
-            url
+        response = SESSION.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
         )
 
-        if (
-            getattr(
+        response.raise_for_status()
+
+        feed = feedparser.parse(
+            response.content
+        )
+
+        print(
+            f"[RSS DEBUG] "
+            f"query={query} | "
+            f"status={response.status_code} | "
+            f"bytes={len(response.content)} | "
+            f"entries={len(feed.entries)} | "
+            f"bozo={getattr(feed, 'bozo', False)}"
+        )
+
+        if getattr(feed, "bozo", False):
+            bozo_exception = getattr(
                 feed,
-                "bozo",
-                False
+                "bozo_exception",
+                None
             )
-            and not feed.entries
-        ):
 
+            if bozo_exception:
+                print(
+                    f"[RSS BOZO ERROR] "
+                    f"{query} -> "
+                    f"{type(bozo_exception).__name__}: "
+                    f"{bozo_exception}"
+                )
+
+        if not feed.entries:
             print(
-                f"[RSS ERROR] Feed bermasalah: {query}"
+                f"[RSS EMPTY] "
+                f"Tidak ada entry untuk: {query}"
             )
-
             return []
 
         rows = []
 
-        for entry in feed.entries[
-            :MAX_ARTICLES_PER_FEED
-        ]:
+        for entry in feed.entries[:MAX_ARTICLES_PER_FEED]:
 
             link = normalize_url(
                 entry.get("link")
@@ -504,65 +516,50 @@ def parse_google_news_feed(
             if not link:
                 continue
 
-            published = extract_feed_date(
-                entry
-            )
+            published = extract_feed_date(entry)
 
-            source_value = entry.get(
-                "source"
-            )
+            source_value = entry.get("source")
 
-            if isinstance(
-                source_value,
-                dict
-            ):
-                source = source_value.get(
-                    "title",
-                    ""
-                )
+            if isinstance(source_value, dict):
+                source = source_value.get("title", "")
             else:
-                source = (
-                    source_value
-                    or ""
-                )
-
-            rss_description = normalize_text(
-                entry.get("summary")
-            )
+                source = source_value or ""
 
             rows.append(
                 {
                     "title": normalize_text(
                         entry.get("title")
                     ),
-
                     "link": link,
-
                     "published_date": (
                         published.isoformat()
                         if published
                         else None
                     ),
-
-                    "source": normalize_text(
-                        source
+                    "source": normalize_text(source),
+                    "rss_description": normalize_text(
+                        entry.get("summary")
                     ),
-
-                    "rss_description":
-                        rss_description,
                 }
             )
+
+        print(
+            f"[RSS OK] "
+            f"{query} -> {len(rows)} kandidat"
+        )
 
         return rows
 
     except Exception as exc:
 
         print(
-            f"[RSS ERROR] {query}: {exc}"
+            f"[RSS ERROR] "
+            f"{query} -> "
+            f"{type(exc).__name__}: {exc}"
         )
 
         return []
-
+        
 def collect_candidates() -> List[Dict[str, Any]]:
     all_rows: Dict[str, Dict[str, Any]] = {}
     for query in SEARCH_TARGETS:
