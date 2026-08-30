@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 from database import (
     get_all_articles,
+    get_article_by_link,
     save_run_log,
     upsert_article,
     update_article_classification,
@@ -801,40 +802,18 @@ def send_alert_if_needed(article: Dict[str, Any]) -> bool:
     return send_telegram_message(telegram_text(article))
 
 
-def reclassify_all() -> Dict[str, Any]:
-    """
-    Reklasifikasi SELURUH artikel yang ada di database
-    pada setiap workflow.
-
-    Catatan:
-    - Tidak membaca field summary.
-    - Tidak menulis field summary.
-    - Tidak menulis field keywords.
-    - Hanya memperbarui category dan priority.
-    - Statistik selalu dihitung ulang dari seluruh database.
-    """
-
-    print()
+def reclassify_all() -> Dict[str, int]:
     print("=" * 70)
     print("MEMULAI REKLASIFIKASI SELURUH DATABASE")
     print("=" * 70)
 
-    try:
-        articles = get_all_articles()
-    except Exception as exc:
-        print(
-            f"[REKLASIFIKASI ERROR] Gagal mengambil database: {exc}"
-        )
+    articles = get_all_articles()
 
-        return {
-            "Negatif Kuat": 0,
-            "Perlu Penanganan": 0,
-            "Netral": 0,
-            "Positif": 0,
-            "updated": 0,
-            "failed": 1,
-            "total": 0,
-        }
+    total = len(articles)
+
+    print(
+        f"[REKLASIFIKASI] Total artikel: {total}"
+    )
 
     counts = {
         "Negatif Kuat": 0,
@@ -846,20 +825,12 @@ def reclassify_all() -> Dict[str, Any]:
     updated = 0
     failed = 0
 
-    total = len(articles)
-
-    print(
-        f"[REKLASIFIKASI] Total artikel: {total}"
-    )
-
     for index, article in enumerate(
         articles,
         start=1,
     ):
+
         try:
-            link = normalize_url(
-                article.get("link")
-            )
 
             title = normalize_text(
                 article.get("title")
@@ -867,17 +838,21 @@ def reclassify_all() -> Dict[str, Any]:
 
             content = normalize_text(
                 article.get("content")
+                or article.get("summary")
+                or ""
             )
 
             # ------------------------------------------------
-            # ARTIKEL TANPA JUDUL DAN ISI
+            # KLASIFIKASI
             # ------------------------------------------------
 
             if not title and not content:
+
                 category = "Netral"
-                priority = "RENDAH"
+                priority = "Rendah"
 
             else:
+
                 classification = classify_article(
                     title,
                     content,
@@ -890,56 +865,62 @@ def reclassify_all() -> Dict[str, Any]:
 
                 priority = classification.get(
                     "priority",
-                    "RENDAH",
+                    "Rendah",
                 )
-
-            # Pastikan kategori valid.
-            if category not in counts:
-                category = "Netral"
 
             counts[category] += 1
 
             # ------------------------------------------------
-            # UPDATE SETIAP RUN
-            #
-            # Tidak peduli kategori sebelumnya sama atau tidak,
-            # reklasifikasi tetap dilakukan.
+            # UPDATE BERDASARKAN ID
             # ------------------------------------------------
 
-            if not link:
-                failed += 1
-                print(
-                    f"[REKLASIFIKASI] "
-                    f"{index}/{total} -> link kosong"
-                )
-                continue
+            article_id = article.get("id")
 
-            result = update_article_classification(
-                link,
-                category,
-                priority,
-            )
+            if article_id is None:
 
-            if result is not None:
-                updated += 1
-            else:
                 failed += 1
 
                 print(
                     f"[REKLASIFIKASI ERROR] "
                     f"{index}/{total} -> "
-                    f"gagal update: {link}"
+                    f"ID artikel tidak ditemukan"
+                )
+
+                continue
+
+            result = update_article_classification(
+                article_id,
+                category,
+                priority,
+            )
+
+            if result is not None:
+
+                updated += 1
+
+            else:
+
+                failed += 1
+
+                print(
+                    f"[REKLASIFIKASI ERROR] "
+                    f"{index}/{total} -> "
+                    f"gagal update ID={article_id}"
                 )
 
         except Exception as exc:
+
             failed += 1
 
             print(
                 f"[REKLASIFIKASI ERROR] "
-                f"{index}/{total}: {exc}"
+                f"{index}/{total} -> {exc}"
             )
 
-        # Progress setiap 25 artikel.
+        # ------------------------------------------------
+        # PROGRESS
+        # ------------------------------------------------
+
         if (
             index % 25 == 0
             or index == total
@@ -955,45 +936,43 @@ def reclassify_all() -> Dict[str, Any]:
     print("=" * 70)
 
     print(
-        f"Negatif Kuat      : {counts['Negatif Kuat']}"
+        f"Negatif Kuat      : "
+        f"{counts['Negatif Kuat']}"
     )
 
     print(
-        f"Perlu Penanganan  : {counts['Perlu Penanganan']}"
+        f"Perlu Penanganan  : "
+        f"{counts['Perlu Penanganan']}"
     )
 
     print(
-        f"Netral            : {counts['Netral']}"
+        f"Netral            : "
+        f"{counts['Netral']}"
     )
 
     print(
-        f"Positif           : {counts['Positif']}"
+        f"Positif           : "
+        f"{counts['Positif']}"
     )
 
     print(
-        f"Total              : {total}"
+        f"Total              : "
+        f"{total}"
     )
 
     print(
-        f"Berhasil update    : {updated}"
+        f"Berhasil update    : "
+        f"{updated}"
     )
 
     print(
-        f"Gagal update       : {failed}"
+        f"Gagal update       : "
+        f"{failed}"
     )
 
     print("=" * 70)
 
-    return {
-        "Negatif Kuat": counts["Negatif Kuat"],
-        "Perlu Penanganan": counts["Perlu Penanganan"],
-        "Netral": counts["Netral"],
-        "Positif": counts["Positif"],
-        "updated": updated,
-        "failed": failed,
-        "total": total,
-    }
-
+    return counts
 
 def run_once() -> Dict[str, Any]:
 
