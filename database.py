@@ -142,7 +142,14 @@ def now_iso() -> str:
 def test_connection() -> bool:
     try:
         client = get_supabase()
-        response = client.table("articles").select("link").limit(1).execute()
+        response = (
+            get_supabase()
+            .table("articles")
+            .update(data)
+            .eq("link", link)
+            .select("*")
+            .execute()
+        )
         print(f"[SUPABASE] Koneksi berhasil. Test response: {len(response.data or [])} row.")
         return True
     except Exception as e:
