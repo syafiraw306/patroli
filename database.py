@@ -1,6 +1,8 @@
 import os
 import re
 import html
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -13,20 +15,38 @@ SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip()
 SUPABASE_KEY = (os.getenv("SUPABASE_KEY") or "").strip()
 
 _supabase: Optional[Client] = None
+_supabase_lock = threading.Lock()
 
 
 def get_supabase() -> Client:
     global _supabase
+
     if _supabase is not None:
         return _supabase
-    if not SUPABASE_URL:
-        raise RuntimeError("SUPABASE_URL belum dikonfigurasi.")
-    if not SUPABASE_KEY:
-        raise RuntimeError("SUPABASE_KEY belum dikonfigurasi.")
-    _supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    print("[SUPABASE] Client berhasil dibuat.")
-    return _supabase
 
+    with _supabase_lock:
+
+        if _supabase is not None:
+            return _supabase
+
+        if not SUPABASE_URL:
+            raise RuntimeError(
+                "SUPABASE_URL belum dikonfigurasi."
+            )
+
+        if not SUPABASE_KEY:
+            raise RuntimeError(
+                "SUPABASE_KEY belum dikonfigurasi."
+            )
+
+        _supabase = create_client(
+            SUPABASE_URL,
+            SUPABASE_KEY
+        )
+
+        print("[SUPABASE] Client berhasil dibuat.")
+
+        return _supabase
 
 def clean_html(raw_html: Any) -> str:
     if raw_html is None:
