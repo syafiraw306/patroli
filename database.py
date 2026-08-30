@@ -391,7 +391,49 @@ def update_article_category(link: str, category: str) -> Optional[Dict[str, Any]
 def update_article_priority(link: str, priority: str) -> Optional[Dict[str, Any]]:
     return update_article(link, {"priority": priority})
 
+def update_article_classification(
+    article_id: Any,
+    category: str,
+    priority: str,
+) -> Optional[Dict[str, Any]]:
+    """
+    Update kategori dan prioritas berdasarkan ID artikel.
+    Menggunakan primary key lebih aman daripada menggunakan link.
+    """
 
+    try:
+        data = {
+            "category": str(category or "Netral"),
+            "priority": str(priority or "Rendah"),
+        }
+
+        response = (
+            get_supabase()
+            .table("articles")
+            .update(data)
+            .eq("id", article_id)
+            .execute()
+        )
+
+        rows = getattr(response, "data", None)
+
+        if rows:
+            return rows[0]
+
+        print(
+            f"[DB UPDATE] Artikel ID {article_id} "
+            f"tidak ditemukan."
+        )
+
+        return None
+
+    except Exception as exc:
+        print(
+            f"[SUPABASE UPDATE ERROR] "
+            f"ID={article_id}: {exc}"
+        )
+        return None
+        
 def update_article_classification(link: str, category: Optional[str] = None,
                                    priority: Optional[str] = None) -> Optional[Dict[str, Any]]:
     updates: Dict[str, Any] = {}
