@@ -262,6 +262,62 @@ def update_article_classification(link: str, category: Optional[str] = None,
         updates["priority"] = priority
     return update_article(link, updates) if updates else None
 
+def update_article_classification_by_id(
+    article_id: Any,
+    category: Optional[str] = None,
+    priority: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Update category dan/atau priority berdasarkan ID artikel.
+
+    Digunakan oleh patroli.py saat melakukan
+    reklasifikasi seluruh database.
+    """
+
+    if article_id is None:
+        print("[DB UPDATE ID ERROR] ID artikel kosong.")
+        return None
+
+    updates: Dict[str, Any] = {}
+
+    if category is not None:
+        updates["category"] = category
+
+    if priority is not None:
+        updates["priority"] = priority
+
+    if not updates:
+        return None
+
+    updates["updated_at"] = now_iso()
+
+    try:
+        response = (
+            get_supabase()
+            .table("articles")
+            .update(updates)
+            .eq("id", article_id)
+            .execute()
+        )
+
+        rows = response.data or []
+
+        if rows:
+            return rows[0]
+
+        print(
+            f"[DB UPDATE ID] Tidak ada artikel "
+            f"dengan ID={article_id}"
+        )
+
+        return None
+
+    except Exception as e:
+        print(
+            f"[DB UPDATE ID ERROR] "
+            f"ID={article_id} -> {e}"
+        )
+        return None
 
 def get_articles_by_category(category: str, limit: int = 1000) -> List[Dict[str, Any]]:
     if not category:
