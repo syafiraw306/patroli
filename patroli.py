@@ -146,21 +146,69 @@ def normalize_text(value: Any) -> str:
 
 
 def normalize_url(url: Any) -> str:
+    """
+    Menormalisasi URL agar pengecekan duplikat lebih konsisten.
+    """
+
     url = str(url or "").strip()
+
     if not url:
         return ""
+
     try:
-        p = urllib.parse.urlsplit(url)
-        query = urllib.parse.parse_qs(p.query)
-        for key in ("url", "u", "q", "target"):
-            if key in query and query[key]:
-                candidate = query[key][0]
-                if candidate.startswith("http"):
-                    url = candidate
-                    break
+        parsed = urllib.parse.urlsplit(url)
+
+        scheme = parsed.scheme.lower()
+        netloc = parsed.netloc.lower()
+
+        # Buang www.
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+
+        # Hapus fragment.
+        path = parsed.path.rstrip("/")
+
+        # Buang query tracking umum.
+        query_pairs = urllib.parse.parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+        )
+
+        tracking_keys = {
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_term",
+            "utm_content",
+            "fbclid",
+            "gclid",
+            "ref",
+        }
+
+        clean_query = [
+            (k, v)
+            for k, v in query_pairs
+            if k.lower() not in tracking_keys
+        ]
+
+        query = urllib.parse.urlencode(
+            clean_query
+        )
+
+        normalized = urllib.parse.urlunsplit(
+            (
+                scheme,
+                netloc,
+                path,
+                query,
+                "",
+            )
+        )
+
+        return normalized
+
     except Exception:
-        pass
-    return url.strip()
+        return url.split("#")[0].strip()
 
 
 def parse_date_safe(value: Any) -> Optional[datetime]:
