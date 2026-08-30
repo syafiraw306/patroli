@@ -40,16 +40,24 @@ TARGET_KEJARI_KEYWORDS = [
     "kejaksaan deli serdang",
     "kajari deli serdang",
     "kepala kejaksaan negeri deli serdang",
-    "kejari lubuk pakam",
-    "kejaksaan negeri lubuk pakam",
-    "cabang kejaksaan negeri deli serdang",
+
+    "cabang kejaksaan negeri pancur batu",
+    "cabjari pancur batu",
+    "kacabjari pancur batu",
+
+    "cabang kejaksaan negeri labuhan deli",
+    "cabjari labuhan deli",
+    "kacabjari labuhan deli",
 ]
 
 SEARCH_TARGETS = [
     '"Kejaksaan Negeri Deli Serdang"',
     '"Kejari Deli Serdang"',
     '"Kajari Deli Serdang"',
-    '"Kejari Lubuk Pakam"',
+    '"Kejari Deliserdang"',
+    '"Kejaksaan Deli Serdang"',
+    '"Cabjari Pancur Batu"',
+    '"Cabjari Labuhan Deli"',
 ]
 
 # Kata-kata ini sendiri TIDAK cukup untuk membuat berita negatif.
@@ -330,29 +338,122 @@ def classify_article(title: str, content: str) -> Dict[str, Any]:
     }
 
 
-def parse_google_news_feed(query: str) -> List[Dict[str, Any]]:
-    encoded = urllib.parse.quote_plus(query)
-    url = f"https://news.google.com/rss/search?q={encoded}&hl=id&gl=ID&ceid=ID:id"
-    try:
-        feed = feedparser.parse(url)
-        if getattr(feed, "bozo", False) and not feed.entries:
-            print(f"[RSS ERROR] Feed bermasalah: {query}")
-            return []
-        rows = []
-        for entry in feed.entries[:MAX_ARTICLES_PER_FEED]:
-            published = extract_published_date(entry)
-            rows.append({
-                "title": normalize_text(entry.get("title")),
-                "link": normalize_url(entry.get("link")),
-                "published_date": published.isoformat() if published else None,
-                "source": normalize_text((entry.get("source") or {}).get("title") if isinstance(entry.get("source"), dict) else entry.get("source")),
-                "summary": normalize_text(entry.get("summary")),
-            })
-        return rows
-    except Exception as e:
-        print(f"[RSS ERROR] {query}: {e}")
-        return []
+def parse_google_news_feed(
+    query: str
+) -> List[Dict[str, Any]]:
+    """
+    Mengambil kandidat berita dari Google News RSS.
 
+    CATATAN:
+    - 'summary' TIDAK disimpan sebagai field database.
+    - RSS description hanya disimpan sementara sebagai
+      'rss_description' untuk fallback apabila isi halaman
+      artikel terlalu pendek.
+    """
+
+    encoded = urllib.parse.quote_plus(
+        query
+    )
+
+    url = (
+        "https://news.google.com/rss/search?"
+        f"q={encoded}"
+        "&hl=id"
+        "&gl=ID"
+        "&ceid=ID:id"
+    )
+
+    try:
+
+        feed = feedparser.parse(
+            url
+        )
+
+        if (
+            getattr(
+                feed,
+                "bozo",
+                False
+            )
+            and not feed.entries
+        ):
+
+            print(
+                f"[RSS ERROR] Feed bermasalah: {query}"
+            )
+
+            return []
+
+        rows = []
+
+        for entry in feed.entries[
+            :MAX_ARTICLES_PER_FEED
+        ]:
+
+            link = normalize_url(
+                entry.get("link")
+            )
+
+            if not link:
+                continue
+
+            published = extract_feed_date(
+                entry
+            )
+
+            source_value = (
+                entry.get("source")
+            )
+
+            if isinstance(
+                source_value,
+                dict
+            ):
+                source = source_value.get(
+                    "title",
+                    ""
+                )
+            else:
+                source = source_value or ""
+
+            rss_description = normalize_text(
+                entry.get("summary")
+            )
+
+            rows.append(
+                {
+                    "title": normalize_text(
+                        entry.get("title")
+                    ),
+
+                    "link": link,
+
+                    "published_date": (
+                        published.isoformat()
+                        if published
+                        else None
+                    ),
+
+                    "source": normalize_text(
+                        source
+                    ),
+
+                    # Hanya digunakan sebagai fallback
+                    # saat scraping artikel gagal/pendek.
+                    "rss_description":
+                        rss_description,
+                }
+            )
+
+        return rows
+
+    except Exception as exc:
+
+        print(
+            f"[RSS ERROR] {query}: {exc}"
+        )
+
+        return []
 
 def collect_candidates() -> List[Dict[str, Any]]:
     all_rows: Dict[str, Dict[str, Any]] = {}
@@ -366,65 +467,293 @@ def collect_candidates() -> List[Dict[str, Any]]:
     return list(all_rows.values())
 
 
-def process_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
-    title = candidate.get("title", "")
-    rss_link = normalize_url(candidate.get("link"))
-    rss_date = parse_date_safe(candidate.get("published_date"))
+def process_candidate(
+    candidate: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Memproses satu kandidat berita.
 
-    result = {"ok": False, "saved": False, "telegram": False, "article": None, "reason": ""}
+    Aturan penting:
+    - summary RSS hanya digunakan sementara sebagai fallback.
+    - summary TIDAK pernah dikirim ke Supabase.
+    - keywords TIDAK pernah dikirim sebagai kolom "keywords".
+    - hasil klasifikasi disimpan pada field yang didukung database.py.
+    """
+
+    title = normalize_text(
+        candidate.get("title")
+    )
+
+    rss_link = normalize_url(
+        candidate.get("link")
+    )
+
+    rss_date = parse_date_safe(
+        candidate.get("published_date")
+    )
+
+    result = {
+        "ok": False,
+        "saved": False,
+        "telegram": False,
+        "article": None,
+        "reason": "",
+    }
+
+    # ========================================================
+    # 1. VALIDASI LINK
+    # ========================================================
+
     if not rss_link:
         result["reason"] = "link kosong"
         return result
-    if rss_date and not is_article_2026(rss_date):
+
+    # ========================================================
+    # 2. VALIDASI TANGGAL RSS
+    # ========================================================
+
+    if (
+        rss_date
+        and not is_article_2026(rss_date)
+    ):
         result["reason"] = "bukan tahun target"
         return result
 
-    final_url, raw_html = fetch_webpage_content(rss_link)
-    content = extract_article_text(raw_html)
+    # ========================================================
+    # 3. FETCH HALAMAN ARTIKEL
+    # ========================================================
+
+    final_url, raw_html = fetch_webpage_content(
+        rss_link
+    )
+
+    final_url = normalize_url(
+        final_url or rss_link
+    )
+
     if not final_url:
         final_url = rss_link
 
+    # ========================================================
+    # 4. EKSTRAK KONTEN
+    # ========================================================
+
+    content = extract_article_text(
+        raw_html
+    )
+
+    # --------------------------------------------------------
+    # FALLBACK:
+    # RSS description hanya dipakai dalam memori.
+    # TIDAK disimpan ke kolom "summary".
+    # --------------------------------------------------------
+
     if len(content) < MIN_CONTENT_LENGTH:
-        content = normalize_text(candidate.get("summary"))
+
+        rss_description = normalize_text(
+            candidate.get(
+                "rss_description"
+            )
+        )
+
+        if len(rss_description) >= MIN_CONTENT_LENGTH:
+            content = rss_description
+
     if len(content) < MIN_CONTENT_LENGTH:
-        result["reason"] = "konten terlalu pendek"
+
+        result["reason"] = (
+            "konten terlalu pendek"
+        )
+
         return result
 
-    if not check_satker_relevance(title, content):
-        result["reason"] = "tidak relevan dengan satker"
+    # ========================================================
+    # 5. CEK RELEVANSI SATKER
+    # ========================================================
+
+    if not check_satker_relevance(
+        title,
+        content
+    ):
+
+        result["reason"] = (
+            "tidak relevan dengan satker"
+        )
+
         return result
 
-    published = rss_date or datetime.now(timezone.utc)
-    if not is_article_2026(published):
-        result["reason"] = "tanggal artikel bukan 2026"
+    # ========================================================
+    # 6. TANGGAL ARTIKEL
+    # ========================================================
+
+    published = rss_date
+
+    if not published:
+
+        published = datetime.now(
+            timezone.utc
+        )
+
+    if not is_article_2026(
+        published
+    ):
+
+        result["reason"] = (
+            "tanggal artikel bukan 2026"
+        )
+
         return result
 
-    classification = classify_article(title, content)
+    # ========================================================
+    # 7. KLASIFIKASI
+    # ========================================================
+
+    classification = classify_article(
+        title,
+        content
+    )
+
+    # ========================================================
+    # 8. PAYLOAD SUPABASE
+    #
+    # JANGAN tambahkan:
+    #   summary
+    #   keywords
+    #
+    # Field harus sesuai schema articles.
+    # ========================================================
+
     article = {
         "title": title,
+
         "link": final_url,
-        "content": content,
-        "summary": normalize_text(candidate.get("summary")),
-        "published_date": published.isoformat(),
-        "source": candidate.get("source") or "Google News",
-        "category": classification["category"],
-        "priority": classification["priority"],
-        # keywords sengaja hanya ada di memori dan dibuang oleh database.py.
-        "keywords": classification["keywords"],
+
+        "content": content[:15000],
+
+        "published_date":
+            published.isoformat(),
+
+        "source":
+            (
+                normalize_text(
+                    candidate.get("source")
+                )
+                or "Google News"
+            ),
+
+        "category":
+            classification.get(
+                "category",
+                "Netral"
+            ),
+
+        "priority":
+            classification.get(
+                "priority",
+                "RENDAH"
+            ),
+
+        "negative_score":
+            int(
+                classification.get(
+                    "negative_score",
+                    0
+                )
+            ),
+
+        "handling_score":
+            int(
+                classification.get(
+                    "handling_score",
+                    0
+                )
+            ),
+
+        "positive_score":
+            int(
+                classification.get(
+                    "positive_score",
+                    0
+                )
+            ),
+
+        "detected_keywords":
+            classification.get(
+                "keywords",
+                []
+            ),
+
+        "satker_matches":
+            classification.get(
+                "satker_matches",
+                []
+            ),
+
+        "satker_match_location":
+            classification.get(
+                "satker_match_location",
+                ""
+            ),
+
+        "strong_context":
+            classification.get(
+                "strong_context",
+                []
+            ),
+
+        "positive_context":
+            classification.get(
+                "positive_context",
+                []
+            ),
+
+        "handling_context":
+            classification.get(
+                "handling_context",
+                []
+            ),
     }
 
+    # ========================================================
+    # 9. SIMPAN KE DATABASE
+    # ========================================================
+
     try:
-        saved = upsert_article(article)
+
+        saved = upsert_article(
+            article
+        )
+
         if saved is None:
-            result["reason"] = "gagal upsert"
+
+            result["reason"] = (
+                "gagal upsert"
+            )
+
             return result
-        result.update(ok=True, saved=True, article=article)
-        return result
-    except Exception as e:
-        result["reason"] = str(e)
+
+        result.update(
+            {
+                "ok": True,
+                "saved": True,
+                "article": article,
+            }
+        )
+
         return result
 
+    except Exception as exc:
 
+        result["reason"] = str(
+            exc
+        )
+
+        print(
+            "[UPSERT ERROR] "
+            f"{final_url}: {exc}"
+        )
+
+        return result
 def telegram_enabled() -> bool:
     return bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
@@ -457,37 +786,198 @@ def send_alert_if_needed(article: Dict[str, Any]) -> bool:
     return send_telegram_message(telegram_text(article))
 
 
-def reclassify_all() -> Dict[str, int]:
-    print("[REKLASIFIKASI] Memuat seluruh artikel dari database...")
-    articles = get_all_articles()
-    counts = {"Negatif Kuat": 0, "Perlu Penanganan": 0, "Netral": 0, "Positif": 0}
+def reclassify_all() -> Dict[str, Any]:
+    """
+    Reklasifikasi SELURUH artikel yang ada di database
+    pada setiap workflow.
+
+    Catatan:
+    - Tidak membaca field summary.
+    - Tidak menulis field summary.
+    - Tidak menulis field keywords.
+    - Hanya memperbarui category dan priority.
+    - Statistik selalu dihitung ulang dari seluruh database.
+    """
+
+    print()
+    print("=" * 70)
+    print("MEMULAI REKLASIFIKASI SELURUH DATABASE")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+    except Exception as exc:
+        print(
+            f"[REKLASIFIKASI ERROR] Gagal mengambil database: {exc}"
+        )
+
+        return {
+            "Negatif Kuat": 0,
+            "Perlu Penanganan": 0,
+            "Netral": 0,
+            "Positif": 0,
+            "updated": 0,
+            "failed": 1,
+            "total": 0,
+        }
+
+    counts = {
+        "Negatif Kuat": 0,
+        "Perlu Penanganan": 0,
+        "Netral": 0,
+        "Positif": 0,
+    }
+
     updated = 0
+    failed = 0
 
-    for article in articles:
-        title = normalize_text(article.get("title"))
-        content = normalize_text(article.get("content") or article.get("summary"))
-        if not title and not content:
-            category = "Netral"
-            priority = "Rendah"
-        else:
-            c = classify_article(title, content)
-            category, priority = c["category"], c["priority"]
-        counts[category] += 1
-        link = normalize_url(article.get("link"))
-        if link and (article.get("category") != category or article.get("priority") != priority):
-            if update_article_classification(link, category, priority) is not None:
+    total = len(articles)
+
+    print(
+        f"[REKLASIFIKASI] Total artikel: {total}"
+    )
+
+    for index, article in enumerate(
+        articles,
+        start=1,
+    ):
+        try:
+            link = normalize_url(
+                article.get("link")
+            )
+
+            title = normalize_text(
+                article.get("title")
+            )
+
+            content = normalize_text(
+                article.get("content")
+            )
+
+            # ------------------------------------------------
+            # ARTIKEL TANPA JUDUL DAN ISI
+            # ------------------------------------------------
+
+            if not title and not content:
+                category = "Netral"
+                priority = "RENDAH"
+
+            else:
+                classification = classify_article(
+                    title,
+                    content,
+                )
+
+                category = classification.get(
+                    "category",
+                    "Netral",
+                )
+
+                priority = classification.get(
+                    "priority",
+                    "RENDAH",
+                )
+
+            # Pastikan kategori valid.
+            if category not in counts:
+                category = "Netral"
+
+            counts[category] += 1
+
+            # ------------------------------------------------
+            # UPDATE SETIAP RUN
+            #
+            # Tidak peduli kategori sebelumnya sama atau tidak,
+            # reklasifikasi tetap dilakukan.
+            # ------------------------------------------------
+
+            if not link:
+                failed += 1
+                print(
+                    f"[REKLASIFIKASI] "
+                    f"{index}/{total} -> link kosong"
+                )
+                continue
+
+            result = update_article_classification(
+                link,
+                category,
+                priority,
+            )
+
+            if result is not None:
                 updated += 1
+            else:
+                failed += 1
 
+                print(
+                    f"[REKLASIFIKASI ERROR] "
+                    f"{index}/{total} -> "
+                    f"gagal update: {link}"
+                )
+
+        except Exception as exc:
+            failed += 1
+
+            print(
+                f"[REKLASIFIKASI ERROR] "
+                f"{index}/{total}: {exc}"
+            )
+
+        # Progress setiap 25 artikel.
+        if (
+            index % 25 == 0
+            or index == total
+        ):
+            print(
+                f"[REKLASIFIKASI] "
+                f"Progress {index}/{total}"
+            )
+
+    print()
     print("=" * 70)
     print("REKLASIFIKASI SELESAI")
-    print(f"Negatif Kuat      : {counts['Negatif Kuat']}")
-    print(f"Perlu Penanganan  : {counts['Perlu Penanganan']}")
-    print(f"Netral            : {counts['Netral']}")
-    print(f"Positif           : {counts['Positif']}")
-    print(f"Direklasifikasi    : {updated}")
-    print(f"Total              : {sum(counts.values())}")
     print("=" * 70)
-    return counts
+
+    print(
+        f"Negatif Kuat      : {counts['Negatif Kuat']}"
+    )
+
+    print(
+        f"Perlu Penanganan  : {counts['Perlu Penanganan']}"
+    )
+
+    print(
+        f"Netral            : {counts['Netral']}"
+    )
+
+    print(
+        f"Positif           : {counts['Positif']}"
+    )
+
+    print(
+        f"Total              : {total}"
+    )
+
+    print(
+        f"Berhasil update    : {updated}"
+    )
+
+    print(
+        f"Gagal update       : {failed}"
+    )
+
+    print("=" * 70)
+
+    return {
+        "Negatif Kuat": counts["Negatif Kuat"],
+        "Perlu Penanganan": counts["Perlu Penanganan"],
+        "Netral": counts["Netral"],
+        "Positif": counts["Positif"],
+        "updated": updated,
+        "failed": failed,
+        "total": total,
+    }
 
 
 def run_once() -> Dict[str, Any]:
