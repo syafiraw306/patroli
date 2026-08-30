@@ -38,18 +38,78 @@ def clean_html(raw_html: Any) -> str:
     return text.strip()
 
 
-def clean_article_payload(article: Dict[str, Any]) -> Dict[str, Any]:
-    data = dict(article)
-    if "title" in data:
-        data["title"] = clean_html(data.get("title"))
-    if "content" in data:
-        data["content"] = clean_html(data.get("content"))
-    if "summary" in data:
-        data["summary"] = clean_html(data.get("summary"))
-    # Kolom ini tidak ada di tabel articles saat ini.
-    data.pop("keywords", None)
-    return data
+def clean_article_payload(
+    article: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Membersihkan payload artikel sebelum dikirim ke Supabase.
 
+    Field yang diproses di sini hanya field yang memang
+    digunakan oleh tabel articles.
+
+    Field yang TIDAK dikirim:
+    - summary
+    - keywords
+    """
+
+    data = dict(article)
+
+    # ========================================================
+    # FIELD TEKS
+    # ========================================================
+
+    if "title" in data:
+        data["title"] = clean_html(
+            data.get("title")
+        )
+
+    if "content" in data:
+        data["content"] = clean_html(
+            data.get("content")
+        )
+
+    # ========================================================
+    # FIELD ARRAY
+    # ========================================================
+
+    array_fields = [
+        "detected_keywords",
+        "satker_matches",
+        "satker_title_matches",
+        "satker_first_paragraph_matches",
+        "strong_context",
+        "positive_context",
+        "handling_context",
+        "first_paragraphs",
+    ]
+
+    for field in array_fields:
+
+        if field in data:
+
+            value = data.get(field)
+
+            if value is None:
+                data[field] = []
+
+            elif isinstance(value, tuple):
+                data[field] = list(value)
+
+    # ========================================================
+    # HAPUS FIELD YANG TIDAK ADA
+    # ========================================================
+
+    data.pop(
+        "summary",
+        None
+    )
+
+    data.pop(
+        "keywords",
+        None
+    )
+
+    return data
 
 def normalize_link(link: Any) -> str:
     return str(link or "").strip()
@@ -190,20 +250,79 @@ def get_filtered_articles(category: Optional[str] = None, priority: Optional[str
         return []
 
 
-def save_run_log(log_data: Dict[str, Any]) -> bool:
+def save_run_log(
+    log_data: Dict[str, Any]
+) -> bool:
+    """
+    Menyimpan log eksekusi patroli ke tabel run_logs.
+
+    Field tambahan yang tidak tersedia di schema akan
+    otomatis dibuang sebelum dikirim ke Supabase.
+    """
+
+    if not isinstance(log_data, dict):
+        print("[DB LOG ERROR] log_data bukan dictionary.")
+        return False
+
+    # ========================================================
+    # KOLOM YANG DIGUNAKAN APLIKASI
+    # ========================================================
+
     allowed_columns = {
-        "id", "created_at", "duration_seconds", "candidate_count", "valid_count",
-        "saved_count", "failed_count", "reclassified_count", "negative_count",
-        "handling_count", "neutral_count", "positive_count", "telegram_count", "status"
+        "id",
+        "created_at",
+        "duration_seconds",
+        "candidate_count",
+        "valid_count",
+        "saved_count",
+        "failed_count",
+        "reclassified_count",
+        "negative_count",
+        "handling_count",
+        "neutral_count",
+        "positive_count",
+        "telegram_count",
+        "status",
     }
+
     try:
-        data = {k: v for k, v in (log_data or {}).items() if k in allowed_columns}
-        data.setdefault("created_at", now_iso())
-        get_supabase().table("run_logs").insert(data).execute()
-        print("[DB LOG] Run log berhasil disimpan.")
+
+        data = {
+            key: value
+            for key, value in log_data.items()
+            if key in allowed_columns
+        }
+
+        data.setdefault(
+            "created_at",
+            now_iso()
+        )
+
+        response = (
+            get_supabase()
+            .table("run_logs")
+            .insert(data)
+            .execute()
+        )
+
+        if response.data:
+            print(
+                "[DB LOG] Run log berhasil disimpan."
+            )
+            return True
+
+        print(
+            "[DB LOG] Insert berhasil tetapi "
+            "tidak ada data response."
+        )
         return True
+
     except Exception as e:
-        print(f"[DB LOG ERROR] {e}")
+
+        print(
+            f"[DB LOG ERROR] {e}"
+        )
+
         return False
 
 
