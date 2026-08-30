@@ -53,6 +53,35 @@ jobs:
       # ==========================================
       # 4. Jalankan patroli.py
       # ==========================================
+      - name: VERIFY SOURCE
+        run: |
+          echo "=== COMMIT ==="
+          git rev-parse HEAD
+
+          echo "=== CURRENT DIRECTORY ==="
+          pwd
+
+          echo "=== FILES ==="
+          ls -la
+      
+          echo "=== PATROLI FILE ==="
+          grep -n "PATROLI VERSION" patroli.py || true
+      
+          echo "=== DATABASE FILE ==="
+          grep -n "DATABASE VERSION" database.py || true
+      
+          echo "=== SUMMARY ==="
+          grep -n "summary" patroli.py database.py || true
+      
+          echo "=== FAILED COUNT ==="
+          grep -n "failed_count" patroli.py database.py || true
+      
+          echo "=== LUBUK PAKAM ==="
+          grep -n "Lubuk Pakam" patroli.py database.py || true
+      
+          echo "=== COMPILE ==="
+          python -m py_compile patroli.py database.py
+      
       - name: Jalankan Patroli Siber
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
