@@ -146,21 +146,69 @@ def insert_articles(articles: List[Dict[str, Any]]) -> int:
     return success
 
 
-def update_article(link: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Update berdasarkan link. Ini sengaja menjadi kontrak utama patroli.py."""
-    link = normalize_link(link)
-    if not link:
+def update_article(identifier: Any, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if identifier is None:
+        print("[DB UPDATE ERROR] Identifier kosong.")
         return None
+
     data = clean_article_payload(updates)
-    data["updated_at"] = now_iso()
-    if len(data) == 1:
+
+    if not data:
+        print(f"[DB UPDATE ERROR] Tidak ada field untuk di-update. ID={identifier}")
         return None
+
+    data["updated_at"] = now_iso()
+
     try:
-        response = get_supabase().table("articles").update(data).eq("link", link).execute()
+        client = get_supabase()
+
+        identifier_str = str(identifier).strip()
+
+        if identifier_str.isdigit():
+            article_id = int(identifier_str)
+
+            print(
+                f"[DB UPDATE] ID={article_id} | "
+                f"category={data.get('category')} | "
+                f"priority={data.get('priority')}"
+            )
+
+            response = (
+                client.table("articles")
+                .update(data)
+                .eq("id", article_id)
+                .select("*")
+                .execute()
+            )
+
+        else:
+            link = normalize_link(identifier)
+
+            print(
+                f"[DB UPDATE] LINK={link} | "
+                f"category={data.get('category')} | "
+                f"priority={data.get('priority')}"
+            )
+
+            response = (
+                client.table("articles")
+                .update(data)
+                .eq("link", link)
+                .select("*")
+                .execute()
+            )
+
         rows = response.data or []
-        return rows[0] if rows else None
+
+        if rows:
+            print(f"[DB UPDATE OK] identifier={identifier}")
+            return rows[0]
+
+        print(f"[DB UPDATE GAGAL] Tidak ada row yang dikembalikan. identifier={identifier}")
+        return None
+
     except Exception as e:
-        print(f"[DB UPDATE ERROR] {e}")
+        print(f"[DB UPDATE EXCEPTION] identifier={identifier} -> {type(e).__name__}: {e}")
         return None
 
 
@@ -245,14 +293,40 @@ def get_total_article_count() -> int:
         return 0
 
 
-def update_article_category(link: str, category: str) -> Optional[Dict[str, Any]]:
-    return update_article(link, {"category": category})
+def update_article_category(
+    identifier: Any,
+    category: str
+) -> Optional[Dict[str, Any]]:
+    return update_article(identifier, {"category": category})
 
 
-def update_article_priority(link: str, priority: str) -> Optional[Dict[str, Any]]:
-    return update_article(link, {"priority": priority})
+def update_article_priority(
+    identifier: Any,
+    priority: str
+) -> Optional[Dict[str, Any]]:
+    return update_article(identifier, {"priority": priority})
 
+def update_article_classification_by_id(
+    article_id: Any,
+    category: Optional[str] = None,
+    priority: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    updates: Dict[str, Any] = {}
 
+    if category is not None:
+        updates["category"] = category
+
+    if priority is not None:
+        updates["priority"] = priority
+
+    if not updates:
+        return None
+
+    return update_article_by_id(
+        article_id,
+        updates
+    ) 
+    
 def update_article_classification(link: str, category: Optional[str] = None,
                                    priority: Optional[str] = None) -> Optional[Dict[str, Any]]:
     updates: Dict[str, Any] = {}
