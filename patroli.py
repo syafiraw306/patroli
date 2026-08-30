@@ -1144,6 +1144,12 @@ def run_once() -> Dict[str, Any]:
         if not link:
             continue
 
+        print(
+            f"[CHECK LINK] "
+            f"{'LAMA' if link in existing_links else 'BARU'} | "
+            f"{link}"
+        )
+
         was_existing = (
             link in existing_links
         )
