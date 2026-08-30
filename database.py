@@ -210,7 +210,55 @@ def update_article(identifier: Any, updates: Dict[str, Any]) -> Optional[Dict[st
     except Exception as e:
         print(f"[DB UPDATE EXCEPTION] identifier={identifier} -> {type(e).__name__}: {e}")
         return None
+def update_article_by_id(
+    article_id: Any,
+    updates: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    Update artikel berdasarkan primary key 'id'.
+    """
 
+    if article_id is None:
+        print("[DB UPDATE ID ERROR] article_id kosong.")
+        return None
+
+    data = clean_article_payload(updates)
+
+    if not data:
+        return None
+
+    data["updated_at"] = now_iso()
+
+    try:
+        response = (
+            get_supabase()
+            .table("articles")
+            .update(data)
+            .eq("id", int(article_id))
+            .select("*")
+            .execute()
+        )
+
+        rows = response.data or []
+
+        if rows:
+            return rows[0]
+
+        print(
+            f"[DB UPDATE ID] Artikel ID={article_id} "
+            f"tidak ditemukan."
+        )
+
+        return None
+
+    except Exception as e:
+        print(
+            f"[DB UPDATE ID ERROR] "
+            f"ID={article_id} -> "
+            f"{type(e).__name__}: {e}"
+        )
+        return None
+        
 
 def delete_all_articles() -> bool:
     try:
@@ -311,6 +359,7 @@ def update_article_classification_by_id(
     category: Optional[str] = None,
     priority: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
+
     updates: Dict[str, Any] = {}
 
     if category is not None:
@@ -325,7 +374,7 @@ def update_article_classification_by_id(
     return update_article_by_id(
         article_id,
         updates
-    ) 
+    )
     
 def update_article_classification(link: str, category: Optional[str] = None,
                                    priority: Optional[str] = None) -> Optional[Dict[str, Any]]:
