@@ -1,8 +1,6 @@
 import os
 import re
 import html
-import threading
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -15,38 +13,20 @@ SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").strip()
 SUPABASE_KEY = (os.getenv("SUPABASE_KEY") or "").strip()
 
 _supabase: Optional[Client] = None
-_supabase_lock = threading.Lock()
 
 
 def get_supabase() -> Client:
     global _supabase
-
     if _supabase is not None:
         return _supabase
+    if not SUPABASE_URL:
+        raise RuntimeError("SUPABASE_URL belum dikonfigurasi.")
+    if not SUPABASE_KEY:
+        raise RuntimeError("SUPABASE_KEY belum dikonfigurasi.")
+    _supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("[SUPABASE] Client berhasil dibuat.")
+    return _supabase
 
-    with _supabase_lock:
-
-        if _supabase is not None:
-            return _supabase
-
-        if not SUPABASE_URL:
-            raise RuntimeError(
-                "SUPABASE_URL belum dikonfigurasi."
-            )
-
-        if not SUPABASE_KEY:
-            raise RuntimeError(
-                "SUPABASE_KEY belum dikonfigurasi."
-            )
-
-        _supabase = create_client(
-            SUPABASE_URL,
-            SUPABASE_KEY
-        )
-
-        print("[SUPABASE] Client berhasil dibuat.")
-
-        return _supabase
 
 def clean_html(raw_html: Any) -> str:
     if raw_html is None:
@@ -58,78 +38,18 @@ def clean_html(raw_html: Any) -> str:
     return text.strip()
 
 
-def clean_article_payload(
-    article: Dict[str, Any]
-) -> Dict[str, Any]:
-    """
-    Membersihkan payload artikel sebelum dikirim ke Supabase.
-
-    Field yang diproses di sini hanya field yang memang
-    digunakan oleh tabel articles.
-
-    Field yang TIDAK dikirim:
-    - summary
-    - keywords
-    """
-
+def clean_article_payload(article: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(article)
-
-    # ========================================================
-    # FIELD TEKS
-    # ========================================================
-
     if "title" in data:
-        data["title"] = clean_html(
-            data.get("title")
-        )
-
+        data["title"] = clean_html(data.get("title"))
     if "content" in data:
-        data["content"] = clean_html(
-            data.get("content")
-        )
-
-    # ========================================================
-    # FIELD ARRAY
-    # ========================================================
-
-    array_fields = [
-        "detected_keywords",
-        "satker_matches",
-        "satker_title_matches",
-        "satker_first_paragraph_matches",
-        "strong_context",
-        "positive_context",
-        "handling_context",
-        "first_paragraphs",
-    ]
-
-    for field in array_fields:
-
-        if field in data:
-
-            value = data.get(field)
-
-            if value is None:
-                data[field] = []
-
-            elif isinstance(value, tuple):
-                data[field] = list(value)
-
-    # ========================================================
-    # HAPUS FIELD YANG TIDAK ADA
-    # ========================================================
-
-    data.pop(
-        "summary",
-        None
-    )
-
-    data.pop(
-        "keywords",
-        None
-    )
-
+        data["content"] = clean_html(data.get("content"))
+    if "summary" in data:
+        data["summary"] = clean_html(data.get("summary"))
+    # Kolom ini tidak ada di tabel articles saat ini.
+    data.pop("keywords", None)
     return data
+
 
 def normalize_link(link: Any) -> str:
     return str(link or "").strip()
@@ -142,14 +62,7 @@ def now_iso() -> str:
 def test_connection() -> bool:
     try:
         client = get_supabase()
-        response = (
-            get_supabase()
-            .table("articles")
-            .update(data)
-            .eq("link", link)
-            .select("*")
-            .execute()
-        )
+        response = client.table("articles").select("link").limit(1).execute()
         print(f"[SUPABASE] Koneksi berhasil. Test response: {len(response.data or [])} row.")
         return True
     except Exception as e:
@@ -243,14 +156,7 @@ def update_article(link: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any
     if len(data) == 1:
         return None
     try:
-        response = (
-            get_supabase()
-            .table("articles")
-            .update(data)
-            .eq("link", link)
-            .select("*")
-            .execute()
-        )
+        response = get_supabase().table("articles").update(data).eq("link", link).execute()
         rows = response.data or []
         return rows[0] if rows else None
     except Exception as e:
@@ -284,79 +190,20 @@ def get_filtered_articles(category: Optional[str] = None, priority: Optional[str
         return []
 
 
-def save_run_log(
-    log_data: Dict[str, Any]
-) -> bool:
-    """
-    Menyimpan log eksekusi patroli ke tabel run_logs.
-
-    Field tambahan yang tidak tersedia di schema akan
-    otomatis dibuang sebelum dikirim ke Supabase.
-    """
-
-    if not isinstance(log_data, dict):
-        print("[DB LOG ERROR] log_data bukan dictionary.")
-        return False
-
-    # ========================================================
-    # KOLOM YANG DIGUNAKAN APLIKASI
-    # ========================================================
-
+def save_run_log(log_data: Dict[str, Any]) -> bool:
     allowed_columns = {
-        "id",
-        "created_at",
-        "duration_seconds",
-        "candidate_count",
-        "valid_count",
-        "saved_count",
-        "failed_count",
-        "reclassified_count",
-        "negative_count",
-        "handling_count",
-        "neutral_count",
-        "positive_count",
-        "telegram_count",
-        "status",
+        "id", "created_at", "duration_seconds", "candidate_count", "valid_count",
+        "saved_count", "failed_count", "reclassified_count", "negative_count",
+        "handling_count", "neutral_count", "positive_count", "telegram_count", "status"
     }
-
     try:
-
-        data = {
-            key: value
-            for key, value in log_data.items()
-            if key in allowed_columns
-        }
-
-        data.setdefault(
-            "created_at",
-            now_iso()
-        )
-
-        response = (
-            get_supabase()
-            .table("run_logs")
-            .insert(data)
-            .execute()
-        )
-
-        if response.data:
-            print(
-                "[DB LOG] Run log berhasil disimpan."
-            )
-            return True
-
-        print(
-            "[DB LOG] Insert berhasil tetapi "
-            "tidak ada data response."
-        )
+        data = {k: v for k, v in (log_data or {}).items() if k in allowed_columns}
+        data.setdefault("created_at", now_iso())
+        get_supabase().table("run_logs").insert(data).execute()
+        print("[DB LOG] Run log berhasil disimpan.")
         return True
-
     except Exception as e:
-
-        print(
-            f"[DB LOG ERROR] {e}"
-        )
-
+        print(f"[DB LOG ERROR] {e}")
         return False
 
 
@@ -405,49 +252,7 @@ def update_article_category(link: str, category: str) -> Optional[Dict[str, Any]
 def update_article_priority(link: str, priority: str) -> Optional[Dict[str, Any]]:
     return update_article(link, {"priority": priority})
 
-def update_article_classification(
-    article_id: Any,
-    category: str,
-    priority: str,
-) -> Optional[Dict[str, Any]]:
-    """
-    Update kategori dan prioritas berdasarkan ID artikel.
-    Menggunakan primary key lebih aman daripada menggunakan link.
-    """
 
-    try:
-        data = {
-            "category": str(category or "Netral"),
-            "priority": str(priority or "Rendah"),
-        }
-
-        response = (
-            get_supabase()
-            .table("articles")
-            .update(data)
-            .eq("id", article_id)
-            .execute()
-        )
-
-        rows = getattr(response, "data", None)
-
-        if rows:
-            return rows[0]
-
-        print(
-            f"[DB UPDATE] Artikel ID {article_id} "
-            f"tidak ditemukan."
-        )
-
-        return None
-
-    except Exception as exc:
-        print(
-            f"[SUPABASE UPDATE ERROR] "
-            f"ID={article_id}: {exc}"
-        )
-        return None
-        
 def update_article_classification(link: str, category: Optional[str] = None,
                                    priority: Optional[str] = None) -> Optional[Dict[str, Any]]:
     updates: Dict[str, Any] = {}
