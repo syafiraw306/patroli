@@ -19,7 +19,7 @@ from database import (
     get_article_by_link,
     save_run_log,
     upsert_article,
-    update_article_classification,
+    update_article_classification_by_id,
 )
 
 load_dotenv()
@@ -719,7 +719,7 @@ def process_candidate(
         ),
         "priority": classification.get(
             "priority",
-            "RENDAH"
+            "Rendah"
         ),
         "negative_score": int(
             classification.get(
@@ -811,9 +811,7 @@ def reclassify_all() -> Dict[str, int]:
 
     total = len(articles)
 
-    print(
-        f"[REKLASIFIKASI] Total artikel: {total}"
-    )
+    print(f"[REKLASIFIKASI] Total artikel: {total}")
 
     counts = {
         "Negatif Kuat": 0,
@@ -825,13 +823,9 @@ def reclassify_all() -> Dict[str, int]:
     updated = 0
     failed = 0
 
-    for index, article in enumerate(
-        articles,
-        start=1,
-    ):
+    for index, article in enumerate(articles, start=1):
 
         try:
-
             title = normalize_text(
                 article.get("title")
             )
@@ -842,17 +836,15 @@ def reclassify_all() -> Dict[str, int]:
                 or ""
             )
 
-            # ------------------------------------------------
+            # ==================================================
             # KLASIFIKASI
-            # ------------------------------------------------
+            # ==================================================
 
             if not title and not content:
-
                 category = "Netral"
                 priority = "Rendah"
 
             else:
-
                 classification = classify_article(
                     title,
                     content,
@@ -868,16 +860,18 @@ def reclassify_all() -> Dict[str, int]:
                     "Rendah",
                 )
 
+            if category not in counts:
+                category = "Netral"
+
             counts[category] += 1
 
-            # ------------------------------------------------
-            # UPDATE BERDASARKAN ID
-            # ------------------------------------------------
+            # ==================================================
+            # ID DATABASE
+            # ==================================================
 
             article_id = article.get("id")
 
             if article_id is None:
-
                 failed += 1
 
                 print(
@@ -888,18 +882,28 @@ def reclassify_all() -> Dict[str, int]:
 
                 continue
 
-            result = update_article_classification(
+            # ==================================================
+            # UPDATE BERDASARKAN ID
+            # ==================================================
+
+            result = update_article_classification_by_id(
                 article_id,
                 category,
                 priority,
             )
 
             if result is not None:
-
                 updated += 1
 
-            else:
+                print(
+                    f"[REKLASIFIKASI OK] "
+                    f"{index}/{total} -> "
+                    f"ID={article_id} | "
+                    f"{category} | "
+                    f"{priority}"
+                )
 
+            else:
                 failed += 1
 
                 print(
@@ -909,7 +913,6 @@ def reclassify_all() -> Dict[str, int]:
                 )
 
         except Exception as exc:
-
             failed += 1
 
             print(
@@ -917,14 +920,7 @@ def reclassify_all() -> Dict[str, int]:
                 f"{index}/{total} -> {exc}"
             )
 
-        # ------------------------------------------------
-        # PROGRESS
-        # ------------------------------------------------
-
-        if (
-            index % 25 == 0
-            or index == total
-        ):
+        if index % 25 == 0 or index == total:
             print(
                 f"[REKLASIFIKASI] "
                 f"Progress {index}/{total}"
@@ -956,17 +952,17 @@ def reclassify_all() -> Dict[str, int]:
     )
 
     print(
-        f"Total              : "
+        f"Total             : "
         f"{total}"
     )
 
     print(
-        f"Berhasil update    : "
+        f"Berhasil update   : "
         f"{updated}"
     )
 
     print(
-        f"Gagal update       : "
+        f"Gagal update      : "
         f"{failed}"
     )
 
@@ -1346,22 +1342,6 @@ def run_once() -> Dict[str, Any]:
     print("=" * 70)
 
     return log   
-    
-    print("PATROLI SELESAI")
-    print(f"Durasi            : {duration} detik")
-    print(f"Kandidat           : {len(candidates)}")
-    print(f"Artikel valid      : {valid}")
-    print(f"Berhasil disimpan  : {saved}")
-    print(f"Gagal              : {failed}")
-    print(f"Database           : {len(articles)}")
-    print(f"Negatif Kuat       : {counts['Negatif Kuat']}")
-    print(f"Perlu Penanganan   : {counts['Perlu Penanganan']}")
-    print(f"Netral             : {counts['Netral']}")
-    print(f"Positif            : {counts['Positif']}")
-    print(f"Telegram terkirim  : {telegram_count}")
-    print("=" * 70)
-    return log
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Patroli Siber berita Kejari Deli Serdang")
