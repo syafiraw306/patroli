@@ -91,7 +91,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
           NAMA_SATKER: "Kejaksaan Negeri Deli Serdang"
-          TAHUN_TARGET: "2026"
+          TAHUN_TARGET: ${{ secrets.TAHUN_TARGET }}
 
         run: |
           python patroli.py
