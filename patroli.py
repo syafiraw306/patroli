@@ -32,26 +32,15 @@ from database import (
 
 load_dotenv()
 
-TAHUN_TARGET = int(
-    os.getenv("TAHUN_TARGET", "2026")
-)
-
-MAX_WORKERS = int(
-    os.getenv("MAX_WORKERS", "10")
-)
-
-REQUEST_TIMEOUT = int(
-    os.getenv("REQUEST_TIMEOUT", "15")
-)
-
+TAHUN_TARGET = int(os.getenv("TAHUN_TARGET") or "2026")
+MAX_WORKERS = int(os.getenv("MAX_WORKERS") or "10")
+REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT") or "15")
 MAX_ARTICLES_PER_FEED = int(
-    os.getenv("MAX_ARTICLES_PER_FEED", "40")
+    os.getenv("MAX_ARTICLES_PER_FEED") or "40"
 )
-
 MIN_CONTENT_LENGTH = int(
-    os.getenv("MIN_CONTENT_LENGTH", "180")
+    os.getenv("MIN_CONTENT_LENGTH") or "180"
 )
-
 NAMA_SATKER = os.getenv(
     "NAMA_SATKER",
     "Kejaksaan Negeri Deli Serdang",
