@@ -3905,14 +3905,6 @@ def dedupe_dry_run() -> Dict[str, Any]:
     }
 
 
-# ============================================================
-# DEDUPE REAL
-# ============================================================
-
-def dedupe() -> Dict[str, Any]:
-    """Alias kompatibilitas untuk dedupe_database()."""
-    return dedupe_database()
-
 
 # ============================================================
 # DEDUPE DATABASE
@@ -3997,6 +3989,14 @@ def dedupe_database() -> Dict[str, Any]:
     print(f"Link kosong    : {empty_links}")
     print("=" * 70)
     return {"success": failed == 0, "deleted": deleted, "failed": failed, "duplicate_groups": len(duplicate_groups), "remaining": remaining}
+
+# ============================================================
+# DEDUPE REAL
+# ============================================================
+
+def dedupe() -> Dict[str, Any]:
+    """Alias kompatibilitas untuk dedupe_database()."""
+    return dedupe_database()
 
 # ============================================================
 # MAIN
