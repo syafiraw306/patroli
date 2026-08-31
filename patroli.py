@@ -23,6 +23,7 @@ from database import (
     upsert_article,
     update_article_classification_by_id,
     update_article_classification,
+    delete_article_by_id,
 )
 
 
@@ -3274,7 +3275,305 @@ def dedupe_dry_run() -> Dict[str, Any]:
         "json_report": json_path,
     }
 
+# ============================================================
+# DEDUPE REAL
+# ============================================================
 
+def dedupe() -> Dict[str, Any]:
+    """
+    Menghapus record duplicate berdasarkan normalized URL.
+
+    Prinsip:
+    - Record terbaik dipertahankan.
+    - Record duplicate lainnya dihapus.
+    - Record dengan link kosong tidak disentuh.
+    - Sebelum penghapusan, tampilkan kandidat yang akan dihapus.
+    """
+
+    print("=" * 70)
+    print("DEDUPE DATABASE")
+    print("MENGHAPUS DUPLICATE LINK")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[DEDUPE ERROR] "
+            f"Gagal mengambil database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "success": False,
+            "deleted": 0,
+            "error": str(exc),
+        }
+
+    print(
+        f"[DATABASE] Total artikel: "
+        f"{len(articles)}"
+    )
+
+    # --------------------------------------------------------
+    # GROUP BERDASARKAN NORMALIZED URL
+    # --------------------------------------------------------
+
+    groups: Dict[
+        str,
+        List[Dict[str, Any]],
+    ] = {}
+
+    for article in articles:
+
+        link = normalize_url(
+            article.get("link")
+        )
+
+        if not link:
+            continue
+
+        groups.setdefault(
+            link,
+            [],
+        ).append(article)
+
+    duplicate_groups = {
+        link: rows
+        for link, rows in groups.items()
+        if len(rows) > 1
+    }
+
+    if not duplicate_groups:
+
+        print()
+        print(
+            "[DEDUPE] Tidak ditemukan "
+            "duplicate."
+        )
+
+        return {
+            "success": True,
+            "deleted": 0,
+            "duplicate_groups": 0,
+        }
+
+    print()
+    print(
+        f"[DEDUPE] Ditemukan "
+        f"{len(duplicate_groups)} "
+        f"kelompok duplicate."
+    )
+
+    # --------------------------------------------------------
+    # TENTUKAN RECORD TERBAIK
+    # --------------------------------------------------------
+
+    delete_ids = []
+
+    for group_number, (
+        normalized_link,
+        rows,
+    ) in enumerate(
+        duplicate_groups.items(),
+        start=1,
+    ):
+
+        def record_score(row):
+
+            content = normalize_text(
+                row.get("content")
+                or row.get("summary")
+                or ""
+            )
+
+            title = normalize_text(
+                row.get("title")
+            )
+
+            published = normalize_text(
+                row.get("published_date")
+            )
+
+            try:
+                article_id = int(
+                    row.get("id")
+                )
+
+            except Exception:
+                article_id = 999999999
+
+            return (
+                len(content),
+                bool(title),
+                bool(published),
+                -article_id,
+            )
+
+        rows_sorted = sorted(
+            rows,
+            key=record_score,
+            reverse=True,
+        )
+
+        keep = rows_sorted[0]
+        duplicates = rows_sorted[1:]
+
+        print()
+        print(
+            f"[GROUP #{group_number}] "
+            f"{len(rows)} record"
+        )
+
+        print(
+            f"  KEEP   ID={keep.get('id')} | "
+            f"{normalize_text(keep.get('title'))[:100]}"
+        )
+
+        for duplicate in duplicates:
+
+            article_id = duplicate.get(
+                "id"
+            )
+
+            print(
+                f"  DELETE ID={article_id} | "
+                f"{normalize_text(duplicate.get('title'))[:100]}"
+            )
+
+            if article_id is not None:
+                delete_ids.append(
+                    article_id
+                )
+
+    # --------------------------------------------------------
+    # KONFIRMASI
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 70)
+    print(
+        f"TOTAL RECORD YANG AKAN DIHAPUS: "
+        f"{len(delete_ids)}"
+    )
+    print("=" * 70)
+
+    if not delete_ids:
+
+        print(
+            "[DEDUPE] Tidak ada ID yang "
+            "dapat dihapus."
+        )
+
+        return {
+            "success": True,
+            "deleted": 0,
+            "duplicate_groups": len(
+                duplicate_groups
+            ),
+        }
+
+    # --------------------------------------------------------
+    # HAPUS
+    #
+    # Fungsi database yang dipakai:
+    # delete_article_by_id()
+    # --------------------------------------------------------
+
+    deleted = 0
+    failed = 0
+
+    for article_id in delete_ids:
+
+        try:
+
+            result = delete_article_by_id(
+                article_id
+            )
+
+            if result is not None:
+
+                deleted += 1
+
+                print(
+                    f"[DELETE OK] "
+                    f"ID={article_id}"
+                )
+
+            else:
+
+                failed += 1
+
+                print(
+                    f"[DELETE ERROR] "
+                    f"ID={article_id}"
+                )
+
+        except Exception as exc:
+
+            failed += 1
+
+            print(
+                f"[DELETE ERROR] "
+                f"ID={article_id} -> "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    # --------------------------------------------------------
+    # VERIFIKASI
+    # --------------------------------------------------------
+
+    try:
+
+        remaining = get_all_articles()
+
+        remaining_count = len(
+            remaining
+        )
+
+    except Exception:
+
+        remaining_count = -1
+
+    print()
+    print("=" * 70)
+    print("DEDUPE SELESAI")
+    print("=" * 70)
+
+    print(
+        f"Record sebelum : "
+        f"{len(articles)}"
+    )
+
+    print(
+        f"Berhasil hapus : "
+        f"{deleted}"
+    )
+
+    print(
+        f"Gagal hapus    : "
+        f"{failed}"
+    )
+
+    print(
+        f"Record sesudah : "
+        f"{remaining_count}"
+    )
+
+    print("=" * 70)
+
+    return {
+        "success": failed == 0,
+        "deleted": deleted,
+        "failed": failed,
+        "duplicate_groups": len(
+            duplicate_groups
+        ),
+        "remaining": remaining_count,
+    }
+    
 # ============================================================
 # MAIN
 # ============================================================
@@ -3312,6 +3611,14 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--dedupe",
+        action="store_true",
+        help=(
+            "hapus duplicate link dari database"
+        ),
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -3321,6 +3628,12 @@ def main() -> None:
     if args.dedupe_dry_run:
 
         dedupe_dry_run()
+
+        return
+
+    if args.dedupe:
+
+        dedupe()
 
         return
 
