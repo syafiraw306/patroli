@@ -318,6 +318,46 @@ def update_article_classification_by_id(
             f"ID={article_id} -> {e}"
         )
         return None
+        
+def delete_article_by_id(article_id: Any) -> bool:
+    """
+    Menghapus satu artikel berdasarkan ID.
+
+    Digunakan oleh proses deduplikasi untuk menghapus
+    artikel duplicate tanpa menghapus artikel utama.
+    """
+
+    if article_id is None:
+        print("[DB DELETE ID ERROR] ID artikel kosong.")
+        return False
+
+    try:
+        response = (
+            get_supabase()
+            .table("articles")
+            .delete()
+            .eq("id", article_id)
+            .execute()
+        )
+
+        rows = response.data or []
+
+        if rows:
+            print(f"[DB DELETE ID] Artikel ID={article_id} berhasil dihapus.")
+            return True
+
+        print(
+            f"[DB DELETE ID] Artikel ID={article_id} "
+            f"tidak ditemukan atau sudah dihapus."
+        )
+        return False
+
+    except Exception as e:
+        print(
+            f"[DB DELETE ID ERROR] "
+            f"ID={article_id} -> {e}"
+        )
+        return False
 
 def get_articles_by_category(category: str, limit: int = 1000) -> List[Dict[str, Any]]:
     if not category:
