@@ -22,7 +22,6 @@ from database import (
     save_run_log,
     upsert_article,
     update_article_classification_by_id,
-    update_article_classification,
     delete_article_by_id,
 )
 
@@ -33,15 +32,26 @@ from database import (
 
 load_dotenv()
 
-TAHUN_TARGET = int(os.getenv("TAHUN_TARGET") or "2026")
-MAX_WORKERS = int(os.getenv("MAX_WORKERS") or "10")
-REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT") or "15")
+TAHUN_TARGET = int(
+    os.getenv("TAHUN_TARGET") or "2026"
+)
+
+MAX_WORKERS = int(
+    os.getenv("MAX_WORKERS") or "10"
+)
+
+REQUEST_TIMEOUT = int(
+    os.getenv("REQUEST_TIMEOUT") or "15"
+)
+
 MAX_ARTICLES_PER_FEED = int(
     os.getenv("MAX_ARTICLES_PER_FEED") or "40"
 )
+
 MIN_CONTENT_LENGTH = int(
     os.getenv("MIN_CONTENT_LENGTH") or "180"
 )
+
 NAMA_SATKER = os.getenv(
     "NAMA_SATKER",
     "Kejaksaan Negeri Deli Serdang",
@@ -94,7 +104,7 @@ SEARCH_TARGETS = [
 # ============================================================
 # ISTILAH HUKUM
 #
-# Istilah di bawah TIDAK otomatis berarti negatif.
+# Istilah hukum TIDAK otomatis negatif.
 # ============================================================
 
 LEGAL_EVENT_TERMS = {
@@ -120,43 +130,107 @@ LEGAL_EVENT_TERMS = {
     "penangkapan",
     "ditangkap",
     "menangkap",
+    "eksekusi",
 }
 
 
 # ============================================================
-# AKSI POSITIF PENEGAKAN HUKUM
+# IDENTITAS PIHAK INTERNAL SATKER
 #
-# Contoh:
-# - Kejari berhasil menangkap tersangka
-# - Kejari mengungkap kasus
-# - Jaksa menyita barang bukti
+# Digunakan untuk membedakan:
+#
+# "Kajari ditetapkan tersangka"
+#
+# dengan:
+#
+# "Kajari menetapkan tersangka"
+#
 # ============================================================
 
-POSITIVE_ACTION_PATTERNS = [
-    r"\bberhasil\s+(?:mengungkap|mengungkapkan|menangkap|mengamankan|menyita|membongkar)",
-    r"\bberhasil\s+.*?(?:tersangka|pelaku|barang bukti)",
-    r"\bberhasil\s+.*?(?:menetapkan|menindaklanjuti|mengeksekusi)",
-    r"\bungkap\s+(?:kasus|perkara)",
-    r"\bmengungkap\s+(?:kasus|perkara)",
-    r"\bmenangkap\s+(?:tersangka|pelaku)",
-    r"\bditangkap\s+.*?(?:tersangka|pelaku)",
-    r"\bamankan\s+(?:tersangka|pelaku|barang bukti)",
-    r"\bmengamankan\s+(?:tersangka|pelaku|barang bukti)",
-    r"\bsita\s+(?:barang bukti|aset)",
-    r"\bmenyita\s+(?:barang bukti|aset)",
-    r"\bmenetapkan\s+.*?\s+sebagai\s+tersangka",
-    r"\bmenindaklanjuti\s+.*?\s+sesuai\s+(?:ketentuan|hukum)",
-    r"\beksekusi\s+.*?(?:terpidana|putusan|pidana)",
-    r"\bmelaksanakan\s+.*?(?:eksekusi|penyuluhan|penerangan hukum)",
-    r"\bberhasil\s+melakukan\s+penyidikan",
-    r"\bberhasil\s+melakukan\s+penyelidikan",
-    r"\bmenuntut\s+.*?\s+di\s+persidangan",
-    r"\bmembacakan\s+tuntutan",
+INTERNAL_ACTOR_PATTERNS = [
+    r"\bkajari\b",
+    r"\bkepala kejaksaan\b",
+    r"\bjaksa\b",
+    r"\bjaksa penuntut umum\b",
+    r"\bpegawai kejaksaan\b",
+    r"\bpejabat kejaksaan\b",
+    r"\bpetugas kejaksaan\b",
+    r"\banggota kejaksaan\b",
+    r"\bpenyidik kejaksaan\b",
+    r"\bpenuntut umum\b",
+]
+
+
+SATKER_INSTITUTION_PATTERNS = [
+    r"\bkejari\b",
+    r"\bkejaksaan negeri\b",
+    r"\bkejaksaan deli serdang\b",
+    r"\bcabjari\b",
+    r"\bcabang kejaksaan negeri\b",
 ]
 
 
 # ============================================================
-# KEGIATAN RESMI SATKER
+# POSITIVE ACTION
+#
+# Aksi penegakan hukum yang dilakukan oleh Kejari/Jaksa.
+# ============================================================
+
+POSITIVE_ACTION_PATTERNS = [
+
+    # keberhasilan
+    r"\bberhasil\s+(?:mengungkap|mengamankan|menangkap|menyita|membongkar)",
+    r"\bberhasil\s+.*?\bmenangkap\b",
+    r"\bberhasil\s+.*?\bmengamankan\b",
+    r"\bberhasil\s+.*?\bmenyita\b",
+    r"\bberhasil\s+.*?\bmengungkap\b",
+
+    # pengungkapan
+    r"\bmengungkap\s+(?:kasus|perkara)\b",
+    r"\bungkap\s+(?:kasus|perkara)\b",
+    r"\bmengungkap\s+.*?\bkasus\b",
+    r"\bmembongkar\s+.*?\bkasus\b",
+
+    # penangkapan
+    r"\bmenangkap\s+(?:tersangka|pelaku)\b",
+    r"\bmenangkap\s+.*?\btersangka\b",
+    r"\bmengamankan\s+(?:tersangka|pelaku)\b",
+    r"\bmengamankan\s+.*?\btersangka\b",
+
+    # penyitaan
+    r"\bmenyita\s+(?:barang bukti|aset)\b",
+    r"\bmenyita\s+.*?\bbarang bukti\b",
+    r"\bmenyita\s+.*?\baset\b",
+    r"\bsita\s+(?:barang bukti|aset)\b",
+
+    # penetapan tersangka
+    r"\bmenetapkan\s+.*?\bsebagai\s+tersangka\b",
+    r"\bditetapkan\s+.*?\bsebagai\s+tersangka\b",
+
+    # penyidikan
+    r"\bmelakukan\s+penyidikan\b",
+    r"\bmelaksanakan\s+penyidikan\b",
+    r"\bmelakukan\s+penyelidikan\b",
+    r"\bmelaksanakan\s+penyelidikan\b",
+    r"\bberhasil\s+melakukan\s+penyidikan\b",
+    r"\bberhasil\s+melakukan\s+penyelidikan\b",
+
+    # penuntutan
+    r"\bmelakukan\s+penuntutan\b",
+    r"\bmelaksanakan\s+penuntutan\b",
+    r"\bmenuntut\s+.*?\bdi\s+persidangan\b",
+    r"\bmembacakan\s+tuntutan\b",
+
+    # eksekusi
+    r"\bmelaksanakan\s+eksekusi\b",
+    r"\bmelakukan\s+eksekusi\b",
+    r"\beksekusi\s+.*?\bputusan\b",
+    r"\beksekusi\s+.*?\bterpidana\b",
+]
+
+
+# ============================================================
+# KEGIATAN RESMI
 # ============================================================
 
 OFFICIAL_ACTIVITY_PATTERNS = [
@@ -181,7 +255,8 @@ OFFICIAL_ACTIVITY_PATTERNS = [
     r"\bperesmian\b",
     r"\bpenandatanganan\b",
     r"\bkerja sama\b",
-    r"\bmo[uU]\b",
+    r"\bmoa\b",
+    r"\bmou\b",
     r"\bziarah\b",
     r"\bbakti sosial\b",
     r"\bgotong royong\b",
@@ -192,49 +267,111 @@ OFFICIAL_ACTIVITY_PATTERNS = [
     r"\bmemimpin rapat\b",
     r"\bmemimpin\b",
     r"\bmengikuti\b",
+    r"\bupacara peringatan\b",
+    r"\bapel pagi\b",
+    r"\bapel gabungan\b",
 ]
 
 
 # ============================================================
-# INDIKATOR NEGATIF KUAT
+# NEGATIVE STRONG
 #
-# Fokus:
-# MASALAH HARUS DIARAHKAN KEPADA SATKER/PIMPINAN SATKER.
+# MASALAH HARUS DIARAHKAN KEPADA SATKER / INTERNAL SATKER.
 #
-# Tidak cukup hanya:
-# "Kejari menyidik kasus korupsi"
+# Sangat penting:
 #
-# Karena itu adalah aktivitas penegakan hukum.
+# "Kejari menetapkan tersangka"
+# bukan negatif.
+#
+# "Kajari ditetapkan sebagai tersangka"
+# negatif.
 # ============================================================
 
 NEGATIVE_STRONG_PATTERNS = [
-    # Kajari sebagai pihak yang bermasalah
-    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}\b(?:ditangkap|diamankan|ditetapkan\s+sebagai\s+tersangka|menjadi\s+tersangka|tersangka|terdakwa)\b",
 
-    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}\b(?:suap|gratifikasi|korupsi|pungli|pemerasan|penggelapan)\b",
+    # --------------------------------------------------------
+    # KAJARI / KEPALA KEJAKSAAN SEBAGAI PIHAK BERMASALAH
+    # --------------------------------------------------------
 
-    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}\b(?:diperiksa|dipanggil|dilaporkan|diadukan|disidang|diadili)\b",
+    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
+    r"\b(?:ditangkap|diamankan|ditetapkan\s+sebagai\s+tersangka|"
+    r"menjadi\s+tersangka|tersangka|terdakwa|terpidana)\b",
 
-    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}\b(?:dicopot|dimutasi\s+karena|diberhentikan\s+karena)\b",
+    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
+    r"\b(?:suap|gratifikasi|korupsi|pungli|pemerasan|penggelapan)\b",
 
-    # Kejari sebagai institusi yang dituduh bermasalah
-    r"\b(?:kejari|kejaksaan negeri|kejaksaan deli serdang)\b.{0,180}\b(?:diduga|terindikasi|dituding|dituduh)\s+(?:melakukan|terlibat|menerima)\b",
+    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
+    r"\b(?:diperiksa|dipanggil|dilaporkan|diadukan|"
+    r"disidang|diadili)\b",
 
-    r"\b(?:kejari|kejaksaan negeri|kejaksaan deli serdang)\b.{0,180}\b(?:pelanggaran etik|pelanggaran hukum|maladministrasi)\b",
+    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
+    r"\b(?:dicopot|diberhentikan|dimutasi\s+karena)\b",
 
-    r"\b(?:kejari|kejaksaan negeri|kejaksaan deli serdang)\b.{0,180}\b(?:laporan pengaduan|aduan masyarakat|dilaporkan ke|diadukan ke)\b",
+    # --------------------------------------------------------
+    # JAKSA / PEGAWAI INTERNAL
+    # --------------------------------------------------------
 
-    # Kantor satker menjadi objek pemeriksaan/penggeledahan
-    r"\b(?:kantor|gedung)\b.{0,100}\b(?:kejari|kejaksaan negeri)\b.{0,120}\b(?:digeledah|disita|diperiksa)\b",
+    r"\b(?:jaksa|jaksa penuntut umum|pegawai kejaksaan|"
+    r"pejabat kejaksaan|petugas kejaksaan)\b.{0,180}"
+    r"\b(?:ditangkap|diamankan|ditetapkan\s+sebagai\s+tersangka|"
+    r"menjadi\s+tersangka|tersangka|terdakwa)\b",
 
-    r"\b(?:kejari|kejaksaan negeri)\b.{0,120}\b(?:digeledah|disita)\b.{0,120}\b(?:terkait|dugaan|kasus)\b",
+    r"\b(?:jaksa|pegawai kejaksaan|pejabat kejaksaan)\b.{0,180}"
+    r"\b(?:suap|gratifikasi|korupsi|pungli|pemerasan|"
+    r"penggelapan)\b",
+
+    r"\b(?:jaksa|pegawai kejaksaan|pejabat kejaksaan)\b.{0,180}"
+    r"\b(?:dilaporkan|diadukan|diperiksa|dipanggil|"
+    r"disidang|diadili)\b",
+
+    # --------------------------------------------------------
+    # KEJARI SEBAGAI INSTITUSI YANG DITUDUH
+    # --------------------------------------------------------
+
+    r"\b(?:kejari|kejaksaan negeri|kejaksaan deli serdang|"
+    r"cabjari|cabang kejaksaan negeri)\b.{0,180}"
+    r"\b(?:diduga|terindikasi|dituding|dituduh)\b.{0,100}"
+    r"\b(?:melakukan|terlibat|menerima|meminta|memeras)\b",
+
+    r"\b(?:kejari|kejaksaan negeri|kejaksaan deli serdang|"
+    r"cabjari|cabang kejaksaan negeri)\b.{0,180}"
+    r"\b(?:pelanggaran etik|pelanggaran hukum|"
+    r"maladministrasi)\b",
+
+    # --------------------------------------------------------
+    # PENGADUAN / LAPORAN LANGSUNG TERHADAP KEJARI
+    # --------------------------------------------------------
+
+    r"\b(?:kejari|kejaksaan negeri|kejaksaan deli serdang|"
+    r"cabjari|cabang kejaksaan negeri)\b.{0,180}"
+    r"\b(?:dilaporkan|diadukan)\b",
+
+    r"\b(?:dilaporkan|diadukan)\b.{0,180}"
+    r"\b(?:kejari|kejaksaan negeri|kejaksaan deli serdang|"
+    r"cabjari|cabang kejaksaan negeri)\b",
+
+    r"\b(?:laporan pengaduan|aduan masyarakat)\b.{0,180}"
+    r"\b(?:kejari|kejaksaan negeri|kajari|kepala kejaksaan)\b",
+
+    # --------------------------------------------------------
+    # KANTOR SATKER SEBAGAI OBJEK
+    # --------------------------------------------------------
+
+    r"\b(?:kantor|gedung)\b.{0,100}"
+    r"\b(?:kejari|kejaksaan negeri)\b.{0,120}"
+    r"\b(?:digeledah|disita|diperiksa)\b",
+
+    r"\b(?:kejari|kejaksaan negeri)\b.{0,120}"
+    r"\b(?:digeledah|disita)\b.{0,120}"
+    r"\b(?:terkait|dugaan|kasus)\b",
 ]
 
 
 # ============================================================
-# INDIKATOR PERLU PENANGANAN
+# HANDLING
 #
-# Belum cukup kuat untuk disebut masalah berat.
+# Tidak otomatis negatif.
+# Harus ada hubungan dengan satker.
 # ============================================================
 
 HANDLING_PATTERNS = [
@@ -268,12 +405,15 @@ HANDLING_PATTERNS = [
 
 
 # ============================================================
-# NEGASI / BANTAHAN
+# NEGATION
 # ============================================================
 
 NEGATION_PATTERNS = [
-    r"\btidak\s+(?:terbukti|benar|ada|melakukan|terlibat|menerima)\b",
+    r"\btidak\s+(?:terbukti|benar|ada|melakukan|"
+    r"terlibat|menerima|terlibat)\b",
+
     r"\bbelum\s+(?:terbukti|ada|ditemukan)\b",
+
     r"\bbantah\b",
     r"\bmembantah\b",
     r"\bdibantah\b",
@@ -282,12 +422,12 @@ NEGATION_PATTERNS = [
     r"\btidak benar\b",
     r"\bfitnah\b",
     r"\bkeliru\b",
-    r"\btidak\s+terbukti\b",
+    r"\btidak terbukti\b",
 ]
 
 
 # ============================================================
-# ISTILAH BAHAYA DALAM JUDUL
+# DANGER TITLE
 # ============================================================
 
 DANGER_TITLE_TERMS = {
@@ -306,7 +446,7 @@ DANGER_TITLE_TERMS = {
 
 
 # ============================================================
-# PRIORITAS
+# PRIORITY
 # ============================================================
 
 PRIORITY_BY_CATEGORY = {
@@ -328,9 +468,12 @@ SESSION.headers.update(
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 "
-            "Chrome/151 Safari/537.36"
+            "(KHTML, like Gecko) "
+            "Chrome/151.0 Safari/537.36"
         ),
-        "Accept-Language": "id-ID,id;q=0.9,en;q=0.8",
+        "Accept-Language": (
+            "id-ID,id;q=0.9,en;q=0.8"
+        ),
     }
 )
 
@@ -339,7 +482,10 @@ SESSION.headers.update(
 # TEXT UTILITIES
 # ============================================================
 
-def normalize_text(value: Any) -> str:
+def normalize_text(
+    value: Any,
+) -> str:
+
     text = html.unescape(
         str(value or "")
     )
@@ -353,30 +499,53 @@ def normalize_text(value: Any) -> str:
     return text.strip()
 
 
-def normalize_url(url: Any) -> str:
+def normalize_url(
+    url: Any,
+) -> str:
     """
-    Normalisasi URL agar duplicate link lebih konsisten.
+    Normalisasi URL agar:
+    - http/https konsisten secara struktur
+    - www dihilangkan
+    - trailing slash dihilangkan
+    - fragment dihilangkan
+    - tracking parameter dihilangkan
     """
 
-    url = str(url or "").strip()
+    url = str(
+        url or ""
+    ).strip()
 
     if not url:
         return ""
 
     try:
-        parsed = urllib.parse.urlsplit(url)
 
-        scheme = parsed.scheme.lower()
-        netloc = parsed.netloc.lower()
+        parsed = urllib.parse.urlsplit(
+            url
+        )
 
-        if netloc.startswith("www."):
+        scheme = (
+            parsed.scheme.lower()
+        )
+
+        netloc = (
+            parsed.netloc.lower()
+        )
+
+        if netloc.startswith(
+            "www."
+        ):
             netloc = netloc[4:]
 
-        path = parsed.path.rstrip("/")
+        path = (
+            parsed.path.rstrip("/")
+        )
 
-        query_pairs = urllib.parse.parse_qsl(
-            parsed.query,
-            keep_blank_values=True,
+        query_pairs = (
+            urllib.parse.parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
         )
 
         tracking_keys = {
@@ -392,16 +561,25 @@ def normalize_url(url: Any) -> str:
             "source",
             "mc_cid",
             "mc_eid",
+            "_ga",
+            "_gl",
         }
 
         clean_query = [
-            (key, value)
-            for key, value in query_pairs
-            if key.lower() not in tracking_keys
+            (
+                key,
+                value,
+            )
+            for key, value
+            in query_pairs
+            if key.lower()
+            not in tracking_keys
         ]
 
-        query = urllib.parse.urlencode(
-            clean_query
+        query = (
+            urllib.parse.urlencode(
+                clean_query
+            )
         )
 
         return urllib.parse.urlunsplit(
@@ -415,7 +593,11 @@ def normalize_url(url: Any) -> str:
         )
 
     except Exception:
-        return url.split("#")[0].strip()
+
+        return (
+            url.split("#")[0]
+            .strip()
+        )
 
 
 # ============================================================
@@ -430,11 +612,13 @@ def parse_date_safe(
         return None
 
     try:
+
         dt = date_parser.parse(
             str(value)
         )
 
         if dt.tzinfo is None:
+
             dt = dt.replace(
                 tzinfo=timezone.utc
             )
@@ -444,6 +628,7 @@ def parse_date_safe(
         )
 
     except Exception:
+
         return None
 
 
@@ -471,17 +656,21 @@ def extract_published_date(
         "created_parsed",
     ):
 
-        value = entry.get(key)
+        value = entry.get(
+            key
+        )
 
         if value:
 
             try:
+
                 return datetime(
                     *value[:6],
                     tzinfo=timezone.utc,
                 )
 
             except Exception:
+
                 pass
 
     return fallback
@@ -501,7 +690,9 @@ def is_url_old(
     dt: Optional[datetime],
 ) -> bool:
 
-    return not is_article_2026(dt)
+    return not is_article_2026(
+        dt
+    )
 
 
 # ============================================================
@@ -549,7 +740,7 @@ def fetch_webpage_content(
 
 
 # ============================================================
-# EXTRACT ARTICLE TEXT
+# ARTICLE TEXT
 # ============================================================
 
 def extract_article_text(
@@ -592,6 +783,8 @@ def extract_article_text(
         ".entry-content",
         ".content-article",
         ".detail-content",
+        ".read-content",
+        ".news-content",
     ]
 
     for selector in selectors:
@@ -608,7 +801,10 @@ def extract_article_text(
             )
 
             if len(txt) > 100:
-                candidates.append(txt)
+
+                candidates.append(
+                    txt
+                )
 
     if candidates:
 
@@ -624,9 +820,8 @@ def extract_article_text(
                 strip=True,
             )
         )
-        for paragraph in soup.find_all(
-            "p"
-        )
+        for paragraph
+        in soup.find_all("p")
     ]
 
     paragraphs = [
@@ -636,7 +831,9 @@ def extract_article_text(
     ]
 
     return normalize_text(
-        " ".join(paragraphs)
+        " ".join(
+            paragraphs
+        )
     )
 
 
@@ -657,11 +854,19 @@ def find_satker_matches(
 
     for keyword in TARGET_KEJARI_KEYWORDS:
 
-        if keyword.lower() in text:
-            matches.append(keyword)
+        if (
+            keyword.lower()
+            in text
+        ):
+
+            matches.append(
+                keyword
+            )
 
     return list(
-        dict.fromkeys(matches)
+        dict.fromkeys(
+            matches
+        )
     )
 
 
@@ -683,9 +888,11 @@ def find_satker_match_location(
         key = keyword.lower()
 
         if key in title_lower:
+
             return "judul"
 
         if key in content_lower:
+
             return "isi"
 
     return ""
@@ -724,9 +931,13 @@ def regex_hits(
                 text,
                 flags=re.I,
             ):
-                hits.append(pattern)
+
+                hits.append(
+                    pattern
+                )
 
         except re.error:
+
             continue
 
     return hits
@@ -740,7 +951,9 @@ def split_sentences(
     text: str,
 ) -> List[str]:
 
-    text = normalize_text(text)
+    text = normalize_text(
+        text
+    )
 
     if not text:
         return []
@@ -751,9 +964,13 @@ def split_sentences(
     )
 
     return [
-        normalize_text(sentence)
+        normalize_text(
+            sentence
+        )
         for sentence in sentences
-        if normalize_text(sentence)
+        if normalize_text(
+            sentence
+        )
     ]
 
 
@@ -768,8 +985,44 @@ def sentence_contains_satker(
     text = sentence.lower()
 
     return any(
-        keyword.lower() in text
-        for keyword in TARGET_KEJARI_KEYWORDS
+        keyword.lower()
+        in text
+        for keyword
+        in TARGET_KEJARI_KEYWORDS
+    )
+
+
+def sentence_contains_internal_actor(
+    sentence: str,
+) -> bool:
+
+    text = sentence.lower()
+
+    return any(
+        re.search(
+            pattern,
+            text,
+            re.I,
+        )
+        for pattern
+        in INTERNAL_ACTOR_PATTERNS
+    )
+
+
+def sentence_contains_satker_institution(
+    sentence: str,
+) -> bool:
+
+    text = sentence.lower()
+
+    return any(
+        re.search(
+            pattern,
+            text,
+            re.I,
+        )
+        for pattern
+        in SATKER_INSTITUTION_PATTERNS
     )
 
 
@@ -789,33 +1042,40 @@ def get_satker_context_sentences(
         if sentence_contains_satker(
             sentence
         ):
-            contexts.append(sentence)
+
+            contexts.append(
+                sentence
+            )
 
     return contexts[:20]
 
 
 # ============================================================
-# NEGATION CHECK
+# NEGATION
 # ============================================================
 
 def has_negation_near(
     text: str,
     term: str,
-    window: int = 100,
+    window: int = 120,
 ) -> bool:
 
     text = text.lower()
 
     for match in re.finditer(
-        re.escape(term.lower()),
+        re.escape(
+            term.lower()
+        ),
         text,
     ):
 
         before = text[
             max(
                 0,
-                match.start() - window,
-            ):match.start()
+                match.start()
+                - window,
+            ):
+            match.start()
         ]
 
         if any(
@@ -824,8 +1084,10 @@ def has_negation_near(
                 before,
                 re.I,
             )
-            for pattern in NEGATION_PATTERNS
+            for pattern
+            in NEGATION_PATTERNS
         ):
+
             return True
 
     return False
@@ -843,7 +1105,8 @@ def sentence_has_negation(
             text,
             re.I,
         )
-        for pattern in NEGATION_PATTERNS
+        for pattern
+        in NEGATION_PATTERNS
     )
 
 
@@ -867,6 +1130,7 @@ def find_positive_context(
         if sentence_has_negation(
             sentence
         ):
+
             continue
 
         if regex_hits(
@@ -897,6 +1161,7 @@ def find_official_activity_context(
         if sentence_has_negation(
             sentence
         ):
+
             continue
 
         if regex_hits(
@@ -931,11 +1196,30 @@ def find_negative_context(
         if sentence_has_negation(
             sentence
         ):
+
             continue
 
-        if regex_hits(
+        hits = regex_hits(
             sentence,
             NEGATIVE_STRONG_PATTERNS,
+        )
+
+        if not hits:
+            continue
+
+        # ----------------------------------------------------
+        # PENTING:
+        #
+        # Pastikan kalimat memang menyebut satker/internal.
+        # ----------------------------------------------------
+
+        if (
+            sentence_contains_satker(
+                sentence
+            )
+            or sentence_contains_internal_actor(
+                sentence
+            )
         ):
 
             contexts.append(
@@ -962,6 +1246,18 @@ def find_handling_context(
 
     for sentence in sentences:
 
+        if sentence_has_negation(
+            sentence
+        ):
+
+            continue
+
+        if not sentence_contains_satker(
+            sentence
+        ):
+
+            continue
+
         if regex_hits(
             sentence,
             HANDLING_PATTERNS,
@@ -983,21 +1279,30 @@ def calculate_positive_score(
     content: str,
 ) -> int:
 
-    title = normalize_text(title)
-    content = normalize_text(content)
-
-    full = f"{title}. {content}".lower()
-
-    score = 0
-
-    positive_action_hits = regex_hits(
-        full,
-        POSITIVE_ACTION_PATTERNS,
+    title = normalize_text(
+        title
     )
 
-    official_hits = regex_hits(
-        full,
-        OFFICIAL_ACTIVITY_PATTERNS,
+    content = normalize_text(
+        content
+    )
+
+    full = (
+        f"{title}. {content}"
+    ).lower()
+
+    positive_action_hits = (
+        regex_hits(
+            full,
+            POSITIVE_ACTION_PATTERNS,
+        )
+    )
+
+    official_hits = (
+        regex_hits(
+            full,
+            OFFICIAL_ACTIVITY_PATTERNS,
+        )
     )
 
     positive_context = (
@@ -1014,9 +1319,11 @@ def calculate_positive_score(
         )
     )
 
+    score = 0
+
     # Aksi penegakan hukum
     score += (
-        5 * len(
+        4 * len(
             positive_action_hits
         )
     )
@@ -1028,29 +1335,31 @@ def calculate_positive_score(
         )
     )
 
-    # Konteks positif langsung
+    # Konteks positif
     score += (
         3 * len(
             positive_context
         )
     )
 
+    # Konteks kegiatan
     score += (
         2 * len(
             official_context
         )
     )
 
-    # Positif yang muncul di judul
+    # Positive di judul
     title_positive = regex_hits(
         title.lower(),
         POSITIVE_ACTION_PATTERNS,
     )
 
     if title_positive:
+
         score += 5
 
-    # Satker disebut dalam konteks kegiatan
+    # Positive activity yang jelas menyebut satker
     if (
         official_context
         and check_satker_relevance(
@@ -1058,6 +1367,7 @@ def calculate_positive_score(
             content,
         )
     ):
+
         score += 3
 
     return min(
@@ -1075,8 +1385,13 @@ def calculate_negative_score(
     content: str,
 ) -> int:
 
-    title = normalize_text(title)
-    content = normalize_text(content)
+    title = normalize_text(
+        title
+    )
+
+    content = normalize_text(
+        content
+    )
 
     contexts = find_negative_context(
         title,
@@ -1090,22 +1405,46 @@ def calculate_negative_score(
 
     for context in contexts:
 
-        # Negasi/bantahan jangan dihitung
         if sentence_has_negation(
             context
         ):
+
             continue
 
-        score += 10
+        # Satu konteks negatif langsung = kuat.
+        score += 12
 
-    # Tambahan jika masalah muncul di judul
-    title_hits = regex_hits(
-        title.lower(),
-        NEGATIVE_STRONG_PATTERNS,
-    )
+        # Jika Kajari/internal actor disebut,
+        # tambah bobot.
+        if sentence_contains_internal_actor(
+            context
+        ):
 
-    if title_hits:
-        score += 10
+            score += 4
+
+    title_contexts = [
+        sentence
+        for sentence
+        in split_sentences(
+            title
+        )
+        if (
+            sentence_contains_satker(
+                sentence
+            )
+            or sentence_contains_internal_actor(
+                sentence
+            )
+        )
+        and regex_hits(
+            sentence,
+            NEGATIVE_STRONG_PATTERNS,
+        )
+    ]
+
+    if title_contexts:
+
+        score += 8
 
     return min(
         score,
@@ -1122,37 +1461,31 @@ def calculate_handling_score(
     content: str,
 ) -> int:
 
-    full = normalize_text(
-        f"{title}. {content}"
-    ).lower()
-
-    score = 0
-
-    hits = regex_hits(
-        full,
-        HANDLING_PATTERNS,
-    )
-
-    score += 2 * len(hits)
-
-    # Tambahan apabila handling terjadi
-    # dalam kalimat yang juga menyebut satker.
     contexts = find_handling_context(
         title,
         content,
     )
 
-    satker_context_count = sum(
-        1
-        for sentence in contexts
-        if sentence_contains_satker(
-            sentence
-        )
-    )
+    if not contexts:
+        return 0
 
-    score += (
-        2 * satker_context_count
-    )
+    score = 0
+
+    for context in contexts:
+
+        score += 3
+
+        if sentence_contains_satker(
+            context
+        ):
+
+            score += 2
+
+        if sentence_contains_internal_actor(
+            context
+        ):
+
+            score += 2
 
     return min(
         score,
@@ -1161,7 +1494,7 @@ def calculate_handling_score(
 
 
 # ============================================================
-# CLASSIFIER UTAMA
+# CLASSIFIER
 # ============================================================
 
 def classify_article(
@@ -1169,14 +1502,23 @@ def classify_article(
     content: str,
 ) -> Dict[str, Any]:
 
-    title = normalize_text(title)
-    content = normalize_text(content)
+    title = normalize_text(
+        title
+    )
 
-    full = f"{title}. {content}".lower()
+    content = normalize_text(
+        content
+    )
 
-    satker_matches = find_satker_matches(
-        title,
-        content,
+    full = (
+        f"{title}. {content}"
+    ).lower()
+
+    satker_matches = (
+        find_satker_matches(
+            title,
+            content,
+        )
     )
 
     satker_location = (
@@ -1264,7 +1606,7 @@ def classify_article(
     )
 
     # ========================================================
-    # CEK NEGASI
+    # NEGASI / BANTAHAN
     # ========================================================
 
     negated_danger = any(
@@ -1272,11 +1614,36 @@ def classify_article(
             full,
             term,
         )
-        for term in DANGER_TITLE_TERMS
+        for term
+        in DANGER_TITLE_TERMS
     )
 
     # ========================================================
-    # ATURAN KLASIFIKASI
+    # POSITIVE SATKER CONTEXT
+    # ========================================================
+
+    positive_satker_context = [
+        sentence
+        for sentence
+        in (
+            positive_context
+            + official_context
+        )
+        if sentence_contains_satker(
+            sentence
+        )
+    ]
+
+    # ========================================================
+    # NEGATIVE DIRECTNESS
+    # ========================================================
+
+    direct_negative = bool(
+        negative_context
+    )
+
+    # ========================================================
+    # CLASSIFICATION
     # ========================================================
 
     category = "Netral"
@@ -1284,8 +1651,9 @@ def classify_article(
     # --------------------------------------------------------
     # RULE 1
     #
-    # Jika kegiatan resmi satker sangat jelas,
-    # prioritaskan POSITIF.
+    # Kegiatan resmi satker.
+    #
+    # Negatif langsung harus mengalahkan ini.
     # --------------------------------------------------------
 
     if (
@@ -1303,6 +1671,9 @@ def classify_article(
     # RULE 2
     #
     # Keberhasilan penegakan hukum.
+    #
+    # Misalnya:
+    # "Kejari berhasil menangkap tersangka."
     # --------------------------------------------------------
 
     elif (
@@ -1315,13 +1686,14 @@ def classify_article(
     # --------------------------------------------------------
     # RULE 3
     #
-    # Negatif kuat hanya jika konteks benar-benar
-    # menunjukkan masalah terhadap satker.
+    # NEGATIF KUAT.
+    #
+    # Harus ada konteks negatif langsung.
     # --------------------------------------------------------
 
     elif (
-        negative_score >= 10
-        and negative_context
+        direct_negative
+        and negative_score >= 12
         and not negated_danger
     ):
 
@@ -1330,18 +1702,22 @@ def classify_article(
     # --------------------------------------------------------
     # RULE 4
     #
-    # Isu yang perlu ditangani tetapi belum cukup
-    # kuat menjadi negatif.
+    # PERLU PENANGANAN.
+    #
+    # Hanya jika konteks handling menyebut satker.
     # --------------------------------------------------------
 
-    elif handling_score >= 2:
+    elif (
+        handling_score >= 3
+        and handling_context
+    ):
 
         category = "Perlu Penanganan"
 
     # --------------------------------------------------------
     # RULE 5
     #
-    # Skor positif yang cukup.
+    # POSITIF SCORE.
     # --------------------------------------------------------
 
     elif positive_score >= 3:
@@ -1355,14 +1731,33 @@ def classify_article(
     # ========================================================
     # SAFETY OVERRIDE
     #
-    # Jika berita positif jelas lebih kuat daripada
-    # indikasi negatif ringan, jangan ubah menjadi negatif.
+    # Jika positif jauh lebih jelas daripada negatif,
+    # pertahankan POSITIF.
     # ========================================================
 
     if (
         category == "Negatif Kuat"
+        and positive_score > 0
         and positive_score >= negative_score
-        and negative_score < 20
+        and negative_score < 25
+    ):
+
+        category = "Positif"
+
+    # ========================================================
+    # POSITIVE DOMINANCE
+    #
+    # Jika ada aksi positif satker yang jelas dan
+    # negatif tidak langsung, jangan jadikan negatif.
+    # ========================================================
+
+    if (
+        positive_satker_context
+        and not direct_negative
+        and category in {
+            "Perlu Penanganan",
+            "Negatif Kuat",
+        }
     ):
 
         category = "Positif"
@@ -1376,25 +1771,18 @@ def classify_article(
         and category == "Negatif Kuat"
     ):
 
-        if handling_score >= 2:
-            category = "Perlu Penanganan"
+        if (
+            handling_score >= 3
+            and handling_context
+        ):
+
+            category = (
+                "Perlu Penanganan"
+            )
+
         else:
+
             category = "Netral"
-
-    # ========================================================
-    # POSITIVE OVERRIDE
-    #
-    # Jika konteks positif sangat jelas dan tidak ada
-    # konteks negatif kuat, pertahankan positif.
-    # ========================================================
-
-    if (
-        category == "Perlu Penanganan"
-        and positive_context
-        and negative_score == 0
-    ):
-
-        category = "Positif"
 
     # ========================================================
     # PRIORITY
@@ -1411,7 +1799,8 @@ def classify_article(
     detected_keywords = sorted(
         {
             word
-            for word in LEGAL_EVENT_TERMS
+            for word
+            in LEGAL_EVENT_TERMS
             if re.search(
                 r"\b"
                 + re.escape(word)
@@ -1430,26 +1819,56 @@ def classify_article(
         "category": category,
         "priority": priority,
 
-        "negative_score": negative_score,
-        "handling_score": handling_score,
-        "positive_score": positive_score,
+        "negative_score": int(
+            negative_score
+        ),
 
-        "positive_hits": positive_hits[:15],
-        "negative_hits": negative_hits[:15],
-        "handling_hits": handling_hits[:15],
+        "handling_score": int(
+            handling_score
+        ),
 
-        "keywords": detected_keywords,
+        "positive_score": int(
+            positive_score
+        ),
 
-        "satker_matches": satker_matches[:20],
-        "satker_match_location": satker_location,
+        "positive_hits": (
+            positive_hits[:15]
+        ),
 
-        "satker_context": satker_context[:20],
+        "negative_hits": (
+            negative_hits[:15]
+        ),
 
-        "strong_context": negative_context[:20],
+        "handling_hits": (
+            handling_hits[:15]
+        ),
+
+        "keywords": (
+            detected_keywords
+        ),
+
+        "satker_matches": (
+            satker_matches[:20]
+        ),
+
+        "satker_match_location": (
+            satker_location
+        ),
+
+        "satker_context": (
+            satker_context[:20]
+        ),
+
+        "strong_context": (
+            negative_context[:20]
+        ),
+
         "positive_context": (
-            positive_context
-            + official_context
-        )[:20],
+            (
+                positive_context
+                + official_context
+            )[:20]
+        ),
 
         "handling_context": (
             handling_context[:20]
@@ -1471,7 +1890,9 @@ def extract_feed_date(
         "created_parsed",
     ):
 
-        value = entry.get(key)
+        value = entry.get(
+            key
+        )
 
         if value:
 
@@ -1488,6 +1909,7 @@ def extract_feed_date(
                 )
 
             except Exception:
+
                 pass
 
     for key in (
@@ -1496,7 +1918,9 @@ def extract_feed_date(
         "created",
     ):
 
-        value = entry.get(key)
+        value = entry.get(
+            key
+        )
 
         if value:
 
@@ -1505,6 +1929,7 @@ def extract_feed_date(
             )
 
             if parsed:
+
                 return parsed
 
     return None
@@ -1514,8 +1939,10 @@ def parse_google_news_feed(
     query: str,
 ) -> List[Dict[str, Any]]:
 
-    encoded = urllib.parse.quote_plus(
-        query
+    encoded = (
+        urllib.parse.quote_plus(
+            query
+        )
     )
 
     url = (
@@ -1555,10 +1982,12 @@ def parse_google_news_feed(
             False,
         ):
 
-            bozo_exception = getattr(
-                feed,
-                "bozo_exception",
-                None,
+            bozo_exception = (
+                getattr(
+                    feed,
+                    "bozo_exception",
+                    None,
+                )
             )
 
             if bozo_exception:
@@ -1574,7 +2003,8 @@ def parse_google_news_feed(
 
             print(
                 f"[RSS EMPTY] "
-                f"Tidak ada entry untuk: {query}"
+                f"Tidak ada entry untuk: "
+                f"{query}"
             )
 
             return []
@@ -1592,12 +2022,14 @@ def parse_google_news_feed(
             if not link:
                 continue
 
-            published = extract_feed_date(
-                entry
+            published = (
+                extract_feed_date(
+                    entry
+                )
             )
 
-            source_value = entry.get(
-                "source"
+            source_value = (
+                entry.get("source")
             )
 
             if isinstance(
@@ -1605,9 +2037,11 @@ def parse_google_news_feed(
                 dict,
             ):
 
-                source = source_value.get(
-                    "title",
-                    "",
+                source = (
+                    source_value.get(
+                        "title",
+                        "",
+                    )
                 )
 
             else:
@@ -1620,19 +2054,29 @@ def parse_google_news_feed(
             rows.append(
                 {
                     "title": normalize_text(
-                        entry.get("title")
+                        entry.get(
+                            "title"
+                        )
                     ),
+
                     "link": link,
+
                     "published_date": (
                         published.isoformat()
                         if published
                         else None
                     ),
+
                     "source": normalize_text(
                         source
                     ),
-                    "rss_description": normalize_text(
-                        entry.get("summary")
+
+                    "rss_description": (
+                        normalize_text(
+                            entry.get(
+                                "summary"
+                            )
+                        )
                     ),
                 }
             )
@@ -1657,7 +2101,7 @@ def parse_google_news_feed(
 
 
 # ============================================================
-# COLLECT CANDIDATES
+# COLLECT
 # ============================================================
 
 def collect_candidates() -> List[Dict[str, Any]]:
@@ -1670,11 +2114,14 @@ def collect_candidates() -> List[Dict[str, Any]]:
     for query in SEARCH_TARGETS:
 
         print(
-            f"[RSS] Mencari: {query}"
+            f"[RSS] Mencari: "
+            f"{query}"
         )
 
-        rows = parse_google_news_feed(
-            query
+        rows = (
+            parse_google_news_feed(
+                query
+            )
         )
 
         for row in rows:
@@ -1683,15 +2130,49 @@ def collect_candidates() -> List[Dict[str, Any]]:
                 row.get("link")
             )
 
-            if link:
+            if not link:
+                continue
 
-                all_rows.setdefault(
-                    link,
-                    row,
-                )
+            # Dedupe sebelum proses.
+            if link not in all_rows:
+
+                all_rows[
+                    link
+                ] = row
+
+            else:
+
+                # Jika duplicate dari query berbeda,
+                # ambil data yang lebih lengkap.
+                existing = all_rows[
+                    link
+                ]
+
+                if (
+                    len(
+                        normalize_text(
+                            row.get(
+                                "rss_description"
+                            )
+                        )
+                    )
+                    >
+                    len(
+                        normalize_text(
+                            existing.get(
+                                "rss_description"
+                            )
+                        )
+                    )
+                ):
+
+                    all_rows[
+                        link
+                    ] = row
 
     print(
-        f"[PATROLI] Kandidat unik: "
+        f"[PATROLI] "
+        f"Kandidat unik: "
         f"{len(all_rows)}"
     )
 
@@ -1737,7 +2218,7 @@ def process_candidate(
         return result
 
     # --------------------------------------------------------
-    # FILTER TAHUN RSS
+    # FILTER RSS
     # --------------------------------------------------------
 
     if (
@@ -1768,17 +2249,23 @@ def process_candidate(
     )
 
     if not final_url:
+
         final_url = rss_link
 
     # --------------------------------------------------------
     # CONTENT
     # --------------------------------------------------------
 
-    content = extract_article_text(
-        raw_html
+    content = (
+        extract_article_text(
+            raw_html
+        )
     )
 
-    if len(content) < MIN_CONTENT_LENGTH:
+    if (
+        len(content)
+        < MIN_CONTENT_LENGTH
+    ):
 
         content = normalize_text(
             candidate.get(
@@ -1786,7 +2273,10 @@ def process_candidate(
             )
         )
 
-    if len(content) < MIN_CONTENT_LENGTH:
+    if (
+        len(content)
+        < MIN_CONTENT_LENGTH
+    ):
 
         result["reason"] = (
             "konten terlalu pendek"
@@ -1834,9 +2324,11 @@ def process_candidate(
     # CLASSIFICATION
     # --------------------------------------------------------
 
-    classification = classify_article(
-        title,
-        content,
+    classification = (
+        classify_article(
+            title,
+            content,
+        )
     )
 
     # --------------------------------------------------------
@@ -1848,7 +2340,9 @@ def process_candidate(
 
         "link": final_url,
 
-        "content": content[:15000],
+        "content": content[
+            :15000
+        ],
 
         "published_date": (
             published.isoformat()
@@ -1856,19 +2350,25 @@ def process_candidate(
 
         "source": (
             normalize_text(
-                candidate.get("source")
+                candidate.get(
+                    "source"
+                )
             )
             or "Google News"
         ),
 
-        "category": classification.get(
-            "category",
-            "Netral",
+        "category": (
+            classification.get(
+                "category",
+                "Netral",
+            )
         ),
 
-        "priority": classification.get(
-            "priority",
-            "Rendah",
+        "priority": (
+            classification.get(
+                "priority",
+                "Rendah",
+            )
         ),
 
         "negative_score": int(
@@ -1958,6 +2458,7 @@ def send_telegram_message(
 ) -> bool:
 
     if not telegram_enabled():
+
         return False
 
     url = (
@@ -2000,7 +2501,9 @@ def telegram_text(
 
     title = html.escape(
         normalize_text(
-            article.get("title")
+            article.get(
+                "title"
+            )
         )
     )
 
@@ -2024,15 +2527,19 @@ def telegram_text(
 
     link = html.escape(
         normalize_url(
-            article.get("link")
+            article.get(
+                "link"
+            )
         )
     )
 
     return (
         f"<b>Patroli Siber "
         f"{TAHUN_TARGET}</b>\n"
-        f"<b>Kategori:</b> {category}\n"
-        f"<b>Prioritas:</b> {priority}\n"
+        f"<b>Kategori:</b> "
+        f"{category}\n"
+        f"<b>Prioritas:</b> "
+        f"{priority}\n"
         f"<b>Satker:</b> "
         f"{html.escape(NAMA_SATKER)}\n\n"
         f"<b>{title}</b>\n"
@@ -2044,17 +2551,22 @@ def send_alert_if_needed(
     article: Dict[str, Any],
 ) -> bool:
 
-    if article.get(
-        "category"
-    ) not in {
-        "Negatif Kuat",
-        "Perlu Penanganan",
-    }:
+    if (
+        article.get(
+            "category"
+        )
+        not in {
+            "Negatif Kuat",
+            "Perlu Penanganan",
+        }
+    ):
 
         return False
 
     return send_telegram_message(
-        telegram_text(article)
+        telegram_text(
+            article
+        )
     )
 
 
@@ -2073,11 +2585,14 @@ def reclassify_all() -> Dict[str, int]:
 
     articles = get_all_articles()
 
-    total = len(articles)
+    total = len(
+        articles
+    )
 
     print(
         f"[REKLASIFIKASI] "
-        f"Total artikel: {total}"
+        f"Total artikel: "
+        f"{total}"
     )
 
     counts = {
@@ -2098,12 +2613,18 @@ def reclassify_all() -> Dict[str, int]:
         try:
 
             title = normalize_text(
-                article.get("title")
+                article.get(
+                    "title"
+                )
             )
 
             content = normalize_text(
-                article.get("content")
-                or article.get("summary")
+                article.get(
+                    "content"
+                )
+                or article.get(
+                    "summary"
+                )
                 or ""
             )
 
@@ -2112,8 +2633,13 @@ def reclassify_all() -> Dict[str, int]:
                 and not content
             ):
 
-                category = "Netral"
-                priority = "Rendah"
+                category = (
+                    "Netral"
+                )
+
+                priority = (
+                    "Rendah"
+                )
 
             else:
 
@@ -2124,23 +2650,37 @@ def reclassify_all() -> Dict[str, int]:
                     )
                 )
 
-                category = classification.get(
-                    "category",
-                    "Netral",
+                category = (
+                    classification.get(
+                        "category",
+                        "Netral",
+                    )
                 )
 
-                priority = classification.get(
-                    "priority",
-                    "Rendah",
+                priority = (
+                    classification.get(
+                        "priority",
+                        "Rendah",
+                    )
                 )
 
-            if category not in counts:
-                category = "Netral"
+            if (
+                category
+                not in counts
+            ):
 
-            counts[category] += 1
+                category = (
+                    "Netral"
+                )
 
-            article_id = article.get(
-                "id"
+            counts[
+                category
+            ] += 1
+
+            article_id = (
+                article.get(
+                    "id"
+                )
             )
 
             if article_id is None:
@@ -2203,12 +2743,15 @@ def reclassify_all() -> Dict[str, int]:
 
             print(
                 f"[REKLASIFIKASI] "
-                f"Progress {index}/{total}"
+                f"Progress "
+                f"{index}/{total}"
             )
 
     print()
     print("=" * 70)
-    print("REKLASIFIKASI SELESAI")
+    print(
+        "REKLASIFIKASI SELESAI"
+    )
     print("=" * 70)
 
     print(
@@ -2260,7 +2803,9 @@ def run_once() -> Dict[str, Any]:
     started = time.perf_counter()
 
     print("=" * 70)
-    print("MEMULAI PATROLI SIBER")
+    print(
+        "MEMULAI PATROLI SIBER"
+    )
     print("=" * 70)
 
     existing_articles = (
@@ -2269,11 +2814,16 @@ def run_once() -> Dict[str, Any]:
 
     existing_links = {
         normalize_url(
-            article.get("link")
+            article.get(
+                "link"
+            )
         )
-        for article in existing_articles
+        for article
+        in existing_articles
         if normalize_url(
-            article.get("link")
+            article.get(
+                "link"
+            )
         )
     }
 
@@ -2283,7 +2833,9 @@ def run_once() -> Dict[str, Any]:
         f"{len(existing_links)}"
     )
 
-    candidates = collect_candidates()
+    candidates = (
+        collect_candidates()
+    )
 
     valid_articles = []
 
@@ -2301,7 +2853,8 @@ def run_once() -> Dict[str, Any]:
                 process_candidate,
                 candidate,
             )
-            for candidate in candidates
+            for candidate
+            in candidates
         ]
 
         for future in as_completed(
@@ -2310,7 +2863,9 @@ def run_once() -> Dict[str, Any]:
 
             try:
 
-                result = future.result()
+                result = (
+                    future.result()
+                )
 
                 if result.get(
                     "ok"
@@ -2332,9 +2887,11 @@ def run_once() -> Dict[str, Any]:
 
                     failed += 1
 
-                    reason = result.get(
-                        "reason",
-                        "",
+                    reason = (
+                        result.get(
+                            "reason",
+                            "",
+                        )
                     )
 
                     if reason:
@@ -2350,7 +2907,8 @@ def run_once() -> Dict[str, Any]:
 
                 print(
                     f"[WORKER ERROR] "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
                 )
 
     print(
@@ -2360,7 +2918,7 @@ def run_once() -> Dict[str, Any]:
     )
 
     # ========================================================
-    # DEDUPE DALAM HASIL RUN
+    # DEDUPE HASIL RUN
     # ========================================================
 
     unique_articles = {}
@@ -2368,16 +2926,46 @@ def run_once() -> Dict[str, Any]:
     for article in valid_articles:
 
         link = normalize_url(
-            article.get("link")
+            article.get(
+                "link"
+            )
         )
 
         if not link:
             continue
 
-        unique_articles.setdefault(
-            link,
-            article,
-        )
+        if link not in unique_articles:
+
+            unique_articles[
+                link
+            ] = article
+
+        else:
+
+            existing = (
+                unique_articles[
+                    link
+                ]
+            )
+
+            # Pertahankan konten lebih panjang.
+            if len(
+                normalize_text(
+                    article.get(
+                        "content"
+                    )
+                )
+            ) > len(
+                normalize_text(
+                    existing.get(
+                        "content"
+                    )
+                )
+            ):
+
+                unique_articles[
+                    link
+                ] = article
 
     valid_articles = list(
         unique_articles.values()
@@ -2401,50 +2989,54 @@ def run_once() -> Dict[str, Any]:
     for article in valid_articles:
 
         link = normalize_url(
-            article.get("link")
+            article.get(
+                "link"
+            )
         )
 
         if not link:
             continue
 
+        was_existing = (
+            link
+            in existing_links
+        )
+
         print(
             f"[CHECK LINK] "
-            f"{'LAMA' if link in existing_links else 'BARU'} | "
+            f"{'LAMA' if was_existing else 'BARU'} | "
             f"{link}"
         )
 
-        was_existing = (
-            link in existing_links
-        )
+        if not was_existing:
+
+            try:
+
+                existing_by_link = (
+                    get_article_by_link(
+                        link
+                    )
+                )
+
+                if existing_by_link:
+
+                    was_existing = True
+
+            except Exception as exc:
+
+                print(
+                    f"[CHECK LINK WARNING] "
+                    f"{link} -> "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
 
         try:
 
-            # ------------------------------------------------
-            # Pemeriksaan tambahan menggunakan fungsi database
-            # jika tersedia.
-            # ------------------------------------------------
-
-            if not was_existing:
-
-                try:
-
-                    existing_by_link = (
-                        get_article_by_link(
-                            link
-                        )
-                    )
-
-                    if existing_by_link:
-
-                        was_existing = True
-
-                except Exception:
-                    # Fungsi ini bersifat tambahan.
-                    # Jika gagal, proses utama tetap berjalan.
-                    pass
-
-            saved = upsert_article(
-                article
+            saved = (
+                upsert_article(
+                    article
+                )
             )
 
             if saved is None:
@@ -2474,7 +3066,8 @@ def run_once() -> Dict[str, Any]:
             print(
                 f"[SAVE ERROR] "
                 f"{link}: "
-                f"{type(exc).__name__}: {exc}"
+                f"{type(exc).__name__}: "
+                f"{exc}"
             )
 
     print(
@@ -2509,11 +3102,14 @@ def run_once() -> Dict[str, Any]:
             f"{len(new_articles)}"
         )
 
-        for article in new_articles:
+        for article in (
+            new_articles
+        ):
 
             if not send_alert_if_needed(
                 article
             ):
+
                 continue
 
             telegram_count += 1
@@ -2535,7 +3131,9 @@ def run_once() -> Dict[str, Any]:
     # RECLASSIFICATION
     # ========================================================
 
-    counts = reclassify_all()
+    counts = (
+        reclassify_all()
+    )
 
     final_articles = (
         get_all_articles()
@@ -2552,44 +3150,57 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
 
     log = {
-        "duration_seconds": duration,
-
-        "candidate_count": len(
-            candidates
+        "duration_seconds": (
+            duration
         ),
 
-        "valid_count": len(
-            valid_articles
+        "candidate_count": (
+            len(candidates)
         ),
 
-        "saved_count": saved_count,
+        "valid_count": (
+            len(valid_articles)
+        ),
+
+        "saved_count": (
+            saved_count
+        ),
 
         "failed_count": (
-            failed + save_failed
+            failed
+            + save_failed
         ),
 
-        "reclassified_count": len(
-            final_articles
+        "reclassified_count": (
+            len(final_articles)
         ),
 
-        "negative_count": counts.get(
-            "Negatif Kuat",
-            0,
+        "negative_count": (
+            counts.get(
+                "Negatif Kuat",
+                0,
+            )
         ),
 
-        "handling_count": counts.get(
-            "Perlu Penanganan",
-            0,
+        "handling_count": (
+            counts.get(
+                "Perlu Penanganan",
+                0,
+            )
         ),
 
-        "neutral_count": counts.get(
-            "Netral",
-            0,
+        "neutral_count": (
+            counts.get(
+                "Netral",
+                0,
+            )
         ),
 
-        "positive_count": counts.get(
-            "Positif",
-            0,
+        "positive_count": (
+            counts.get(
+                "Positif",
+                0,
+            )
         ),
 
         "telegram_count": (
@@ -2599,7 +3210,9 @@ def run_once() -> Dict[str, Any]:
         "status": "Selesai",
     }
 
-    save_run_log(log)
+    save_run_log(
+        log
+    )
 
     # ========================================================
     # SUMMARY
@@ -2607,7 +3220,9 @@ def run_once() -> Dict[str, Any]:
 
     print()
     print("=" * 70)
-    print("PATROLI SELESAI")
+    print(
+        "PATROLI SELESAI"
+    )
     print("=" * 70)
 
     print(
@@ -2616,57 +3231,57 @@ def run_once() -> Dict[str, Any]:
     )
 
     print(
-        f"Kandidat           : "
+        f"Kandidat          : "
         f"{len(candidates)}"
     )
 
     print(
-        f"Artikel valid      : "
+        f"Artikel valid     : "
         f"{len(valid_articles)}"
     )
 
     print(
-        f"Berhasil disimpan  : "
+        f"Berhasil disimpan : "
         f"{saved_count}"
     )
 
     print(
-        f"Gagal              : "
+        f"Gagal             : "
         f"{failed + save_failed}"
     )
 
     print(
-        f"Artikel baru       : "
+        f"Artikel baru      : "
         f"{len(new_articles)}"
     )
 
     print(
-        f"Database           : "
+        f"Database          : "
         f"{len(final_articles)}"
     )
 
     print(
-        f"Negatif Kuat       : "
+        f"Negatif Kuat      : "
         f"{counts.get('Negatif Kuat', 0)}"
     )
 
     print(
-        f"Perlu Penanganan   : "
+        f"Perlu Penanganan  : "
         f"{counts.get('Perlu Penanganan', 0)}"
     )
 
     print(
-        f"Netral             : "
+        f"Netral            : "
         f"{counts.get('Netral', 0)}"
     )
 
     print(
-        f"Positif            : "
+        f"Positif           : "
         f"{counts.get('Positif', 0)}"
     )
 
     print(
-        f"Telegram terkirim  : "
+        f"Telegram terkirim : "
         f"{telegram_count}"
     )
 
@@ -2683,30 +3298,36 @@ def dedupe_dry_run() -> Dict[str, Any]:
     """
     Audit duplicate link tanpa mengubah database.
 
-    Hasil:
+    Menghasilkan:
     - dedupe_report.csv
     - dedupe_report.json
 
-    Tidak ada INSERT, UPDATE, atau DELETE.
+    Tidak melakukan INSERT, UPDATE, DELETE.
     """
 
     print("=" * 70)
-    print("DEDUPE DRY RUN")
     print(
-        "CEK DUPLICATE LINK TANPA MENGUBAH DATABASE"
+        "DEDUPE DRY RUN"
+    )
+    print(
+        "CEK DUPLICATE LINK TANPA "
+        "MENGUBAH DATABASE"
     )
     print("=" * 70)
 
     try:
 
-        articles = get_all_articles()
+        articles = (
+            get_all_articles()
+        )
 
     except Exception as exc:
 
         print(
             f"[DEDUPE ERROR] "
             f"Gagal mengambil database: "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: "
+            f"{exc}"
         )
 
         return {
@@ -2727,10 +3348,6 @@ def dedupe_dry_run() -> Dict[str, Any]:
         f"{total_articles}"
     )
 
-    # ========================================================
-    # GROUP
-    # ========================================================
-
     groups: Dict[
         str,
         List[Dict[str, Any]],
@@ -2744,8 +3361,10 @@ def dedupe_dry_run() -> Dict[str, Any]:
             "link"
         )
 
-        normalized_link = normalize_url(
-            raw_link
+        normalized_link = (
+            normalize_url(
+                raw_link
+            )
         )
 
         if not normalized_link:
@@ -2759,26 +3378,26 @@ def dedupe_dry_run() -> Dict[str, Any]:
         groups.setdefault(
             normalized_link,
             [],
-        ).append(article)
+        ).append(
+            article
+        )
 
     duplicate_groups = {
         link: rows
-        for link, rows in groups.items()
+        for link, rows
+        in groups.items()
         if len(rows) > 1
     }
 
     duplicate_articles = sum(
         len(rows) - 1
-        for rows in duplicate_groups.values()
+        for rows
+        in duplicate_groups.values()
     )
 
     unique_links = len(
         groups
     )
-
-    # ========================================================
-    # REPORT
-    # ========================================================
 
     report_rows = []
 
@@ -2792,35 +3411,43 @@ def dedupe_dry_run() -> Dict[str, Any]:
         start=1,
     ):
 
-        # ----------------------------------------------------
-        # SCORE RECORD
-        # ----------------------------------------------------
-
         def record_score(row):
 
             content = normalize_text(
-                row.get("content")
-                or row.get("summary")
+                row.get(
+                    "content"
+                )
+                or row.get(
+                    "summary"
+                )
                 or ""
             )
 
             title = normalize_text(
-                row.get("title")
+                row.get(
+                    "title"
+                )
             )
 
             published = normalize_text(
-                row.get("published_date")
+                row.get(
+                    "published_date"
+                )
             )
 
             try:
 
                 article_id = int(
-                    row.get("id")
+                    row.get(
+                        "id"
+                    )
                 )
 
             except Exception:
 
-                article_id = 999999999
+                article_id = (
+                    999999999
+                )
 
             return (
                 len(content),
@@ -2837,22 +3464,24 @@ def dedupe_dry_run() -> Dict[str, Any]:
 
         keep = rows_sorted[0]
 
-        delete_candidates = (
-            rows_sorted[1:]
-        )
-
         keep_id = keep.get(
             "id"
         )
 
         keep_title = normalize_text(
-            keep.get("title")
+            keep.get(
+                "title"
+            )
         )
 
         keep_content_length = len(
             normalize_text(
-                keep.get("content")
-                or keep.get("summary")
+                keep.get(
+                    "content"
+                )
+                or keep.get(
+                    "summary"
+                )
                 or ""
             )
         )
@@ -2864,8 +3493,8 @@ def dedupe_dry_run() -> Dict[str, Any]:
                 normalized_link
             ),
 
-            "total_records": len(
-                rows
+            "total_records": (
+                len(rows)
             ),
 
             "recommended_keep": {
@@ -2874,20 +3503,20 @@ def dedupe_dry_run() -> Dict[str, Any]:
                 "content_length": (
                     keep_content_length
                 ),
-                "published_date": keep.get(
-                    "published_date"
+                "published_date": (
+                    keep.get(
+                        "published_date"
+                    )
                 ),
-                "link": keep.get(
-                    "link"
+                "link": (
+                    keep.get(
+                        "link"
+                    )
                 ),
             },
 
             "delete_candidates": [],
         }
-
-        # ----------------------------------------------------
-        # DETAIL
-        # ----------------------------------------------------
 
         for row in rows_sorted:
 
@@ -2896,19 +3525,26 @@ def dedupe_dry_run() -> Dict[str, Any]:
             )
 
             title = normalize_text(
-                row.get("title")
+                row.get(
+                    "title"
+                )
             )
 
             content_length = len(
                 normalize_text(
-                    row.get("content")
-                    or row.get("summary")
+                    row.get(
+                        "content"
+                    )
+                    or row.get(
+                        "summary"
+                    )
                     or ""
                 )
             )
 
             is_keep = (
-                article_id == keep_id
+                article_id
+                == keep_id
             )
 
             action = (
@@ -2927,8 +3563,8 @@ def dedupe_dry_run() -> Dict[str, Any]:
                         normalized_link
                     ),
 
-                    "record_count": len(
-                        rows
+                    "record_count": (
+                        len(rows)
                     ),
 
                     "recommended_action": (
@@ -2951,14 +3587,18 @@ def dedupe_dry_run() -> Dict[str, Any]:
                         )
                     ),
 
-                    "category": row.get(
-                        "category",
-                        "",
+                    "category": (
+                        row.get(
+                            "category",
+                            "",
+                        )
                     ),
 
-                    "priority": row.get(
-                        "priority",
-                        "",
+                    "priority": (
+                        row.get(
+                            "priority",
+                            "",
+                        )
                     ),
 
                     "original_link": (
@@ -2976,7 +3616,9 @@ def dedupe_dry_run() -> Dict[str, Any]:
                     "delete_candidates"
                 ].append(
                     {
-                        "id": article_id,
+                        "id": (
+                            article_id
+                        ),
 
                         "title": title,
 
@@ -2990,8 +3632,10 @@ def dedupe_dry_run() -> Dict[str, Any]:
                             )
                         ),
 
-                        "link": row.get(
-                            "link"
+                        "link": (
+                            row.get(
+                                "link"
+                            )
                         ),
                     }
                 )
@@ -3031,9 +3675,11 @@ def dedupe_dry_run() -> Dict[str, Any]:
             encoding="utf-8",
         ) as csv_file:
 
-            writer = csv.DictWriter(
-                csv_file,
-                fieldnames=csv_fields,
+            writer = (
+                csv.DictWriter(
+                    csv_file,
+                    fieldnames=csv_fields,
+                )
             )
 
             writer.writeheader()
@@ -3051,7 +3697,8 @@ def dedupe_dry_run() -> Dict[str, Any]:
 
         print(
             f"[REPORT ERROR] CSV: "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: "
+            f"{exc}"
         )
 
     # ========================================================
@@ -3063,30 +3710,42 @@ def dedupe_dry_run() -> Dict[str, Any]:
     )
 
     json_report = {
-        "generated_at": datetime.now(
-            timezone.utc
-        ).isoformat(),
+        "generated_at": (
+            datetime.now(
+                timezone.utc
+            ).isoformat()
+        ),
 
-        "tahun_target": TAHUN_TARGET,
+        "tahun_target": (
+            TAHUN_TARGET
+        ),
 
-        "nama_satker": NAMA_SATKER,
+        "nama_satker": (
+            NAMA_SATKER
+        ),
 
         "total_articles": (
             total_articles
         ),
 
-        "unique_links": unique_links,
+        "unique_links": (
+            unique_links
+        ),
 
-        "duplicate_groups": len(
-            duplicate_groups
+        "duplicate_groups": (
+            len(
+                duplicate_groups
+            )
         ),
 
         "duplicate_articles": (
             duplicate_articles
         ),
 
-        "empty_links": len(
-            empty_links
+        "empty_links": (
+            len(
+                empty_links
+            )
         ),
 
         "groups": json_groups,
@@ -3117,7 +3776,8 @@ def dedupe_dry_run() -> Dict[str, Any]:
 
         print(
             f"[REPORT ERROR] JSON: "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: "
+            f"{exc}"
         )
 
     # ========================================================
@@ -3126,7 +3786,9 @@ def dedupe_dry_run() -> Dict[str, Any]:
 
     print()
     print("=" * 70)
-    print("HASIL DEDUPE DRY RUN")
+    print(
+        "HASIL DEDUPE DRY RUN"
+    )
     print("=" * 70)
 
     print(
@@ -3155,10 +3817,6 @@ def dedupe_dry_run() -> Dict[str, Any]:
     )
 
     print("=" * 70)
-
-    # ========================================================
-    # RECOMMENDATION
-    # ========================================================
 
     if duplicate_groups:
 
@@ -3206,7 +3864,9 @@ def dedupe_dry_run() -> Dict[str, Any]:
                     "HAPUS KANDIDAT:"
                 )
 
-                for candidate in candidates:
+                for candidate in (
+                    candidates
+                ):
 
                     print(
                         f"  - ID={candidate['id']} | "
@@ -3216,7 +3876,6 @@ def dedupe_dry_run() -> Dict[str, Any]:
     else:
 
         print()
-
         print(
             "[DEDUPE] Tidak ditemukan "
             "duplicate link."
@@ -3230,7 +3889,9 @@ def dedupe_dry_run() -> Dict[str, Any]:
 
         print()
         print("=" * 70)
-        print("ARTIKEL DENGAN LINK KOSONG")
+        print(
+            "ARTIKEL DENGAN LINK KOSONG"
+        )
         print("=" * 70)
 
         for article in empty_links:
@@ -3241,39 +3902,52 @@ def dedupe_dry_run() -> Dict[str, Any]:
                 f"{normalize_text(article.get('title'))[:100]}"
             )
 
-    # ========================================================
-    # DONE
-    # ========================================================
-
     print()
     print("=" * 70)
-    print("DEDUPE DRY RUN SELESAI")
-    print("TIDAK ADA DATA YANG DIUBAH")
+    print(
+        "DEDUPE DRY RUN SELESAI"
+    )
+    print(
+        "TIDAK ADA DATA YANG DIUBAH"
+    )
     print("=" * 70)
 
     return {
-        "total_articles": total_articles,
+        "total_articles": (
+            total_articles
+        ),
 
-        "unique_links": unique_links,
+        "unique_links": (
+            unique_links
+        ),
 
-        "duplicate_groups": len(
-            duplicate_groups
+        "duplicate_groups": (
+            len(
+                duplicate_groups
+            )
         ),
 
         "duplicate_articles": (
             duplicate_articles
         ),
 
-        "empty_links": len(
-            empty_links
+        "empty_links": (
+            len(
+                empty_links
+            )
         ),
 
         "error": False,
 
-        "csv_report": csv_path,
+        "csv_report": (
+            csv_path
+        ),
 
-        "json_report": json_path,
+        "json_report": (
+            json_path
+        ),
     }
+
 
 # ============================================================
 # DEDUPE REAL
@@ -3283,27 +3957,33 @@ def dedupe() -> Dict[str, Any]:
     """
     Menghapus record duplicate berdasarkan normalized URL.
 
-    Prinsip:
-    - Record terbaik dipertahankan.
-    - Record duplicate lainnya dihapus.
-    - Record dengan link kosong tidak disentuh.
-    - Sebelum penghapusan, tampilkan kandidat yang akan dihapus.
+    Record terbaik dipertahankan.
+    Record duplicate lainnya dihapus.
+    Link kosong tidak disentuh.
     """
 
     print("=" * 70)
-    print("DEDUPE DATABASE")
-    print("MENGHAPUS DUPLICATE LINK")
+    print(
+        "DEDUPE DATABASE"
+    )
+    print(
+        "MENGHAPUS DUPLICATE LINK"
+    )
     print("=" * 70)
 
     try:
-        articles = get_all_articles()
+
+        articles = (
+            get_all_articles()
+        )
 
     except Exception as exc:
 
         print(
             f"[DEDUPE ERROR] "
             f"Gagal mengambil database: "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: "
+            f"{exc}"
         )
 
         return {
@@ -3317,10 +3997,6 @@ def dedupe() -> Dict[str, Any]:
         f"{len(articles)}"
     )
 
-    # --------------------------------------------------------
-    # GROUP BERDASARKAN NORMALIZED URL
-    # --------------------------------------------------------
-
     groups: Dict[
         str,
         List[Dict[str, Any]],
@@ -3329,7 +4005,9 @@ def dedupe() -> Dict[str, Any]:
     for article in articles:
 
         link = normalize_url(
-            article.get("link")
+            article.get(
+                "link"
+            )
         )
 
         if not link:
@@ -3338,11 +4016,14 @@ def dedupe() -> Dict[str, Any]:
         groups.setdefault(
             link,
             [],
-        ).append(article)
+        ).append(
+            article
+        )
 
     duplicate_groups = {
         link: rows
-        for link, rows in groups.items()
+        for link, rows
+        in groups.items()
         if len(rows) > 1
     }
 
@@ -3367,10 +4048,6 @@ def dedupe() -> Dict[str, Any]:
         f"kelompok duplicate."
     )
 
-    # --------------------------------------------------------
-    # TENTUKAN RECORD TERBAIK
-    # --------------------------------------------------------
-
     delete_ids = []
 
     for group_number, (
@@ -3384,26 +4061,40 @@ def dedupe() -> Dict[str, Any]:
         def record_score(row):
 
             content = normalize_text(
-                row.get("content")
-                or row.get("summary")
+                row.get(
+                    "content"
+                )
+                or row.get(
+                    "summary"
+                )
                 or ""
             )
 
             title = normalize_text(
-                row.get("title")
+                row.get(
+                    "title"
+                )
             )
 
             published = normalize_text(
-                row.get("published_date")
+                row.get(
+                    "published_date"
+                )
             )
 
             try:
+
                 article_id = int(
-                    row.get("id")
+                    row.get(
+                        "id"
+                    )
                 )
 
             except Exception:
-                article_id = 999999999
+
+                article_id = (
+                    999999999
+                )
 
             return (
                 len(content),
@@ -3419,7 +4110,10 @@ def dedupe() -> Dict[str, Any]:
         )
 
         keep = rows_sorted[0]
-        duplicates = rows_sorted[1:]
+
+        duplicates = (
+            rows_sorted[1:]
+        )
 
         print()
         print(
@@ -3434,8 +4128,10 @@ def dedupe() -> Dict[str, Any]:
 
         for duplicate in duplicates:
 
-            article_id = duplicate.get(
-                "id"
+            article_id = (
+                duplicate.get(
+                    "id"
+                )
             )
 
             print(
@@ -3444,13 +4140,10 @@ def dedupe() -> Dict[str, Any]:
             )
 
             if article_id is not None:
+
                 delete_ids.append(
                     article_id
                 )
-
-    # --------------------------------------------------------
-    # KONFIRMASI
-    # --------------------------------------------------------
 
     print()
     print("=" * 70)
@@ -3470,17 +4163,12 @@ def dedupe() -> Dict[str, Any]:
         return {
             "success": True,
             "deleted": 0,
-            "duplicate_groups": len(
-                duplicate_groups
+            "duplicate_groups": (
+                len(
+                    duplicate_groups
+                )
             ),
         }
-
-    # --------------------------------------------------------
-    # HAPUS
-    #
-    # Fungsi database yang dipakai:
-    # delete_article_by_id()
-    # --------------------------------------------------------
 
     deleted = 0
     failed = 0
@@ -3489,8 +4177,10 @@ def dedupe() -> Dict[str, Any]:
 
         try:
 
-            result = delete_article_by_id(
-                article_id
+            result = (
+                delete_article_by_id(
+                    article_id
+                )
             )
 
             if result is not None:
@@ -3518,16 +4208,19 @@ def dedupe() -> Dict[str, Any]:
             print(
                 f"[DELETE ERROR] "
                 f"ID={article_id} -> "
-                f"{type(exc).__name__}: {exc}"
+                f"{type(exc).__name__}: "
+                f"{exc}"
             )
 
-    # --------------------------------------------------------
+    # ========================================================
     # VERIFIKASI
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
-        remaining = get_all_articles()
+        remaining = (
+            get_all_articles()
+        )
 
         remaining_count = len(
             remaining
@@ -3539,7 +4232,9 @@ def dedupe() -> Dict[str, Any]:
 
     print()
     print("=" * 70)
-    print("DEDUPE SELESAI")
+    print(
+        "DEDUPE SELESAI"
+    )
     print("=" * 70)
 
     print(
@@ -3565,15 +4260,30 @@ def dedupe() -> Dict[str, Any]:
     print("=" * 70)
 
     return {
-        "success": failed == 0,
-        "deleted": deleted,
-        "failed": failed,
-        "duplicate_groups": len(
-            duplicate_groups
+        "success": (
+            failed == 0
         ),
-        "remaining": remaining_count,
+
+        "deleted": (
+            deleted
+        ),
+
+        "failed": (
+            failed
+        ),
+
+        "duplicate_groups": (
+            len(
+                duplicate_groups
+            )
+        ),
+
+        "remaining": (
+            remaining_count
+        ),
     }
-    
+
+
 # ============================================================
 # MAIN
 # ============================================================
@@ -3590,7 +4300,9 @@ def main() -> None:
     parser.add_argument(
         "--once",
         action="store_true",
-        help="jalankan satu kali",
+        help=(
+            "jalankan patroli satu kali"
+        ),
     )
 
     parser.add_argument(
@@ -3598,7 +4310,7 @@ def main() -> None:
         action="store_true",
         help=(
             "klasifikasi ulang seluruh "
-            "artikel di Supabase"
+            "artikel di database"
         ),
     )
 
@@ -3615,14 +4327,15 @@ def main() -> None:
         "--dedupe",
         action="store_true",
         help=(
-            "hapus duplicate link dari database"
+            "hapus duplicate link "
+            "dari database"
         ),
     )
 
     args = parser.parse_args()
 
     # --------------------------------------------------------
-    # DEDUPE
+    # DEDUPE DRY RUN
     # --------------------------------------------------------
 
     if args.dedupe_dry_run:
@@ -3630,6 +4343,10 @@ def main() -> None:
         dedupe_dry_run()
 
         return
+
+    # --------------------------------------------------------
+    # DEDUPE REAL
+    # --------------------------------------------------------
 
     if args.dedupe:
 
@@ -3650,7 +4367,8 @@ def main() -> None:
     # --------------------------------------------------------
     # DEFAULT
     #
-    # Aman untuk Task Scheduler / cron.
+    # Cocok untuk GitHub Actions,
+    # cron, Task Scheduler, dll.
     # --------------------------------------------------------
 
     run_once()
