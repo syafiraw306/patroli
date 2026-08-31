@@ -1,6 +1,6 @@
+
 import csv
 import json
-import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -8,7 +8,17 @@ from database import get_supabase
 
 
 # ==========================================================
-# ID ARTIKEL YANG SUDAH DIVERIFIKASI UNTUK DIHAPUS
+# KONFIGURASI
+# ==========================================================
+
+REPORT_CSV = "dedupe_diagnostic_report.csv"
+REPORT_JSON = "dedupe_diagnostic_report.json"
+
+TABLE_NAME = "articles"
+
+
+# ==========================================================
+# ID DUPLICATE YANG SUDAH DIVERIFIKASI
 # ==========================================================
 
 DELETE_IDS = [
@@ -76,14 +86,6 @@ DELETE_IDS = [
 
 
 # ==========================================================
-# KONFIGURASI
-# ==========================================================
-
-REPORT_CSV = "dedupe_delete_report.csv"
-REPORT_JSON = "dedupe_delete_report.json"
-
-
-# ==========================================================
 # UTILITAS
 # ==========================================================
 
@@ -92,13 +94,12 @@ def now_iso() -> str:
 
 
 def get_target_ids() -> List[int]:
-    """
-    Menghilangkan ID duplikat dari daftar.
-    """
+    """Membersihkan dan menghapus ID duplicate dari daftar target."""
 
     result = []
 
     for article_id in DELETE_IDS:
+
         try:
             article_id = int(article_id)
 
@@ -106,6 +107,7 @@ def get_target_ids() -> List[int]:
                 result.append(article_id)
 
         except (TypeError, ValueError):
+
             print(
                 f"[WARNING] ID tidak valid: {article_id}"
             )
@@ -114,102 +116,334 @@ def get_target_ids() -> List[int]:
 
 
 # ==========================================================
-# AMBIL DATA ARTIKEL
+# KONEKSI SUPABASE
 # ==========================================================
 
-def get_articles_by_ids(
-    article_ids: List[int],
-) -> List[Dict[str, Any]]:
-
-    if not article_ids:
-        return []
-
-    client = get_supabase()
+def get_client():
 
     try:
-        response = (
-            client
-            .table("articles")
-            .select("*")
-            .in_("id", article_ids)
-            .execute()
-        )
 
-        return response.data or []
+        client = get_supabase()
+
+        print("[SUPABASE] Client berhasil dibuat.")
+
+        return client
 
     except Exception as exc:
 
         print(
-            "[SUPABASE ERROR] "
-            f"Gagal mengambil artikel: {exc}"
+            f"[SUPABASE ERROR] Gagal membuat client: {exc}"
+        )
+
+        return None
+
+
+# ==========================================================
+# CEK DATABASE
+# ==========================================================
+
+def check_database(client) -> bool:
+
+    print()
+    print("=" * 70)
+    print("DIAGNOSTIK DATABASE")
+    print("=" * 70)
+
+    try:
+
+        response = (
+            client
+            .table(TABLE_NAME)
+            .select("id")
+            .limit(10)
+            .execute()
+        )
+
+        rows = response.data or []
+
+        print(
+            f"[DATABASE] Tabel        : {TABLE_NAME}"
+        )
+
+        print(
+            f"[DATABASE] Sample data  : {len(rows)}"
+        )
+
+        if not rows:
+
+            print(
+                "[WARNING] Tidak ada data yang dikembalikan."
+            )
+
+            return True
+
+        print()
+        print("10 ID PERTAMA DARI DATABASE:")
+
+        for row in rows:
+
+            print(
+                f"  ID = {row.get('id')!r} "
+                f"(tipe={type(row.get('id')).__name__})"
+            )
+
+        return True
+
+    except Exception as exc:
+
+        print(
+            f"[DATABASE ERROR] {exc}"
+        )
+
+        return False
+
+
+# ==========================================================
+# AMBIL SAMPLE ARTIKEL LENGKAP
+# ==========================================================
+
+def get_sample_articles(client) -> List[Dict[str, Any]]:
+
+    try:
+
+        response = (
+            client
+            .table(TABLE_NAME)
+            .select("*")
+            .order("id", desc=True)
+            .limit(10)
+            .execute()
+        )
+
+        rows = response.data or []
+
+        return rows
+
+    except Exception as exc:
+
+        print(
+            f"[DATABASE ERROR] Gagal mengambil sample artikel: {exc}"
         )
 
         return []
 
 
 # ==========================================================
-# BUAT LAPORAN
+# CEK TARGET ID
+# ==========================================================
+
+def check_target_ids(
+    client,
+    target_ids: List[int],
+) -> Dict[int, Dict[str, Any]]:
+
+    print()
+    print("=" * 70)
+    print("VERIFIKASI TARGET ID")
+    print("=" * 70)
+
+    found_map: Dict[int, Dict[str, Any]] = {}
+
+    if not target_ids:
+
+        print("[TARGET] Tidak ada target ID.")
+
+        return found_map
+
+    # ------------------------------------------------------
+    # Query per batch
+    # ------------------------------------------------------
+
+    batch_size = 50
+
+    for start in range(
+        0,
+        len(target_ids),
+        batch_size,
+    ):
+
+        batch = target_ids[
+            start:start + batch_size
+        ]
+
+        print()
+        print(
+            f"[CHECK] Memeriksa batch "
+            f"{start + 1}-{start + len(batch)}..."
+        )
+
+        try:
+
+            response = (
+                client
+                .table(TABLE_NAME)
+                .select("*")
+                .in_("id", batch)
+                .execute()
+            )
+
+            rows = response.data or []
+
+            print(
+                f"[CHECK] Data ditemukan: {len(rows)}"
+            )
+
+            for row in rows:
+
+                raw_id = row.get("id")
+
+                try:
+
+                    article_id = int(raw_id)
+
+                    found_map[article_id] = row
+
+                except (
+                    TypeError,
+                    ValueError,
+                ):
+
+                    print(
+                        "[WARNING] ID database "
+                        f"tidak dapat dikonversi: {raw_id!r}"
+                    )
+
+        except Exception as exc:
+
+            print(
+                f"[SUPABASE ERROR] Batch gagal: {exc}"
+            )
+
+    return found_map
+
+
+# ==========================================================
+# CEK TARGET DENGAN STRING
+# ==========================================================
+
+def check_target_ids_as_strings(
+    client,
+    target_ids: List[int],
+) -> Dict[str, Dict[str, Any]]:
+
+    """
+    Pemeriksaan tambahan.
+
+    Jika kolom ID ternyata bertipe text/varchar,
+    query integer sebelumnya bisa tidak cocok.
+    """
+
+    print()
+    print("=" * 70)
+    print("PEMERIKSAAN ID SEBAGAI STRING")
+    print("=" * 70)
+
+    found_map: Dict[str, Dict[str, Any]] = {}
+
+    target_strings = [
+        str(x)
+        for x in target_ids
+    ]
+
+    batch_size = 50
+
+    for start in range(
+        0,
+        len(target_strings),
+        batch_size,
+    ):
+
+        batch = target_strings[
+            start:start + batch_size
+        ]
+
+        try:
+
+            response = (
+                client
+                .table(TABLE_NAME)
+                .select("*")
+                .in_("id", batch)
+                .execute()
+            )
+
+            rows = response.data or []
+
+            print(
+                f"[STRING CHECK] "
+                f"Batch menemukan {len(rows)} data."
+            )
+
+            for row in rows:
+
+                raw_id = row.get("id")
+
+                if raw_id is not None:
+
+                    found_map[
+                        str(raw_id)
+                    ] = row
+
+        except Exception as exc:
+
+            print(
+                "[STRING CHECK ERROR] "
+                f"{exc}"
+            )
+
+    return found_map
+
+
+# ==========================================================
+# BUAT REPORT
 # ==========================================================
 
 def create_report(
-    requested_ids: List[int],
-    found_articles: List[Dict[str, Any]],
-    deleted_ids: List[int],
-    failed_ids: List[int],
+    target_ids: List[int],
+    found_map: Dict[int, Dict[str, Any]],
+    string_found_map: Dict[str, Dict[str, Any]],
+    sample_articles: List[Dict[str, Any]],
 ) -> None:
 
-    found_map = {
-        int(article["id"]): article
-        for article in found_articles
-        if article.get("id") is not None
-    }
+    rows = []
 
-    report_rows = []
-
-    for article_id in requested_ids:
+    for article_id in target_ids:
 
         article = found_map.get(article_id)
 
-        if article_id in deleted_ids:
-            status = "DELETED"
+        string_article = string_found_map.get(
+            str(article_id)
+        )
 
-        elif article_id in failed_ids:
-            status = "DELETE_FAILED"
+        if article:
 
-        elif article is None:
-            status = "NOT_FOUND"
+            status = "FOUND_INTEGER_QUERY"
+
+            data = article
+
+        elif string_article:
+
+            status = "FOUND_STRING_QUERY"
+
+            data = string_article
 
         else:
-            status = "NOT_DELETED"
 
-        report_rows.append(
+            status = "NOT_FOUND"
+
+            data = {}
+
+        rows.append(
             {
                 "article_id": article_id,
                 "status": status,
-                "title": (
-                    article.get("title", "")
-                    if article
-                    else ""
-                ),
-                "link": (
-                    article.get("link", "")
-                    if article
-                    else ""
-                ),
-                "category": (
-                    article.get("category", "")
-                    if article
-                    else ""
-                ),
-                "priority": (
-                    article.get("priority", "")
-                    if article
-                    else ""
-                ),
-                "published_date": (
-                    article.get("published_date", "")
-                    if article
-                    else ""
+                "title": data.get("title", ""),
+                "link": data.get("link", ""),
+                "category": data.get("category", ""),
+                "priority": data.get("priority", ""),
+                "published_date": data.get(
+                    "published_date",
+                    "",
                 ),
             }
         )
@@ -225,7 +459,7 @@ def create_report(
             "w",
             newline="",
             encoding="utf-8",
-        ) as csv_file:
+        ) as file:
 
             fields = [
                 "article_id",
@@ -238,13 +472,15 @@ def create_report(
             ]
 
             writer = csv.DictWriter(
-                csv_file,
+                file,
                 fieldnames=fields,
             )
 
             writer.writeheader()
-            writer.writerows(report_rows)
 
+            writer.writerows(rows)
+
+        print()
         print(
             f"[REPORT] CSV berhasil dibuat: "
             f"{REPORT_CSV}"
@@ -260,25 +496,30 @@ def create_report(
     # JSON
     # ------------------------------------------------------
 
+    integer_found = len(found_map)
+
+    string_found = len(
+        string_found_map
+    )
+
+    not_found = sum(
+        1
+        for row in rows
+        if row["status"] == "NOT_FOUND"
+    )
+
     json_data = {
         "generated_at": now_iso(),
-        "requested_count": len(requested_ids),
-        "found_count": len(found_articles),
-        "deleted_count": len(deleted_ids),
-        "failed_count": len(failed_ids),
-        "not_found_count": (
-            len(requested_ids)
-            - len(deleted_ids)
-            - len(failed_ids)
-            - (
-                len(requested_ids)
-                - len(found_articles)
-            )
-        ),
-        "requested_ids": requested_ids,
-        "deleted_ids": deleted_ids,
-        "failed_ids": failed_ids,
-        "rows": report_rows,
+        "mode": "DIAGNOSTIC_ONLY",
+        "delete_executed": False,
+        "table": TABLE_NAME,
+        "target_count": len(target_ids),
+        "integer_query_found": integer_found,
+        "string_query_found": string_found,
+        "not_found_count": not_found,
+        "target_ids": target_ids,
+        "rows": rows,
+        "database_sample": sample_articles,
     }
 
     try:
@@ -287,11 +528,11 @@ def create_report(
             REPORT_JSON,
             "w",
             encoding="utf-8",
-        ) as json_file:
+        ) as file:
 
             json.dump(
                 json_data,
-                json_file,
+                file,
                 ensure_ascii=False,
                 indent=2,
                 default=str,
@@ -310,67 +551,198 @@ def create_report(
 
 
 # ==========================================================
-# PROSES DEDUPE
+# DIAGNOSTIK UTAMA
 # ==========================================================
 
-def run_dedupe() -> bool:
+def run_diagnostic() -> bool:
 
     print("=" * 70)
-    print("DEDUPE DATABASE")
-    print("MENGHAPUS ID ARTIKEL YANG SUDAH DIVERIFIKASI")
+    print("DEDUPE DATABASE - MODE DIAGNOSTIK")
     print("=" * 70)
-
-    requested_ids = get_target_ids()
 
     print()
     print(
-        f"[TARGET] Jumlah ID yang akan diproses: "
-        f"{len(requested_ids)}"
+        "!!! MODE AMAN !!!"
+    )
+
+    print(
+        "!!! TIDAK ADA DATA YANG AKAN DIHAPUS !!!"
+    )
+
+    print("=" * 70)
+
+    # ------------------------------------------------------
+    # TARGET
+    # ------------------------------------------------------
+
+    target_ids = get_target_ids()
+
+    print()
+    print(
+        f"[TARGET] Jumlah ID: {len(target_ids)}"
     )
 
     print()
     print("ID TARGET:")
-    print(", ".join(str(x) for x in requested_ids))
 
-    # ======================================================
-    # AMBIL DATA SEBELUM DELETE
-    # ======================================================
+    print(
+        ", ".join(
+            str(x)
+            for x in target_ids
+        )
+    )
+
+    # ------------------------------------------------------
+    # CLIENT
+    # ------------------------------------------------------
+
+    client = get_client()
+
+    if client is None:
+
+        return False
+
+    # ------------------------------------------------------
+    # CEK DATABASE
+    # ------------------------------------------------------
+
+    database_ok = check_database(
+        client
+    )
+
+    if not database_ok:
+
+        return False
+
+    # ------------------------------------------------------
+    # SAMPLE ARTIKEL
+    # ------------------------------------------------------
 
     print()
     print("=" * 70)
-    print("VERIFIKASI DATA SEBELUM DELETE")
+    print("SAMPLE ARTIKEL TERBARU")
     print("=" * 70)
 
-    found_articles = get_articles_by_ids(
-        requested_ids
+    sample_articles = get_sample_articles(
+        client
     )
 
-    found_ids = {
-        int(article["id"])
-        for article in found_articles
-        if article.get("id") is not None
+    if sample_articles:
+
+        for article in sample_articles:
+
+            print(
+                f"ID={article.get('id')!r} | "
+                f"{str(article.get('title') or '')[:100]}"
+            )
+
+    else:
+
+        print(
+            "[DATABASE] Tidak ada sample artikel."
+        )
+
+    # ------------------------------------------------------
+    # CEK INTEGER
+    # ------------------------------------------------------
+
+    found_map = check_target_ids(
+        client,
+        target_ids,
+    )
+
+    # ------------------------------------------------------
+    # CEK STRING
+    # ------------------------------------------------------
+
+    string_found_map = (
+        check_target_ids_as_strings(
+            client,
+            target_ids,
+        )
+    )
+
+    # ------------------------------------------------------
+    # HASIL
+    # ------------------------------------------------------
+
+    found_integer_ids = set(
+        found_map.keys()
+    )
+
+    found_string_ids = {
+        int(x)
+        for x in string_found_map.keys()
+        if str(x).isdigit()
     }
+
+    all_found_ids = (
+        found_integer_ids
+        | found_string_ids
+    )
 
     not_found_ids = [
         article_id
-        for article_id in requested_ids
-        if article_id not in found_ids
+        for article_id in target_ids
+        if article_id not in all_found_ids
     ]
 
+    print()
+    print("=" * 70)
+    print("HASIL DIAGNOSTIK")
+    print("=" * 70)
+
     print(
-        f"[DATABASE] ID ditemukan : "
-        f"{len(found_ids)}"
+        f"ID target             : {len(target_ids)}"
     )
 
     print(
-        f"[DATABASE] ID tidak ditemukan : "
+        f"Ditemukan integer     : "
+        f"{len(found_integer_ids)}"
+    )
+
+    print(
+        f"Ditemukan string      : "
+        f"{len(found_string_ids)}"
+    )
+
+    print(
+        f"Tidak ditemukan      : "
         f"{len(not_found_ids)}"
     )
+
+    if found_integer_ids:
+
+        print()
+        print("ID DITEMUKAN:")
+
+        print(
+            ", ".join(
+                str(x)
+                for x in sorted(found_integer_ids)
+            )
+        )
+
+    if found_string_ids:
+
+        print()
+        print(
+            "ID DITEMUKAN MELALUI STRING:"
+        )
+
+        print(
+            ", ".join(
+                str(x)
+                for x in sorted(found_string_ids)
+            )
+        )
 
     if not_found_ids:
 
         print()
-        print("ID TIDAK DITEMUKAN:")
+        print(
+            "ID TIDAK DITEMUKAN:"
+        )
 
         print(
             ", ".join(
@@ -379,178 +751,42 @@ def run_dedupe() -> bool:
             )
         )
 
-    # ======================================================
-    # TAMPILKAN DATA YANG AKAN DIHAPUS
-    # ======================================================
-
-    print()
-    print("=" * 70)
-    print("DATA YANG AKAN DIHAPUS")
-    print("=" * 70)
-
-    for article in found_articles:
-
-        print(
-            f"ID={article.get('id')} | "
-            f"{str(article.get('title') or '')[:120]}"
-        )
-
-    # ======================================================
-    # DELETE
-    # ======================================================
-
-    if not found_ids:
-
-        print()
-        print(
-            "[DEDUPE] Tidak ada ID yang ditemukan."
-        )
-
-        create_report(
-            requested_ids,
-            found_articles,
-            [],
-            [],
-        )
-
-        return False
-
-    print()
-    print("=" * 70)
-    print("MENGHAPUS DATA")
-    print("=" * 70)
-
-    deleted_ids = []
-    failed_ids = []
-
-    client = get_supabase()
-
-    for article_id in sorted(found_ids):
-
-        try:
-
-            response = (
-                client
-                .table("articles")
-                .delete()
-                .eq("id", article_id)
-                .execute()
-            )
-
-            rows = response.data or []
-
-            if rows:
-
-                deleted_ids.append(
-                    article_id
-                )
-
-                print(
-                    f"[DELETE OK] "
-                    f"ID={article_id}"
-                )
-
-            else:
-
-                failed_ids.append(
-                    article_id
-                )
-
-                print(
-                    f"[DELETE GAGAL] "
-                    f"ID={article_id} "
-                    f"tidak mengembalikan data."
-                )
-
-        except Exception as exc:
-
-            failed_ids.append(
-                article_id
-            )
-
-            print(
-                f"[DELETE ERROR] "
-                f"ID={article_id} -> {exc}"
-            )
-
-    # ======================================================
+    # ------------------------------------------------------
     # REPORT
-    # ======================================================
+    # ------------------------------------------------------
 
     create_report(
-        requested_ids,
-        found_articles,
-        deleted_ids,
-        failed_ids,
+        target_ids,
+        found_map,
+        string_found_map,
+        sample_articles,
     )
 
-    # ======================================================
-    # SUMMARY
-    # ======================================================
+    # ------------------------------------------------------
+    # KEAMANAN
+    # ------------------------------------------------------
 
     print()
     print("=" * 70)
-    print("HASIL DEDUPE")
+    print("KEAMANAN")
     print("=" * 70)
 
     print(
-        f"ID diminta          : "
-        f"{len(requested_ids)}"
+        "[SAFE MODE] DELETE TIDAK DIJALANKAN."
     )
 
     print(
-        f"ID ditemukan        : "
-        f"{len(found_ids)}"
+        "[SAFE MODE] Tidak ada artikel yang dihapus."
     )
 
     print(
-        f"Berhasil dihapus    : "
-        f"{len(deleted_ids)}"
-    )
-
-    print(
-        f"Gagal dihapus       : "
-        f"{len(failed_ids)}"
-    )
-
-    print(
-        f"Tidak ditemukan     : "
-        f"{len(not_found_ids)}"
+        "[SAFE MODE] Silakan periksa hasil diagnostik."
     )
 
     print("=" * 70)
 
-    if failed_ids:
-
-        print()
-        print("ID GAGAL DIHAPUS:")
-
-        print(
-            ", ".join(
-                str(x)
-                for x in failed_ids
-            )
-        )
-
-    if deleted_ids:
-
-        print()
-        print(
-            "[DEDUPE] Penghapusan selesai."
-        )
-
-    print()
-    print(
-        f"[REPORT] {REPORT_CSV}"
-    )
-
-    print(
-        f"[REPORT] {REPORT_JSON}"
-    )
-
-    print("=" * 70)
-
-    return len(failed_ids) == 0
+    # Diagnostic berhasil jika koneksi database berhasil.
+    return True
 
 
 # ==========================================================
@@ -559,7 +795,11 @@ def run_dedupe() -> bool:
 
 if __name__ == "__main__":
 
-    success = run_dedupe()
+    success = run_diagnostic()
 
     if not success:
+
         raise SystemExit(1)
+
+    raise SystemExit(0)
+
