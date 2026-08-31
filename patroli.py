@@ -1765,54 +1765,6 @@ def run_once() -> Dict[str, Any]:
 
     return log
 
-
-def main() -> None:
-
-    parser = argparse.ArgumentParser(
-        description=(
-            "Patroli Siber berita "
-            "Kejari Deli Serdang"
-        )
-    )
-
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        help="jalankan satu kali",
-    )
-
-    parser.add_argument(
-        "--reclassify",
-        action="store_true",
-        help=(
-            "klasifikasi ulang seluruh "
-            "artikel di Supabase"
-        ),
-    )
-
-    parser.add_argument(
-        "--dedupe-dry-run",
-        action="store_true",
-        help=(
-            "cek duplicate link tanpa "
-            "mengubah database"
-        ),
-    )
-
-    args = parser.parse_args()
-
-    if args.dedupe_dry_run:
-        dedupe_dry_run()
-        return
-
-    if args.reclassify:
-        reclassify_all()
-        return
-
-    # Default juga satu kali agar aman
-    # dijalankan dari Task Scheduler/cron.
-    run_once()
-    
 def dedupe_dry_run() -> Dict[str, Any]:
     """
     Mengecek duplicate link di database tanpa mengubah data.
@@ -2015,6 +1967,54 @@ def dedupe_dry_run() -> Dict[str, Any]:
         "error": False,
     }
 
+
+def main() -> None:
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Patroli Siber berita "
+            "Kejari Deli Serdang"
+        )
+    )
+
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="jalankan satu kali",
+    )
+
+    parser.add_argument(
+        "--reclassify",
+        action="store_true",
+        help=(
+            "klasifikasi ulang seluruh "
+            "artikel di Supabase"
+        ),
+    )
+
+    parser.add_argument(
+        "--dedupe-dry-run",
+        action="store_true",
+        help=(
+            "cek duplicate link tanpa "
+            "mengubah database"
+        ),
+    )
+
+    args = parser.parse_args()
+
+    if args.dedupe_dry_run:
+        dedupe_dry_run()
+        return
+
+    if args.reclassify:
+        reclassify_all()
+        return
+
+    # Default juga satu kali agar aman
+    # dijalankan dari Task Scheduler/cron.
+    run_once()
+    
 
 if __name__ == "__main__":
     main()
