@@ -1,0 +1,12 @@
+- name: Jalankan Dedupe Dry Run
+  run: |
+    python patroli.py --mode dedupe-dry-run
+
+- name: Upload Dedupe Report
+  uses: actions/upload-artifact@v4
+  with:
+    name: dedupe-report
+    path: |
+      dedupe_report.csv
+      dedupe_report.json
+    if-no-files-found: error
