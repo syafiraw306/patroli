@@ -61,7 +61,7 @@ jobs:
           elif [ "${{ inputs.mode }}" = "dedupe" ]; then
 
             echo "Menjalankan DEDUPE..."
-            python dedupe.py
+            python patroli.py --dedupe
 
           else
 
@@ -88,3 +88,8 @@ jobs:
             dedupe_diagnostic_report.json
           if-no-files-found: warn
           retention-days: 30
+
+
+
+
+          
