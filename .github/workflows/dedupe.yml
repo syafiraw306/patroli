@@ -21,6 +21,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Cek patroli.py
+        run: |
+          echo "=== CEK ARGUMENT ==="
+          grep -n "dedupe-dry-run" patroli.py || true
+
+          echo "=== CEK FUNGSI ==="
+          grep -n "def dedupe_dry_run" patroli.py || true
+
       - name: Jalankan Dedupe Dry Run
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -29,3 +37,12 @@ jobs:
           NAMA_SATKER: "Kejaksaan Negeri Deli Serdang"
         run: |
           python patroli.py --dedupe-dry-run
+
+      - name: Upload laporan dedupe
+        uses: actions/upload-artifact@v4
+        with:
+          name: dedupe-report
+          path: |
+            dedupe_report.csv
+            dedupe_report.json
+          if-no-files-found: error
