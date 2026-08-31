@@ -6,7 +6,7 @@ on:
       mode:
         description: "Pilih mode patroli"
         required: true
-        default: "once"
+        default: once
         type: choice
         options:
           - once
@@ -18,15 +18,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       # ==========================================================
-      # 1. Ambil kode dari repository
+      # 1. Checkout repository
       # ==========================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # ==========================================================
-      # 2. Install Python
+      # 2. Setup Python
       # ==========================================================
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -34,7 +33,7 @@ jobs:
           python-version: "3.11"
 
       # ==========================================================
-      # 3. Install dependency
+      # 3. Install dependencies
       # ==========================================================
       - name: Install dependencies
         run: |
@@ -42,7 +41,7 @@ jobs:
           pip install -r requirements.txt
 
       # ==========================================================
-      # 4. Jalankan patroli sesuai pilihan
+      # 4. Jalankan Patroli
       # ==========================================================
       - name: Jalankan Patroli Siber
         env:
@@ -56,7 +55,6 @@ jobs:
           TAHUN_TARGET: ${{ secrets.TAHUN_TARGET }}
 
         run: |
-
           echo "=========================================="
           echo "      PATROLI SIBER GITHUB ACTIONS"
           echo "=========================================="
@@ -64,20 +62,16 @@ jobs:
           echo "Mode: ${{ inputs.mode }}"
 
           if [ "${{ inputs.mode }}" = "reclassify" ]; then
-
             echo "Menjalankan reklasifikasi..."
             python patroli.py --reclassify
 
           elif [ "${{ inputs.mode }}" = "dedupe-dry-run" ]; then
-
             echo "Menjalankan dedupe dry run..."
             python patroli.py --dedupe-dry-run
 
           else
-
             echo "Menjalankan patroli normal..."
             python patroli.py --once
-
           fi
 
           echo "=========================================="
@@ -85,7 +79,7 @@ jobs:
           echo "=========================================="
 
       # ==========================================================
-      # 5. Upload report DEDUPE sebagai Artifact
+      # 5. Upload hasil DEDUPE DRY RUN
       # ==========================================================
       - name: Upload Dedupe Report
         if: ${{ inputs.mode == 'dedupe-dry-run' }}
@@ -96,26 +90,4 @@ jobs:
             dedupe_report.csv
             dedupe_report.json
           if-no-files-found: error
-          retention-days: 7
-          echo "Mode: ${{ inputs.mode }}"
-
-          if [ "${{ inputs.mode }}" = "reclassify" ]; then
-
-            echo "Menjalankan reklasifikasi..."
-            python patroli.py --reclassify
-
-          elif [ "${{ inputs.mode }}" = "dedupe-dry-run" ]; then
-
-            echo "Menjalankan dedupe dry run..."
-            python patroli.py --dedupe-dry-run
-
-          else
-
-            echo "Menjalankan patroli normal..."
-            python patroli.py --once
-
-          fi
-
-          echo "=========================================="
-          echo "         PATROLI SELESAI"
-          echo "=========================================="
+          retention-days: 30
