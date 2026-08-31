@@ -83,3 +83,39 @@ jobs:
           echo "=========================================="
           echo "         PATROLI SELESAI"
           echo "=========================================="
+
+      # ==========================================================
+      # 5. Upload report DEDUPE sebagai Artifact
+      # ==========================================================
+      - name: Upload Dedupe Report
+        if: ${{ inputs.mode == 'dedupe-dry-run' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dedupe-report
+          path: |
+            dedupe_report.csv
+            dedupe_report.json
+          if-no-files-found: error
+          retention-days: 7
+          echo "Mode: ${{ inputs.mode }}"
+
+          if [ "${{ inputs.mode }}" = "reclassify" ]; then
+
+            echo "Menjalankan reklasifikasi..."
+            python patroli.py --reclassify
+
+          elif [ "${{ inputs.mode }}" = "dedupe-dry-run" ]; then
+
+            echo "Menjalankan dedupe dry run..."
+            python patroli.py --dedupe-dry-run
+
+          else
+
+            echo "Menjalankan patroli normal..."
+            python patroli.py --once
+
+          fi
+
+          echo "=========================================="
+          echo "         PATROLI SELESAI"
+          echo "=========================================="
