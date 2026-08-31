@@ -1767,16 +1767,17 @@ def run_once() -> Dict[str, Any]:
 
 def dedupe_dry_run() -> Dict[str, Any]:
     """
-    Mengecek duplicate link di database tanpa mengubah data.
+    Audit duplicate link tanpa mengubah database.
 
-    Duplicate ditentukan berdasarkan normalize_url(), sehingga:
-    - http://www.example.com/artikel
-    - https://example.com/artikel/
-    - https://example.com/artikel/?utm_source=google
+    Hasil:
+    - dedupe_report.csv
+    - dedupe_report.json
 
-    dapat dikenali sebagai URL yang sama setelah normalisasi
-    jika perbedaannya hanya pada tracking parameter yang dibuang.
+    Tidak ada INSERT, UPDATE, atau DELETE.
     """
+
+    import csv
+    import json
 
     print("=" * 70)
     print("DEDUPE DRY RUN")
@@ -1807,6 +1808,10 @@ def dedupe_dry_run() -> Dict[str, Any]:
         f"[DATABASE] Total artikel: "
         f"{total_articles}"
     )
+
+    # ============================================================
+    # KELOMPOKKAN BERDASARKAN NORMALIZED URL
+    # ============================================================
 
     groups: Dict[str, List[Dict[str, Any]]] = {}
     empty_links = []
@@ -1841,6 +1846,296 @@ def dedupe_dry_run() -> Dict[str, Any]:
 
     unique_links = len(groups)
 
+    # ============================================================
+    # SIAPKAN LAPORAN
+    # ============================================================
+
+    report_rows = []
+    json_groups = []
+
+    for group_number, (
+        normalized_link,
+        rows,
+    ) in enumerate(
+        duplicate_groups.items(),
+        start=1,
+    ):
+
+        # --------------------------------------------------------
+        # Tentukan record yang direkomendasikan untuk dipertahankan
+        #
+        # Prioritas:
+        # 1. content paling panjang
+        # 2. title tersedia
+        # 3. published_date tersedia
+        # 4. ID terkecil sebagai tie-breaker
+        # --------------------------------------------------------
+
+        def record_score(row):
+            content = normalize_text(
+                row.get("content")
+                or row.get("summary")
+                or ""
+            )
+
+            title = normalize_text(
+                row.get("title")
+            )
+
+            published = normalize_text(
+                row.get("published_date")
+            )
+
+            try:
+                article_id = int(
+                    row.get("id")
+                )
+            except Exception:
+                article_id = 999999999
+
+            return (
+                len(content),
+                bool(title),
+                bool(published),
+                -article_id,
+            )
+
+        rows_sorted = sorted(
+            rows,
+            key=record_score,
+            reverse=True,
+        )
+
+        keep = rows_sorted[0]
+        delete_candidates = rows_sorted[1:]
+
+        keep_id = keep.get("id")
+
+        keep_title = normalize_text(
+            keep.get("title")
+        )
+
+        keep_content_length = len(
+            normalize_text(
+                keep.get("content")
+                or keep.get("summary")
+                or ""
+            )
+        )
+
+        delete_ids = [
+            row.get("id")
+            for row in delete_candidates
+        ]
+
+        # --------------------------------------------------------
+        # JSON
+        # --------------------------------------------------------
+
+        json_group = {
+            "group": group_number,
+            "normalized_link": normalized_link,
+            "total_records": len(rows),
+            "recommended_keep": {
+                "id": keep_id,
+                "title": keep_title,
+                "content_length": keep_content_length,
+                "published_date": keep.get(
+                    "published_date"
+                ),
+                "link": keep.get("link"),
+            },
+            "delete_candidates": [],
+        }
+
+        # --------------------------------------------------------
+        # CSV + JSON detail
+        # --------------------------------------------------------
+
+        for row_number, row in enumerate(
+            rows_sorted,
+            start=1,
+        ):
+
+            article_id = row.get("id")
+
+            title = normalize_text(
+                row.get("title")
+            )
+
+            content_length = len(
+                normalize_text(
+                    row.get("content")
+                    or row.get("summary")
+                    or ""
+                )
+            )
+
+            is_keep = (
+                article_id == keep_id
+            )
+
+            action = (
+                "KEEP"
+                if is_keep
+                else "DELETE_CANDIDATE"
+            )
+
+            report_rows.append(
+                {
+                    "duplicate_group": group_number,
+                    "normalized_link": normalized_link,
+                    "record_count": len(rows),
+                    "recommended_action": action,
+                    "article_id": article_id,
+                    "title": title,
+                    "content_length": content_length,
+                    "published_date": row.get(
+                        "published_date"
+                    ),
+                    "category": row.get(
+                        "category",
+                        "",
+                    ),
+                    "priority": row.get(
+                        "priority",
+                        "",
+                    ),
+                    "original_link": row.get(
+                        "link",
+                        "",
+                    ),
+                }
+            )
+
+            if not is_keep:
+
+                json_group[
+                    "delete_candidates"
+                ].append(
+                    {
+                        "id": article_id,
+                        "title": title,
+                        "content_length": content_length,
+                        "published_date": row.get(
+                            "published_date"
+                        ),
+                        "link": row.get(
+                            "link"
+                        ),
+                    }
+                )
+
+        json_groups.append(
+            json_group
+        )
+
+    # ============================================================
+    # TULIS CSV
+    # ============================================================
+
+    csv_path = "dedupe_report.csv"
+
+    csv_fields = [
+        "duplicate_group",
+        "normalized_link",
+        "record_count",
+        "recommended_action",
+        "article_id",
+        "title",
+        "content_length",
+        "published_date",
+        "category",
+        "priority",
+        "original_link",
+    ]
+
+    try:
+
+        with open(
+            csv_path,
+            "w",
+            newline="",
+            encoding="utf-8",
+        ) as csv_file:
+
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=csv_fields,
+            )
+
+            writer.writeheader()
+
+            writer.writerows(
+                report_rows
+            )
+
+        print(
+            f"[REPORT] CSV berhasil dibuat: "
+            f"{csv_path}"
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[REPORT ERROR] CSV: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    # ============================================================
+    # TULIS JSON
+    # ============================================================
+
+    json_path = "dedupe_report.json"
+
+    json_report = {
+        "generated_at": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "tahun_target": TAHUN_TARGET,
+        "nama_satker": NAMA_SATKER,
+        "total_articles": total_articles,
+        "unique_links": unique_links,
+        "duplicate_groups": len(
+            duplicate_groups
+        ),
+        "duplicate_articles": duplicate_articles,
+        "empty_links": len(empty_links),
+        "groups": json_groups,
+    }
+
+    try:
+
+        with open(
+            json_path,
+            "w",
+            encoding="utf-8",
+        ) as json_file:
+
+            json.dump(
+                json_report,
+                json_file,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            )
+
+        print(
+            f"[REPORT] JSON berhasil dibuat: "
+            f"{json_path}"
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[REPORT ERROR] JSON: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    # ============================================================
+    # TAMPILKAN RINGKASAN
+    # ============================================================
+
     print()
     print("=" * 70)
     print("HASIL DEDUPE DRY RUN")
@@ -1852,80 +2147,80 @@ def dedupe_dry_run() -> Dict[str, Any]:
     )
 
     print(
-        f"Link unik            : "
+        f"Link unik           : "
         f"{unique_links}"
     )
 
     print(
-        f"Kelompok duplicate   : "
+        f"Kelompok duplicate  : "
         f"{len(duplicate_groups)}"
     )
 
     print(
-        f"Artikel duplicate    : "
+        f"Artikel duplicate   : "
         f"{duplicate_articles}"
     )
 
     print(
-        f"Link kosong          : "
+        f"Link kosong         : "
         f"{len(empty_links)}"
     )
 
     print("=" * 70)
 
+    # ============================================================
+    # TAMPILKAN REKOMENDASI KEEP / DELETE CANDIDATE
+    # ============================================================
+
     if duplicate_groups:
 
         print()
-        print("DAFTAR DUPLICATE LINK")
+        print("REKOMENDASI DUPLICATE")
         print("=" * 70)
 
-        for index, (
-            normalized_link,
-            rows,
-        ) in enumerate(
-            duplicate_groups.items(),
-            start=1,
-        ):
+        for group in json_groups:
 
             print()
             print(
-                f"[DUPLICATE #{index}] "
-                f"{len(rows)} record"
+                f"DUPLICATE #{group['group']}"
             )
 
             print(
-                f"Normalized URL: "
-                f"{normalized_link}"
+                f"Jumlah record : "
+                f"{group['total_records']}"
             )
 
-            for row_index, article in enumerate(
-                rows,
-                start=1,
-            ):
+            keep = group[
+                "recommended_keep"
+            ]
 
-                article_id = article.get(
-                    "id",
-                    "-",
-                )
+            print(
+                f"PERTAHANKAN  : "
+                f"ID={keep['id']} | "
+                f"{keep['title'][:100]}"
+            )
 
-                title = normalize_text(
-                    article.get("title")
-                )
+            print(
+                f"Content      : "
+                f"{keep['content_length']} karakter"
+            )
 
-                raw_link = normalize_url(
-                    article.get("link")
-                )
+            candidates = group[
+                "delete_candidates"
+            ]
 
-                print(
-                    f"  {row_index}. "
-                    f"ID={article_id} | "
-                    f"{title[:100]}"
-                )
+            if candidates:
 
                 print(
-                    f"     Link: "
-                    f"{raw_link}"
+                    "HAPUS KANDIDAT:"
                 )
+
+                for candidate in candidates:
+
+                    print(
+                        f"  - ID={candidate['id']} | "
+                        f"{candidate['title'][:100]}"
+                    )
 
     else:
 
@@ -1934,6 +2229,10 @@ def dedupe_dry_run() -> Dict[str, Any]:
             "[DEDUPE] Tidak ditemukan "
             "duplicate link."
         )
+
+    # ============================================================
+    # LINK KOSONG
+    # ============================================================
 
     if empty_links:
 
@@ -1965,8 +2264,9 @@ def dedupe_dry_run() -> Dict[str, Any]:
         "duplicate_articles": duplicate_articles,
         "empty_links": len(empty_links),
         "error": False,
+        "csv_report": csv_path,
+        "json_report": json_path,
     }
-
 
 def main() -> None:
 
