@@ -1790,7 +1790,20 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--dedupe-dry-run",
+        action="store_true",
+        help=(
+            "cek duplicate link tanpa "
+            "mengubah database"
+        ),
+    )
+
     args = parser.parse_args()
+
+    if args.dedupe_dry_run:
+        dedupe_dry_run()
+        return
 
     if args.reclassify:
         reclassify_all()
@@ -1799,6 +1812,208 @@ def main() -> None:
     # Default juga satu kali agar aman
     # dijalankan dari Task Scheduler/cron.
     run_once()
+    
+def dedupe_dry_run() -> Dict[str, Any]:
+    """
+    Mengecek duplicate link di database tanpa mengubah data.
+
+    Duplicate ditentukan berdasarkan normalize_url(), sehingga:
+    - http://www.example.com/artikel
+    - https://example.com/artikel/
+    - https://example.com/artikel/?utm_source=google
+
+    dapat dikenali sebagai URL yang sama setelah normalisasi
+    jika perbedaannya hanya pada tracking parameter yang dibuang.
+    """
+
+    print("=" * 70)
+    print("DEDUPE DRY RUN")
+    print("CEK DUPLICATE LINK TANPA MENGUBAH DATABASE")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+    except Exception as exc:
+        print(
+            f"[DEDUPE ERROR] "
+            f"Gagal mengambil database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "total_articles": 0,
+            "unique_links": 0,
+            "duplicate_groups": 0,
+            "duplicate_articles": 0,
+            "empty_links": 0,
+            "error": True,
+        }
+
+    total_articles = len(articles)
+
+    print(
+        f"[DATABASE] Total artikel: "
+        f"{total_articles}"
+    )
+
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    empty_links = []
+
+    for article in articles:
+
+        raw_link = article.get("link")
+
+        normalized_link = normalize_url(
+            raw_link
+        )
+
+        if not normalized_link:
+            empty_links.append(article)
+            continue
+
+        groups.setdefault(
+            normalized_link,
+            [],
+        ).append(article)
+
+    duplicate_groups = {
+        link: rows
+        for link, rows in groups.items()
+        if len(rows) > 1
+    }
+
+    duplicate_articles = sum(
+        len(rows) - 1
+        for rows in duplicate_groups.values()
+    )
+
+    unique_links = len(groups)
+
+    print()
+    print("=" * 70)
+    print("HASIL DEDUPE DRY RUN")
+    print("=" * 70)
+
+    print(
+        f"Total artikel       : "
+        f"{total_articles}"
+    )
+
+    print(
+        f"Link unik            : "
+        f"{unique_links}"
+    )
+
+    print(
+        f"Kelompok duplicate   : "
+        f"{len(duplicate_groups)}"
+    )
+
+    print(
+        f"Artikel duplicate    : "
+        f"{duplicate_articles}"
+    )
+
+    print(
+        f"Link kosong          : "
+        f"{len(empty_links)}"
+    )
+
+    print("=" * 70)
+
+    if duplicate_groups:
+
+        print()
+        print("DAFTAR DUPLICATE LINK")
+        print("=" * 70)
+
+        for index, (
+            normalized_link,
+            rows,
+        ) in enumerate(
+            duplicate_groups.items(),
+            start=1,
+        ):
+
+            print()
+            print(
+                f"[DUPLICATE #{index}] "
+                f"{len(rows)} record"
+            )
+
+            print(
+                f"Normalized URL: "
+                f"{normalized_link}"
+            )
+
+            for row_index, article in enumerate(
+                rows,
+                start=1,
+            ):
+
+                article_id = article.get(
+                    "id",
+                    "-",
+                )
+
+                title = normalize_text(
+                    article.get("title")
+                )
+
+                raw_link = normalize_url(
+                    article.get("link")
+                )
+
+                print(
+                    f"  {row_index}. "
+                    f"ID={article_id} | "
+                    f"{title[:100]}"
+                )
+
+                print(
+                    f"     Link: "
+                    f"{raw_link}"
+                )
+
+    else:
+
+        print()
+        print(
+            "[DEDUPE] Tidak ditemukan "
+            "duplicate link."
+        )
+
+    if empty_links:
+
+        print()
+        print("=" * 70)
+        print("ARTIKEL DENGAN LINK KOSONG")
+        print("=" * 70)
+
+        for article in empty_links:
+
+            print(
+                f"ID={article.get('id', '-')}"
+                f" | "
+                f"{normalize_text(article.get('title'))[:100]}"
+            )
+
+    print()
+    print("=" * 70)
+    print("DEDUPE DRY RUN SELESAI")
+    print("TIDAK ADA DATA YANG DIUBAH")
+    print("=" * 70)
+
+    return {
+        "total_articles": total_articles,
+        "unique_links": unique_links,
+        "duplicate_groups": len(
+            duplicate_groups
+        ),
+        "duplicate_articles": duplicate_articles,
+        "empty_links": len(empty_links),
+        "error": False,
+    }
 
 
 if __name__ == "__main__":
