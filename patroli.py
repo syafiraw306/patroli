@@ -478,6 +478,108 @@ SESSION.headers.update(
 )
 
 
+def normalize_url(
+    url: Any,
+) -> str:
+    """
+    Normalisasi URL agar:
+    - http/https konsisten secara struktur
+    - www dihilangkan
+    - trailing slash dihilangkan
+    - fragment dihilangkan
+    - tracking parameter dihilangkan
+    """
+
+    url = str(
+        url or ""
+    ).strip()
+
+    if not url:
+        return ""
+
+    try:
+
+        parsed = urllib.parse.urlsplit(
+            url
+        )
+
+        scheme = (
+            parsed.scheme.lower()
+        )
+
+        netloc = (
+            parsed.netloc.lower()
+        )
+
+        if netloc.startswith(
+            "www."
+        ):
+            netloc = netloc[4:]
+
+        path = (
+            parsed.path.rstrip("/")
+        )
+
+        query_pairs = (
+            urllib.parse.parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
+        )
+
+        tracking_keys = {
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_term",
+            "utm_content",
+            "fbclid",
+            "gclid",
+            "ref",
+            "referrer",
+            "source",
+            "mc_cid",
+            "mc_eid",
+            "_ga",
+            "_gl",
+        }
+
+        clean_query = [
+            (
+                key,
+                value,
+            )
+            for key, value
+            in query_pairs
+            if key.lower()
+            not in tracking_keys
+        ]
+
+        query = (
+            urllib.parse.urlencode(
+                clean_query
+            )
+        )
+
+        return urllib.parse.urlunsplit(
+            (
+                scheme,
+                netloc,
+                path,
+                query,
+                "",
+            )
+        )
+
+    except Exception:
+
+        return (
+            url.split("#")[0]
+            .strip()
+        )
+
+
+        
 # ============================================================
 # TEXT UTILITIES
 # ============================================================
@@ -598,6 +700,111 @@ def normalize_url(
             url.split("#")[0]
             .strip()
         )
+
+
+def load_existing_normalized_links():
+    """
+    Mengambil seluruh link artikel dari database
+    dan menyimpannya dalam bentuk normalized URL.
+
+    Digunakan untuk mencegah artikel yang sama
+    masuk kembali ke database.
+    """
+
+    try:
+
+        supabase = get_supabase()
+
+        print(
+            "[DEDUPE] Mengambil link artikel "
+            "yang sudah ada di database..."
+        )
+
+        all_links = set()
+
+        offset = 0
+        batch_size = 1000
+
+        while True:
+
+            response = (
+                supabase
+                .table("articles")
+                .select("link")
+                .range(
+                    offset,
+                    offset + batch_size - 1
+                )
+                .execute()
+            )
+
+            rows = response.data or []
+
+            if not rows:
+                break
+
+            for row in rows:
+
+                link = row.get("link")
+
+                normalized = normalize_url(
+                    link
+                )
+
+                if normalized:
+                    all_links.add(
+                        normalized
+                    )
+
+            if len(rows) < batch_size:
+                break
+
+            offset += batch_size
+
+        print(
+            f"[DEDUPE] Link unik yang sudah ada: "
+            f"{len(all_links)}"
+        )
+
+        return all_links
+
+    except Exception as e:
+
+        print(
+            f"[DEDUPE ERROR] "
+            f"Gagal mengambil link database: {e}"
+        )
+
+        return set()
+
+
+
+def article_link_exists(
+    link: Any,
+    existing_links: set,
+) -> bool:
+    """
+    Mengecek apakah link artikel sudah ada.
+
+    Link dibandingkan menggunakan URL yang sudah
+    dinormalisasi sehingga variasi seperti:
+
+        https://www.example.com/artikel/
+        http://example.com/artikel
+        https://example.com/artikel?utm_source=google
+
+    dapat dianggap sebagai artikel yang sama.
+    """
+
+    normalized = normalize_url(link)
+
+    if not normalized:
+        return False
+
+    return normalized in existing_links
+
+
+
 def is_duplicate_link(link, existing_link_index):
     """
     Mengecek apakah link sudah ada di database/index.
@@ -607,7 +814,7 @@ def is_duplicate_link(link, existing_link_index):
         False -> bukan duplicate
     """
 
-    normalized = normalize_link(link)
+    normalized = normalize_url(link)
 
     if not normalized:
         return False
@@ -619,7 +826,7 @@ def register_new_link(link, existing_link_index):
     Mendaftarkan link baru ke index.
     Dipanggil setelah artikel berhasil disimpan.
     """
-    normalized = normalize_link(link)
+    normalized = normalize_url(link)
 
     if not normalized:
         return False
@@ -2654,7 +2861,7 @@ def reclassify_all() -> Dict[str, int]:
     )
     print("=" * 70)
 
-    articles = get_all_articles()
+    articles = load_existing_normalized_links()
 
     total = len(
         articles
@@ -4380,219 +4587,318 @@ def dedupe() -> Dict[str, Any]:
 
 def dedupe_database():
     """
-    Menghapus duplicate link dari database.
+    DEDUPE DATABASE BERDASARKAN LINK
 
     Prinsip:
-    - Group berdasarkan normalized URL
-    - ID pertama dipertahankan
-    - ID berikutnya menjadi kandidat hapus
-    - Sebelum delete, tampilkan seluruh kandidat
-    - Memerlukan konfirmasi eksplisit
+    - Mengambil seluruh artikel dari Supabase.
+    - Normalisasi link.
+    - Mengelompokkan artikel berdasarkan link.
+    - Jika satu link muncul lebih dari sekali:
+        * record pertama dipertahankan
+        * record berikutnya menjadi kandidat hapus
+    - Hanya kandidat duplicate yang dihapus.
+    - Tidak menggunakan daftar ID hard-code.
     """
 
     print("=" * 70)
-    print("DEDUPE DATABASE")
-    print("MENGHAPUS DUPLICATE LINK")
+    print("DEDUPE DATABASE - BERDASARKAN LINK")
     print("=" * 70)
 
     try:
-        articles = get_all_articles()
+        supabase = get_supabase()
+
+        print("[SUPABASE] Mengambil seluruh artikel...")
+
+        all_articles = []
+        offset = 0
+        batch_size = 1000
+
+        while True:
+            response = (
+                supabase
+                .table("articles")
+                .select("id,title,link,content,published_at")
+                .range(
+                    offset,
+                    offset + batch_size - 1
+                )
+                .execute()
+            )
+
+            rows = response.data or []
+
+            if not rows:
+                break
+
+            all_articles.extend(rows)
+
+            print(
+                f"[SUPABASE] Mengambil "
+                f"{len(all_articles)} artikel..."
+            )
+
+            if len(rows) < batch_size:
+                break
+
+            offset += batch_size
 
         print(
-            f"[DATABASE] Total artikel: {len(articles)}"
+            f"[DATABASE] Total artikel: "
+            f"{len(all_articles)}"
         )
 
-        groups = {}
+        if not all_articles:
+            print("[DEDUPE] Database kosong.")
+            return
 
-        for article in articles:
+        # ======================================================
+        # KELOMPOKKAN BERDASARKAN LINK
+        # ======================================================
 
+        link_groups = {}
+        empty_link_count = 0
+
+        for article in all_articles:
             article_id = article.get("id")
             link = article.get("link")
-
-            if not link:
-                continue
 
             normalized = normalize_url(link)
 
             if not normalized:
+                empty_link_count += 1
                 continue
 
-            if normalized not in groups:
-                groups[normalized] = []
+            if normalized not in link_groups:
+                link_groups[normalized] = []
 
-            groups[normalized].append(article)
+            link_groups[normalized].append(article)
+
+        # ======================================================
+        # CARI DUPLICATE
+        # ======================================================
 
         duplicate_groups = []
+        duplicate_articles = []
 
-        for normalized, items in groups.items():
+        for normalized_link, articles in link_groups.items():
 
-            if len(items) > 1:
+            if len(articles) <= 1:
+                continue
 
-                # ID paling kecil dipertahankan
-                items_sorted = sorted(
-                    items,
-                    key=lambda x: (
-                        x.get("id") is None,
-                        x.get("id", 0)
-                    )
-                )
+            # Urutkan berdasarkan ID terkecil.
+            # ID terkecil dipertahankan.
+            articles_sorted = sorted(
+                articles,
+                key=lambda x: int(x.get("id", 0))
+            )
 
-                keep = items_sorted[0]
-                delete_candidates = items_sorted[1:]
+            keep_article = articles_sorted[0]
+            delete_candidates = articles_sorted[1:]
 
-                duplicate_groups.append(
-                    {
-                        "normalized_link": normalized,
-                        "keep": keep,
-                        "delete": delete_candidates
-                    }
-                )
+            duplicate_groups.append({
+                "link": normalized_link,
+                "keep": keep_article,
+                "delete": delete_candidates,
+            })
 
-        total_delete = sum(
-            len(group["delete"])
-            for group in duplicate_groups
-        )
+            duplicate_articles.extend(
+                delete_candidates
+            )
+
+        # ======================================================
+        # HASIL PEMERIKSAAN
+        # ======================================================
 
         print()
         print("=" * 70)
-        print("HASIL ANALISIS")
+        print("HASIL PEMERIKSAAN DUPLICATE")
         print("=" * 70)
-        print(f"Total artikel       : {len(articles)}")
-        print(f"Link unik           : {len(groups)}")
+
+        print(
+            f"Total artikel       : {len(all_articles)}"
+        )
+
+        print(
+            f"Link unik           : {len(link_groups)}"
+        )
+
         print(
             f"Kelompok duplicate  : "
             f"{len(duplicate_groups)}"
         )
+
         print(
-            f"Artikel akan dihapus: "
-            f"{total_delete}"
+            f"Artikel duplicate   : "
+            f"{len(duplicate_articles)}"
         )
-        print("=" * 70)
 
-        if total_delete == 0:
+        print(
+            f"Link kosong         : "
+            f"{empty_link_count}"
+        )
 
+        # ======================================================
+        # TIDAK ADA DUPLICATE
+        # ======================================================
+
+        if not duplicate_articles:
             print()
-            print("Tidak ada duplicate.")
+            print("[DEDUPE] Tidak ditemukan duplicate.")
+            print("[DEDUPE] Tidak ada data yang dihapus.")
+            print("=" * 70)
             return
 
-        # ==========================================
-        # TAMPILKAN SEMUA YANG AKAN DIHAPUS
-        # ==========================================
+        # ======================================================
+        # TAMPILKAN SEMUA KANDIDAT
+        # ======================================================
 
         print()
         print("=" * 70)
-        print("DAFTAR DELETE")
+        print("DAFTAR DUPLICATE")
         print("=" * 70)
 
-        for index, group in enumerate(
+        for nomor, group in enumerate(
             duplicate_groups,
             start=1
         ):
-
             keep = group["keep"]
+            delete_list = group["delete"]
 
             print()
             print(
-                f"DUPLICATE #{index}"
+                f"DUPLICATE #{nomor}"
             )
 
             print(
-                f"PERTAHANKAN : "
+                f"LINK : {group['link']}"
+            )
+
+            print(
+                f"PERTAHANKAN: "
                 f"ID={keep.get('id')} | "
                 f"{keep.get('title', '')}"
             )
 
-            for item in group["delete"]:
-
+            for candidate in delete_list:
                 print(
-                    f"HAPUS       : "
-                    f"ID={item.get('id')} | "
-                    f"{item.get('title', '')}"
+                    f"HAPUS: "
+                    f"ID={candidate.get('id')} | "
+                    f"{candidate.get('title', '')}"
                 )
 
-        # ==========================================
-        # KONFIRMASI
-        # ==========================================
+        # ======================================================
+        # KONFIRMASI KEAMANAN
+        # ======================================================
 
         print()
         print("=" * 70)
-        print(
-            f"PERHATIAN: "
-            f"{total_delete} artikel akan dihapus."
-        )
-        print(
-            "Tindakan ini mengubah database."
-        )
+        print("PERINGATAN")
         print("=" * 70)
 
-        confirmation = input(
-            "Ketik DELETE untuk melanjutkan: "
-        ).strip()
+        print(
+            f"Sebanyak {len(duplicate_articles)} "
+            f"artikel akan dihapus."
+        )
 
-        if confirmation != "DELETE":
+        print(
+            "Artikel yang dipertahankan TIDAK akan dihapus."
+        )
 
-            print()
-            print(
-                "Dibatalkan. Tidak ada data yang diubah."
-            )
-
-            return
-
-        # ==========================================
+        # ======================================================
         # DELETE
-        # ==========================================
+        # ======================================================
 
-        deleted = 0
-        failed = 0
+        deleted_count = 0
+        failed_count = 0
 
-        for group in duplicate_groups:
+        print()
+        print("=" * 70)
+        print("MENGHAPUS DUPLICATE")
+        print("=" * 70)
 
-            for item in group["delete"]:
+        for candidate in duplicate_articles:
 
-                article_id = item.get("id")
+            article_id = candidate.get("id")
 
-                if not article_id:
-                    failed += 1
-                    print(
-                        "[DELETE GAGAL] "
-                        "ID kosong."
-                    )
-                    continue
+            if article_id is None:
+                print(
+                    "[DELETE SKIP] ID kosong."
+                )
+                failed_count += 1
+                continue
 
+            try:
                 success = delete_article_by_id(
                     article_id
                 )
 
                 if success:
-
-                    deleted += 1
+                    deleted_count += 1
 
                     print(
-                        f"[DELETE OK] ID={article_id}"
+                        f"[DELETE OK] "
+                        f"ID={article_id}"
                     )
 
                 else:
+                    failed_count += 1
 
-                    failed += 1
+                    print(
+                        f"[DELETE GAGAL] "
+                        f"ID={article_id}"
+                    )
+
+            except Exception as e:
+                failed_count += 1
+
+                print(
+                    f"[DELETE ERROR] "
+                    f"ID={article_id} -> {e}"
+                )
+
+        # ======================================================
+        # HASIL AKHIR
+        # ======================================================
 
         print()
         print("=" * 70)
+        print("HASIL DEDUPE")
+        print("=" * 70)
+
+        print(
+            f"Sebelum             : "
+            f"{len(all_articles)}"
+        )
+
+        print(
+            f"Link unik            : "
+            f"{len(link_groups)}"
+        )
+
+        print(
+            f"Kandidat duplicate  : "
+            f"{len(duplicate_articles)}"
+        )
+
+        print(
+            f"Berhasil dihapus    : "
+            f"{deleted_count}"
+        )
+
+        print(
+            f"Gagal dihapus       : "
+            f"{failed_count}"
+        )
+
+        print(
+            f"Perkiraan sesudah   : "
+            f"{len(all_articles) - deleted_count}"
+        )
+
+        print("=" * 70)
         print("DEDUPE SELESAI")
         print("=" * 70)
-        print(
-            f"Berhasil dihapus : {deleted}"
-        )
-        print(
-            f"Gagal dihapus    : {failed}"
-        )
-        print("=" * 70)
 
-    except Exception as e:
-
-        print(
-            f"[DEDUPE ERROR] {e}"
-        )
-        
 # ============================================================
 # MAIN
 # ============================================================
