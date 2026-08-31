@@ -12,45 +12,32 @@ on:
           - once
           - reclassify
           - dedupe-dry-run
+          - dedupe
 
 jobs:
   patroli:
     runs-on: ubuntu-latest
 
     steps:
-      # ==========================================================
-      # 1. Checkout repository
-      # ==========================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ==========================================================
-      # 2. Setup Python
-      # ==========================================================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ==========================================================
-      # 3. Install dependencies
-      # ==========================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ==========================================================
-      # 4. Jalankan Patroli
-      # ==========================================================
       - name: Jalankan Patroli Siber
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
           NAMA_SATKER: ${{ secrets.NAMA_SATKER }}
           TAHUN_TARGET: ${{ secrets.TAHUN_TARGET }}
 
@@ -62,32 +49,40 @@ jobs:
           echo "Mode: ${{ inputs.mode }}"
 
           if [ "${{ inputs.mode }}" = "reclassify" ]; then
+
             echo "Menjalankan reklasifikasi..."
             python patroli.py --reclassify
 
           elif [ "${{ inputs.mode }}" = "dedupe-dry-run" ]; then
+
             echo "Menjalankan dedupe dry run..."
             python patroli.py --dedupe-dry-run
 
+          elif [ "${{ inputs.mode }}" = "dedupe" ]; then
+
+            echo "Menjalankan DEDUPE..."
+            python dedupe.py
+
           else
+
             echo "Menjalankan patroli normal..."
             python patroli.py --once
+
           fi
 
           echo "=========================================="
           echo "         PATROLI SELESAI"
           echo "=========================================="
 
-      # ==========================================================
-      # 5. Upload hasil DEDUPE DRY RUN
-      # ==========================================================
       - name: Upload Dedupe Report
-        if: ${{ inputs.mode == 'dedupe-dry-run' }}
+        if: ${{ inputs.mode == 'dedupe-dry-run' || inputs.mode == 'dedupe' }}
         uses: actions/upload-artifact@v4
         with:
           name: dedupe-report
           path: |
             dedupe_report.csv
             dedupe_report.json
-          if-no-files-found: error
+            dedupe_delete_report.csv
+            dedupe_delete_report.json
+          if-no-files-found: warn
           retention-days: 30
