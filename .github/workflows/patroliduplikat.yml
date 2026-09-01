@@ -73,38 +73,43 @@ jobs:
           # JIKA DIJALANKAN MANUAL
           # ==========================================
           else
-
+          
             echo "Mode: ${{ inputs.mode }}"
-
+          
             if [ "${{ inputs.mode }}" = "reclassify" ]; then
-
+          
               echo "Menjalankan reklasifikasi..."
               python patroli.py --reclassify
-
+          
             elif [ "${{ inputs.mode }}" = "dedupe-dry-run" ]; then
-
+          
               echo "Menjalankan dedupe dry run..."
               python patroli.py --dedupe-dry-run
-
+          
             elif [ "${{ inputs.mode }}" = "dedupe" ]; then
-
+          
               echo "Menjalankan DEDUPE..."
               python patroli.py --dedupe
-
+          
             elif [ "${{ inputs.mode }}" = "once" ]; then
-
+          
               echo "Menjalankan patroli normal..."
               python patroli.py --once
-              
-            else
-            
-              echo "Menjalankan patroli normal..."
+          
+            elif [ "${{ inputs.mode }}" = "sanitize-database" ]; then
+          
+              echo "Menjalankan sanitasi database..."
               python patroli.py --sanitize-database
-              
+          
+            else
+          
+              echo "Mode tidak dikenal: ${{ inputs.mode }}"
+              exit 1
+          
             fi
-
+          
           fi
-
+          
           echo "=========================================="
           echo "         PATROLI SELESAI"
           echo "=========================================="
