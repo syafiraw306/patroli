@@ -5771,7 +5771,7 @@ def audit_content_duplicates() -> None:
     print("AUDIT CONTENT DUPLICATES")
     print("=" * 70)
 
-    client = get_supabase_client()
+    client = get_supabase()
 
     articles = get_all_articles(
         client
