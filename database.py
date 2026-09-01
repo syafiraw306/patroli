@@ -321,13 +321,20 @@ def test_connection() -> bool:
 def get_all_articles(
     page_size: int = 1000,
 ) -> List[Dict[str, Any]]:
+
+    if not isinstance(page_size, int):
+        raise TypeError(
+            f"page_size harus integer, "
+            f"tetapi menerima {type(page_size).__name__}"
+        )
+
+    if page_size <= 0:
+        raise ValueError(
+            "page_size harus lebih besar dari 0"
+        )
+
     """
     Mengambil seluruh artikel menggunakan pagination.
-
-    Penting untuk proses:
-    - reklasifikasi
-    - statistik
-    - deduplikasi
     """
 
     client = get_supabase()
@@ -354,10 +361,12 @@ def get_all_articles(
             rows = response.data or []
 
         except Exception as e:
+
             print(
                 f"[SUPABASE FETCH ERROR] "
                 f"offset={start} -> {e}"
             )
+
             break
 
         results.extend(rows)
@@ -377,8 +386,6 @@ def get_all_articles(
     )
 
     return results
-
-
 # ============================================================
 # GET ARTICLE
 # ============================================================
