@@ -1863,135 +1863,7 @@ def find_handling_context(
     return contexts[:20]
 
 
-def audit_negative_articles() -> None:
-    """
-    Menampilkan seluruh artikel yang saat ini diklasifikasikan
-    sebagai Negatif Kuat beserta alasan/context yang terdeteksi.
-    Tidak mengubah database.
-    """
 
-    print("=" * 70)
-    print("AUDIT ARTIKEL NEGATIF KUAT")
-    print("=" * 70)
-
-    try:
-        articles = get_all_articles()
-    except Exception as exc:
-        print(
-            f"[AUDIT ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-        return
-
-    negative_articles = [
-        article
-        for article in articles
-        if article.get("category")
-        == "Negatif Kuat"
-    ]
-
-    print(
-        f"[AUDIT] Total Negatif Kuat: "
-        f"{len(negative_articles)}"
-    )
-
-    print("=" * 70)
-
-    for index, article in enumerate(
-        negative_articles,
-        start=1,
-    ):
-
-        print()
-        print(
-            f"NEGATIF #{index}"
-        )
-        print("-" * 70)
-
-        print(
-            f"ID          : "
-            f"{article.get('id')}"
-        )
-
-        print(
-            f"Judul       : "
-            f"{article.get('title', '')}"
-        )
-
-        print(
-            f"Link        : "
-            f"{article.get('link', '')}"
-        )
-
-        print(
-            f"Negatif     : "
-            f"{article.get('negative_score', 0)}"
-        )
-
-        print(
-            f"Handling    : "
-            f"{article.get('handling_score', 0)}"
-        )
-
-        print(
-            f"Positif     : "
-            f"{article.get('positive_score', 0)}"
-        )
-
-        print(
-            f"Satker      : "
-            f"{article.get('satker_matches', [])}"
-        )
-
-        print(
-            "Strong Context:"
-        )
-
-        for context in (
-            article.get(
-                "strong_context",
-                []
-            )
-        ):
-
-            print(
-                f"  - {context}"
-            )
-
-        print(
-            "Positive Context:"
-        )
-
-        for context in (
-            article.get(
-                "positive_context",
-                []
-            )
-        ):
-
-            print(
-                f"  - {context}"
-            )
-
-        print(
-            "Handling Context:"
-        )
-
-        for context in (
-            article.get(
-                "handling_context",
-                []
-            )
-        ):
-
-            print(
-                f"  - {context}"
-            )
-
-    print()
-    print("=" * 70)
-    print("AUDIT SELESAI")
-    print("=" * 70)
     
 # ============================================================
 # POSITIVE SCORE
@@ -5449,180 +5321,6 @@ def dedupe_database() -> Dict[str, Any]:
 # SANITIZE DATABASE
 # ============================================================
 
-def sanitize_database() -> Dict[str, Any]:
-    """
-    Membersihkan HTML yang sudah tersimpan di database.
-
-    Tidak:
-    - INSERT artikel
-    - DELETE artikel
-    - mengubah link
-    - mengubah klasifikasi
-    - melakukan dedupe
-
-    Hanya UPDATE field yang memang mengandung perubahan.
-    """
-
-    print("=" * 70)
-    print("SANITASI DATABASE")
-    print("MEMBERSIHKAN HTML DARI DATA ARTIKEL")
-    print("=" * 70)
-
-    try:
-
-        articles = get_all_articles()
-
-    except Exception as exc:
-
-        print(
-            "[SANITIZE ERROR] "
-            "Gagal mengambil database: "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "success": False,
-            "total": 0,
-            "updated": 0,
-            "unchanged": 0,
-            "failed": 0,
-        }
-
-    total = len(articles)
-
-    updated = 0
-    unchanged = 0
-    failed = 0
-
-    print(
-        f"[SANITIZE] Total artikel: {total}"
-    )
-
-    for index, article in enumerate(
-        articles,
-        start=1,
-    ):
-
-        article_id = article.get(
-            "id"
-        )
-
-        if article_id is None:
-
-            failed += 1
-
-            print(
-                "[SANITIZE ERROR] "
-                f"{index}/{total} -> "
-                "ID artikel tidak ditemukan"
-            )
-
-            continue
-
-        try:
-
-            cleaned = sanitize_article(
-                article
-            )
-
-            payload = {}
-
-            for field in SANITIZE_FIELDS:
-
-                if field not in cleaned:
-                    continue
-
-                old_value = article.get(
-                    field
-                )
-
-                new_value = cleaned.get(
-                    field
-                )
-
-                if new_value != old_value:
-
-                    payload[field] = new_value
-
-            if not payload:
-
-                unchanged += 1
-
-            else:
-
-                supabase = get_supabase()
-
-                (
-                    supabase
-                    .table("articles")
-                    .update(payload)
-                    .eq("id", article_id)
-                    .execute()
-                )
-
-                updated += 1
-
-                print(
-                    "[SANITIZE] UPDATE "
-                    f"ID={article_id} | "
-                    f"field={', '.join(payload.keys())}"
-                )
-
-        except Exception as exc:
-
-            failed += 1
-
-            print(
-                "[SANITIZE ERROR] "
-                f"{index}/{total} | "
-                f"ID={article_id} | "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-        if (
-            index % 25 == 0
-            or index == total
-        ):
-
-            print(
-                "[SANITIZE] Progress "
-                f"{index}/{total}"
-            )
-
-    print()
-    print("=" * 70)
-    print("SANITASI SELESAI")
-    print("=" * 70)
-
-    print(
-        f"Total artikel   : {total}"
-    )
-
-    print(
-        f"Berhasil update : {updated}"
-    )
-
-    print(
-        f"Tidak berubah   : {unchanged}"
-    )
-
-    print(
-        f"Gagal           : {failed}"
-    )
-
-    print("=" * 70)
-
-    return {
-        "success": failed == 0,
-        "total": total,
-        "updated": updated,
-        "unchanged": unchanged,
-        "failed": failed,
-    }
-    
-# ============================================================
-# SANITIZE DATABASE
-# ============================================================
 
 def sanitize_database() -> Dict[str, Any]:
     """
@@ -5814,7 +5512,177 @@ def sanitize_database() -> Dict[str, Any]:
         "unchanged": unchanged,
         "failed": failed,
     }
+    
+def audit_negative_articles() -> None:
+    """
+    Audit artikel yang saat ini diklasifikasikan sebagai
+    Negatif Kuat.
 
+    Fungsi ini hanya membaca database.
+    Tidak melakukan INSERT, UPDATE, DELETE, dedupe,
+    sanitasi, maupun reklasifikasi.
+    """
+
+    print("=" * 70)
+    print("AUDIT ARTIKEL NEGATIF KUAT")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            "[AUDIT ERROR] "
+            f"Gagal mengambil database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return
+
+    negative_articles = [
+        article
+        for article in articles
+        if article.get("category")
+        == "Negatif Kuat"
+    ]
+
+    print(
+        f"[AUDIT] Total artikel database : "
+        f"{len(articles)}"
+    )
+
+    print(
+        f"[AUDIT] Total Negatif Kuat     : "
+        f"{len(negative_articles)}"
+    )
+
+    print("=" * 70)
+
+    for index, article in enumerate(
+        negative_articles,
+        start=1,
+    ):
+
+        print()
+        print(
+            f"NEGATIF #{index}"
+        )
+
+        print("-" * 70)
+
+        print(
+            f"ID          : "
+            f"{article.get('id')}"
+        )
+
+        print(
+            f"Judul       : "
+            f"{article.get('title', '')}"
+        )
+
+        print(
+            f"Link        : "
+            f"{article.get('link', '')}"
+        )
+
+        print(
+            f"Negatif     : "
+            f"{article.get('negative_score', 0)}"
+        )
+
+        print(
+            f"Handling    : "
+            f"{article.get('handling_score', 0)}"
+        )
+
+        print(
+            f"Positif     : "
+            f"{article.get('positive_score', 0)}"
+        )
+
+        print(
+            f"Satker      : "
+            f"{article.get('satker_matches', [])}"
+        )
+
+        print()
+        print("Strong Context:")
+
+        strong_context = (
+            article.get(
+                "strong_context",
+                []
+            )
+        )
+
+        if strong_context:
+
+            for context in strong_context:
+
+                print(
+                    f"  - {context}"
+                )
+
+        else:
+
+            print(
+                "  - Tidak ada"
+            )
+
+        print()
+        print("Positive Context:")
+
+        positive_context = (
+            article.get(
+                "positive_context",
+                []
+            )
+        )
+
+        if positive_context:
+
+            for context in positive_context:
+
+                print(
+                    f"  - {context}"
+                )
+
+        else:
+
+            print(
+                "  - Tidak ada"
+            )
+
+        print()
+        print("Handling Context:")
+
+        handling_context = (
+            article.get(
+                "handling_context",
+                []
+            )
+        )
+
+        if handling_context:
+
+            for context in handling_context:
+
+                print(
+                    f"  - {context}"
+                )
+
+        else:
+
+            print(
+                "  - Tidak ada"
+            )
+
+    print()
+    print("=" * 70)
+    print("AUDIT SELESAI")
+    print("=" * 70)
+    
 # ============================================================
 # MAIN
 # ============================================================
@@ -5872,6 +5740,12 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--audit-negative-articles",
+        action="store_true",
+        help="Audit artikel yang diklasifikasikan sebagai Negatif Kuat",
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -5911,6 +5785,12 @@ def main() -> None:
     if args.reclassify:
 
         reclassify_all()
+
+        return
+
+    if args.audit_negative_articles:
+
+        audit_negative_articles()
 
         return
 
