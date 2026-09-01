@@ -1,0 +1,2 @@
+- name: Test Normalize URL
+  run: python test_normalize_url.py
