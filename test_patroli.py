@@ -29,6 +29,21 @@ TEST_CASES = [
         False,
         False,
     ),
+    (
+    "Kajari Deliserdang Pimpin Sertijab Kasi Pidsus, Tekankan Integritas dan Percepatan Penanganan Korupsi",
+    True,
+    True,
+    ),
+    (
+    "Kejari Deli Serdang berhasil menangkap tersangka korupsi",
+    True,
+    True,
+    ),
+    (
+    "Kejari Deli Serdang melakukan penyidikan kasus korupsi",
+    True,
+    True,
+    ),
 ]
 
 for text, expected_satker, expected_actor in TEST_CASES:
