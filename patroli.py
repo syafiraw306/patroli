@@ -5760,41 +5760,44 @@ def audit_negative_articles() -> Dict[str, Any]:
 
 def audit_content_duplicates() -> None:
     """
-    Audit artikel yang memiliki judul identik atau
-    konten identik meskipun link berbeda.
+    Audit artikel dengan judul atau konten identik.
 
-    Fungsi ini TIDAK menghapus data.
-    Hanya menampilkan kandidat duplicate.
+    Tidak menghapus data.
+    Hanya menampilkan kandidat duplikat.
     """
 
     print("=" * 70)
     print("AUDIT CONTENT DUPLICATES")
     print("=" * 70)
 
-    client = get_supabase()
+    try:
+        articles = get_all_articles()
 
-    articles = get_all_articles(
-        client
+    except Exception as exc:
+        print(
+            f"[AUDIT ERROR] "
+            f"Gagal mengambil artikel: {exc}"
+        )
+        return
+
+    print(
+        f"[AUDIT] Total artikel: "
+        f"{len(articles)}"
     )
 
-    print(f"[AUDIT] Total artikel: {len(articles)}")
-
     # ========================================================
-    # KELOMPOK JUDUL
+    # KELOMPOK DUPLIKAT BERDASARKAN TITLE
     # ========================================================
 
     title_groups = {}
 
     for article in articles:
 
-        title = article.get(
-            "title",
-            "",
+        title = normalize_text(
+            article.get("title") or ""
         )
 
-        normalized_title = normalize_text(
-            title
-        ).lower().strip()
+        normalized_title = title.lower().strip()
 
         if not normalized_title:
             continue
@@ -5809,10 +5812,6 @@ def audit_content_duplicates() -> None:
             normalized_title
         ].append(article)
 
-    # ========================================================
-    # DUPLIKAT JUDUL
-    # ========================================================
-
     duplicate_titles = {
 
         title: items
@@ -5822,6 +5821,10 @@ def audit_content_duplicates() -> None:
 
         if len(items) > 1
     }
+
+    # ========================================================
+    # TAMPILKAN DUPLIKAT TITLE
+    # ========================================================
 
     print()
     print("=" * 70)
@@ -5834,13 +5837,14 @@ def audit_content_duplicates() -> None:
     for title, items in duplicate_titles.items():
 
         print()
-
         print("-" * 70)
+
         print("TITLE:")
         print(title)
 
+        print()
         print(
-            f"JUMLAH DUPLIKAT: "
+            f"JUMLAH ARTIKEL: "
             f"{len(items)}"
         )
 
@@ -5849,42 +5853,43 @@ def audit_content_duplicates() -> None:
         for item in items:
 
             print(
-                f"ID    : {item.get('id')}"
+                f"ID    : "
+                f"{item.get('id')}"
             )
 
             print(
-                f"LINK  : {item.get('link')}"
+                f"LINK  : "
+                f"{item.get('link')}"
             )
 
             print(
-                f"DATE  : {item.get('published_at')}"
+                f"DATE  : "
+                f"{item.get('published_at')}"
             )
 
             print()
 
     # ========================================================
-    # KELOMPOK CONTENT
+    # KELOMPOK DUPLIKAT BERDASARKAN CONTENT
     # ========================================================
 
     content_groups = {}
 
     for article in articles:
 
-        content = article.get(
-            "content",
-            "",
+        content = normalize_text(
+            article.get("content")
+            or article.get("summary")
+            or ""
         )
 
-        normalized_content = normalize_text(
-            content
-        ).lower().strip()
+        normalized_content = content.lower().strip()
 
-        # Skip content kosong
+        # Abaikan konten kosong
         if not normalized_content:
             continue
 
-        # Skip content terlalu pendek
-        # supaya snippet pendek tidak dianggap duplicate
+        # Abaikan snippet terlalu pendek
         if len(normalized_content) < 100:
             continue
 
@@ -5898,10 +5903,6 @@ def audit_content_duplicates() -> None:
             normalized_content
         ].append(article)
 
-    # ========================================================
-    # DUPLIKAT CONTENT
-    # ========================================================
-
     duplicate_contents = {
 
         content: items
@@ -5911,6 +5912,10 @@ def audit_content_duplicates() -> None:
 
         if len(items) > 1
     }
+
+    # ========================================================
+    # TAMPILKAN DUPLIKAT CONTENT
+    # ========================================================
 
     print()
     print("=" * 70)
@@ -5923,7 +5928,6 @@ def audit_content_duplicates() -> None:
     for content, items in duplicate_contents.items():
 
         print()
-
         print("-" * 70)
 
         print(
@@ -5932,13 +5936,12 @@ def audit_content_duplicates() -> None:
         )
 
         print(
-            f"JUMLAH DUPLIKAT: "
+            f"JUMLAH ARTIKEL: "
             f"{len(items)}"
         )
 
         print()
 
-        # Preview supaya log tidak terlalu panjang
         print("CONTENT PREVIEW:")
 
         print(
@@ -5950,15 +5953,18 @@ def audit_content_duplicates() -> None:
         for item in items:
 
             print(
-                f"ID    : {item.get('id')}"
+                f"ID    : "
+                f"{item.get('id')}"
             )
 
             print(
-                f"TITLE : {item.get('title')}"
+                f"TITLE : "
+                f"{item.get('title')}"
             )
 
             print(
-                f"LINK  : {item.get('link')}"
+                f"LINK  : "
+                f"{item.get('link')}"
             )
 
             print()
@@ -5973,11 +5979,12 @@ def audit_content_duplicates() -> None:
     print("=" * 70)
 
     print(
-        f"Total artikel            : {len(articles)}"
+        f"Total artikel              : "
+        f"{len(articles)}"
     )
 
     print(
-        f"Kelompok duplicate title : "
+        f"Kelompok duplicate title   : "
         f"{len(duplicate_titles)}"
     )
 
