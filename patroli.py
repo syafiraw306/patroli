@@ -1701,7 +1701,21 @@ def find_positive_context(
 
         contexts.append(sentence)
 
-    return contexts[:20]
+        # Hilangkan context duplikat
+        unique_contexts = []
+        seen = set()
+        
+        for context in contexts:
+            normalized = context.strip().lower()
+        
+            if normalized in seen:
+                continue
+        
+            seen.add(normalized)
+            unique_contexts.append(context)
+        
+        return unique_contexts[:20]
+
 
 def find_official_activity_context(
     title: str,
@@ -1775,8 +1789,22 @@ def find_official_activity_context(
             continue
 
         contexts.append(sentence)
+        contexts.append(sentence)
 
-    return contexts[:20]
+        # Hilangkan context duplikat
+        unique_contexts = []
+        seen = set()
+        
+        for context in contexts:
+            normalized = context.strip().lower()
+        
+            if normalized in seen:
+                continue
+        
+            seen.add(normalized)
+            unique_contexts.append(context)
+        
+        return unique_contexts[:20]
 
 
 
