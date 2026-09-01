@@ -6726,10 +6726,11 @@ def main() -> None:
         return
 
     if args.audit_event_duplicates:
-
-        audit_event_duplicates()
+        articles = get_all_articles()
+        audit_event_duplicates(articles)
 
         return
+
 
     # --------------------------------------------------------
     # AUDIT EXACT DUPLICATES
