@@ -1362,8 +1362,19 @@ def sentence_contains_internal_actor(
     sentence: str,
 ) -> bool:
     """
-    Mengecek apakah kalimat menyebut aktor internal
-    seperti Kajari, jaksa, Kasi, atau unsur internal lainnya.
+    Aktor internal hanya dianggap terkait apabila:
+
+    1. Ada aktor kejaksaan, DAN
+    2. Kalimat secara eksplisit menyebut satker target.
+
+    Contoh TRUE:
+    - Kajari Deli Serdang diperiksa Kejagung.
+    - Jaksa Kejari Deli Serdang diperiksa.
+
+    Contoh FALSE:
+    - Kajari Sergai diamankan.
+    - Jaksa Madina diperiksa.
+    - Kajari Palas dicopot.
     """
 
     text = normalize_text(
@@ -1373,7 +1384,8 @@ def sentence_contains_internal_actor(
     if not text:
         return False
 
-    return any(
+    # Harus ada aktor kejaksaan
+    has_actor = any(
         re.search(
             pattern,
             text,
@@ -1383,22 +1395,55 @@ def sentence_contains_internal_actor(
         if pattern
     )
 
+    if not has_actor:
+        return False
 
-def sentence_contains_satker_institution(
+    # WAJIB terkait satker target
+    has_target_satker = sentence_contains_satker(
+        text
+    )
+
+    return has_target_satker
+
+
+def sentence_contains_satker(
     sentence: str,
 ) -> bool:
+    """
+    Mengecek apakah kalimat menyebut satker target
+    menggunakan word boundary.
+    """
 
-    text = sentence.lower()
+    text = normalize_text(
+        sentence
+    ).lower()
 
-    return any(
-        re.search(
+    if not text:
+        return False
+
+    for keyword in TARGET_KEJARI_KEYWORDS:
+
+        keyword_clean = normalize_text(
+            keyword
+        ).lower()
+
+        if not keyword_clean:
+            continue
+
+        pattern = (
+            r"(?<!\w)"
+            + re.escape(keyword_clean)
+            + r"(?!\w)"
+        )
+
+        if re.search(
             pattern,
             text,
-            re.I,
-        )
-        for pattern
-        in SATKER_INSTITUTION_PATTERNS
-    )
+            flags=re.I,
+        ):
+            return True
+
+    return False
 
 
 def get_satker_context_sentences(
