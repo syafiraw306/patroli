@@ -182,47 +182,84 @@ SATKER_INSTITUTION_PATTERNS = [
 
 POSITIVE_ACTION_PATTERNS = [
 
-    # keberhasilan
+    # ========================================================
+    # KEBERHASILAN
+    # ========================================================
+
     r"\bberhasil\s+(?:mengungkap|mengamankan|menangkap|menyita|membongkar)",
     r"\bberhasil\s+.*?\bmenangkap\b",
     r"\bberhasil\s+.*?\bmengamankan\b",
     r"\bberhasil\s+.*?\bmenyita\b",
     r"\bberhasil\s+.*?\bmengungkap\b",
 
-    # pengungkapan
+
+    # ========================================================
+    # PENGUNGKAPAN KASUS
+    # ========================================================
+
     r"\bmengungkap\s+(?:kasus|perkara)\b",
     r"\bungkap\s+(?:kasus|perkara)\b",
     r"\bmengungkap\s+.*?\bkasus\b",
     r"\bmembongkar\s+.*?\bkasus\b",
 
-    # penangkapan
+
+    # ========================================================
+    # PENANGKAPAN
+    # ========================================================
+
     r"\bmenangkap\s+(?:tersangka|pelaku)\b",
     r"\bmenangkap\s+.*?\btersangka\b",
     r"\bmengamankan\s+(?:tersangka|pelaku)\b",
     r"\bmengamankan\s+.*?\btersangka\b",
 
-    # penyitaan
+
+    # ========================================================
+    # PENYITAAN
+    # ========================================================
+
     r"\bmenyita\s+(?:barang bukti|aset)\b",
     r"\bmenyita\s+.*?\bbarang bukti\b",
     r"\bmenyita\s+.*?\baset\b",
     r"\bsita\s+(?:barang bukti|aset)\b",
 
-    # penetapan tersangka
+
+    # ========================================================
+    # PENETAPAN TERSANGKA
+    # ========================================================
+
     r"\bmenetapkan\s+.*?\bsebagai\s+tersangka\b",
     r"\bditetapkan\s+.*?\bsebagai\s+tersangka\b",
 
 
+    # ========================================================
+    # PENYIDIKAN / PENYELIDIKAN
+    # ========================================================
+    #
+    # TIDAK DIMASUKKAN SEBAGAI POSITIF.
+    #
+    # "melakukan penyidikan"
+    # "melakukan penyelidikan"
+    #
+    # → NETRAL
+
+
+    # ========================================================
+    # PENUNTUTAN
+    # ========================================================
+
     r"\bmenuntut\s+.*?\bdi\s+persidangan\b",
     r"\bmembacakan\s+tuntutan\b",
 
-    # eksekusi
+
+    # ========================================================
+    # EKSEKUSI
+    # ========================================================
+
     r"\bmelaksanakan\s+eksekusi\b",
     r"\bmelakukan\s+eksekusi\b",
     r"\beksekusi\s+.*?\bputusan\b",
     r"\beksekusi\s+.*?\bterpidana\b",
 ]
-
-
 # ============================================================
 # KEGIATAN RESMI
 # ============================================================
@@ -288,6 +325,14 @@ OFFICIAL_ACTIVITY_PATTERNS = [
     r"\bperesmian\b",
 
     # ========================================================
+    # SERAH TERIMA JABATAN
+    # ========================================================
+    
+    r"\bsertijab\b",
+    r"\bserah\s+terima\s+jabatan\b",
+    r"\bserah\s+terima\b",
+
+    # ========================================================
     # KEGIATAN SOSIAL / KEMASYARAKATAN
     # ========================================================
 
@@ -316,6 +361,10 @@ OFFICIAL_ACTIVITY_PATTERNS = [
     r"\bmemimpin rapat\b",
     r"\bmemimpin apel\b",
     r"\bmemimpin upacara\b",
+
+    # MEMIMPIN KEGIATAN
+    r"\bpimpin\b",
+    r"\bmemimpin\b",
 ]
 
 
@@ -339,43 +388,48 @@ NEGATIVE_STRONG_PATTERNS = [
     # ========================================================
     # KAJARI / KEPALA KEJAKSAAN SEBAGAI PIHAK BERMASALAH
     # ========================================================
-
+    
     r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
     r"\b(?:ditangkap|diamankan|ditetapkan\s+sebagai\s+tersangka|"
     r"menjadi\s+tersangka|dijadikan\s+tersangka|terdakwa|terpidana)\b",
-
-    r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
+    
+    r"\b(?:kajari|kepala kejaksaan)\b.{0,100}"
+    r"\b(?:diduga\s+terlibat|terlibat\s+dalam|"
+    r"diduga\s+menerima|menerima|"
+    r"terjerat|tersangkut)\b.{0,80}"
     r"\b(?:suap|gratifikasi|korupsi|pungli|pemerasan|penggelapan)\b",
-
+    
     r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
     r"\b(?:diperiksa|dipanggil|dilaporkan|diadukan|"
     r"disidang|diadili)\b",
-
+    
     r"\b(?:kajari|kepala kejaksaan)\b.{0,180}"
     r"\b(?:dicopot|diberhentikan|dimutasi\s+karena)\b",
-
-
+    
+    
     # ========================================================
     # JAKSA / PEGAWAI INTERNAL SEBAGAI PIHAK BERMASALAH
     # ========================================================
-
+    
     r"\b(?:jaksa|jaksa penuntut umum|pegawai kejaksaan|"
     r"pejabat kejaksaan|petugas kejaksaan|anggota kejaksaan)\b"
     r".{0,180}"
     r"\b(?:ditangkap|diamankan|ditetapkan\s+sebagai\s+tersangka|"
     r"menjadi\s+tersangka|dijadikan\s+tersangka|terdakwa|terpidana)\b",
-
+    
     r"\b(?:jaksa|pegawai kejaksaan|pejabat kejaksaan|"
-    r"petugas kejaksaan)\b.{0,180}"
+    r"petugas kejaksaan)\b.{0,100}"
+    r"\b(?:diduga\s+terlibat|terlibat\s+dalam|"
+    r"diduga\s+menerima|menerima|"
+    r"terjerat|tersangkut)\b.{0,80}"
     r"\b(?:suap|gratifikasi|korupsi|pungli|pemerasan|"
     r"penggelapan)\b",
-
+    
     r"\b(?:jaksa|pegawai kejaksaan|pejabat kejaksaan|"
     r"petugas kejaksaan)\b.{0,180}"
     r"\b(?:dilaporkan|diadukan|diperiksa|dipanggil|"
     r"disidang|diadili)\b",
-
-
+    
     # ========================================================
     # KEJARI SEBAGAI INSTITUSI YANG DITUDUH
     # ========================================================
@@ -1539,16 +1593,15 @@ def find_positive_context(
 ) -> List[str]:
     """
     Mencari konteks positif yang benar-benar berkaitan
-    dengan satker atau aktor internal.
+    dengan satker target atau aktor internal target.
 
     Positif mencakup:
-    1. Keberhasilan penegakan hukum
-       - berhasil mengungkap
-       - berhasil menangkap
-       - menyita
-       - memusnahkan barang bukti
-       - menghentikan perkara melalui RJ
-       - dan pola keberhasilan lainnya
+
+    1. Keberhasilan nyata
+       - berhasil mengungkap kasus
+       - berhasil menangkap tersangka
+       - berhasil menyita barang bukti/aset
+       - membongkar kasus
 
     2. Kegiatan resmi satker
        - apel
@@ -1557,11 +1610,14 @@ def find_positive_context(
        - kunjungan
        - penyuluhan
        - pelantikan
+       - sertijab
        - silaturahmi
-       - kegiatan resmi lainnya
 
-    Kalimat yang mengandung negasi tidak dianggap positif.
-    Kalimat tetap harus berkaitan dengan satker/internal actor.
+    Catatan:
+    - Penyidikan/penyelidikan tidak otomatis positif.
+    - Kalimat dengan negasi tidak dianggap positif.
+    - Kalimat yang menunjukkan aktor target sebagai
+      pihak bermasalah tidak dianggap positif.
     """
 
     sentences = split_sentences(
@@ -1573,20 +1629,34 @@ def find_positive_context(
     for sentence in sentences:
 
         # ----------------------------------------------------
-        # Abaikan kalimat yang mengandung negasi.
-        #
-        # Contoh:
-        # "Kejari tidak berhasil menangkap..."
-        # tidak boleh dianggap positif.
+        # 1. ABAIKAN NEGASI
         # ----------------------------------------------------
 
-        if sentence_has_negation(
+        if sentence_has_negation(sentence):
+            continue
+
+        # ----------------------------------------------------
+        # 2. HARUS TERKAIT SATKER / AKTOR INTERNAL TARGET
+        # ----------------------------------------------------
+
+        has_satker = sentence_contains_satker(
             sentence
+        )
+
+        has_internal_actor = (
+            sentence_contains_internal_actor(
+                sentence
+            )
+        )
+
+        if not (
+            has_satker
+            or has_internal_actor
         ):
             continue
 
         # ----------------------------------------------------
-        # CEK AKSI POSITIF
+        # 3. CEK APAKAH ADA AKSI POSITIF
         # ----------------------------------------------------
 
         positive_hits = regex_hits(
@@ -1595,7 +1665,7 @@ def find_positive_context(
         )
 
         # ----------------------------------------------------
-        # CEK KEGIATAN RESMI
+        # 4. CEK APAKAH ADA KEGIATAN RESMI
         # ----------------------------------------------------
 
         official_hits = regex_hits(
@@ -1603,10 +1673,7 @@ def find_positive_context(
             OFFICIAL_ACTIVITY_PATTERNS,
         )
 
-        # ----------------------------------------------------
-        # Tidak ada indikator positif sama sekali.
-        # ----------------------------------------------------
-
+        # Tidak ada indikator positif.
         if not (
             positive_hits
             or official_hits
@@ -1614,26 +1681,27 @@ def find_positive_context(
             continue
 
         # ----------------------------------------------------
-        # Positive harus berkaitan langsung dengan satker
-        # atau aktor internal.
+        # 5. CEK NEGATIF KUAT
+        #
+        # Jika aktor target adalah pihak bermasalah,
+        # jangan masukkan sebagai positif.
         # ----------------------------------------------------
 
-        if not (
-            sentence_contains_satker(
-                sentence
-            )
-            or sentence_contains_internal_actor(
-                sentence
-            )
-        ):
-            continue
-
-        contexts.append(
-            sentence
+        negative_hits = regex_hits(
+            sentence,
+            NEGATIVE_STRONG_PATTERNS,
         )
 
-    return contexts[:20]
+        if negative_hits:
+            continue
 
+        # ----------------------------------------------------
+        # 6. SIMPAN KONTEXT POSITIF
+        # ----------------------------------------------------
+
+        contexts.append(sentence)
+
+    return contexts[:20]
 
 def find_official_activity_context(
     title: str,
@@ -1646,21 +1714,7 @@ def find_official_activity_context(
     1. Tidak mengandung negasi.
     2. Mengandung pola kegiatan resmi.
     3. Berkaitan dengan satker atau aktor internal.
-
-    Contoh yang dapat dianggap positif:
-    - Kejari Deli Serdang menggelar apel.
-    - Kajari Deli Serdang menghadiri rapat.
-    - Kejari Deli Serdang melaksanakan FGD.
-    - Kajari Deli Serdang menerima kunjungan.
-    - Jaksa Kejari Deli Serdang memberikan penyuluhan.
-
-    Tidak dianggap positif:
-    - Polres menggelar apel.
-    - Pemkab mengadakan rapat.
-    - Instansi lain melakukan kegiatan.
-
-    Kecuali kalimat tersebut juga secara jelas menghubungkan
-    kegiatan dengan satker atau aktor internal.
+    4. Tidak menunjukkan satker/aktor sebagai pihak bermasalah.
     """
 
     sentences = split_sentences(
@@ -1675,9 +1729,24 @@ def find_official_activity_context(
         # NEGASI
         # ----------------------------------------------------
 
-        if sentence_has_negation(
+        if sentence_has_negation(sentence):
+            continue
+
+        # ----------------------------------------------------
+        # HARUS TERKAIT SATKER TARGET
+        # ----------------------------------------------------
+
+        has_satker = sentence_contains_satker(
             sentence
-        ):
+        )
+
+        has_internal_actor = (
+            sentence_contains_internal_actor(
+                sentence
+            )
+        )
+
+        if not (has_satker or has_internal_actor):
             continue
 
         # ----------------------------------------------------
@@ -1693,25 +1762,21 @@ def find_official_activity_context(
             continue
 
         # ----------------------------------------------------
-        # HUBUNGAN DENGAN SATKER / AKTOR INTERNAL
+        # JANGAN ANGKAT KEGIATAN RESMI JIKA
+        # AKTOR INTERNAL ADALAH PIHAK BERMASALAH
         # ----------------------------------------------------
 
-        if not (
-            sentence_contains_satker(
-                sentence
-            )
-            or sentence_contains_internal_actor(
-                sentence
-            )
-        ):
-            continue
-
-        contexts.append(
-            sentence
+        strong_negative_hits = regex_hits(
+            sentence,
+            NEGATIVE_STRONG_PATTERNS,
         )
 
-    return contexts[:20]
+        if strong_negative_hits:
+            continue
 
+        contexts.append(sentence)
+
+    return contexts[:20]
 
 
 
