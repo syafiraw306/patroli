@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -2587,90 +2588,274 @@ def parse_google_news_feed(
 # COLLECT
 # ============================================================
 
-def collect_candidates() -> List[Dict[str, Any]]:
 
-    all_rows: Dict[
-        str,
-        Dict[str, Any],
-    ] = {}
+def collect_candidates() -> List[Dict[str, Any]]:
+    """
+    Mengumpulkan kandidat artikel dari seluruh SEARCH_TARGETS.
+
+    Fungsi ini hanya bertugas:
+    - mengambil hasil RSS
+    - normalisasi URL
+    - dedupe kandidat berdasarkan URL RSS
+    - mempertahankan kandidat dengan metadata/deskripsi paling lengkap
+
+    Filter tahun, relevansi satker, konten, dan klasifikasi
+    dilakukan di process_candidate().
+    """
+
+    all_rows: Dict[str, Dict[str, Any]] = {}
+
+    total_raw = 0
+    skipped_empty_link = 0
+    replaced_with_better = 0
 
     for query in SEARCH_TARGETS:
 
         print(
-            f"[RSS] Mencari: "
-            f"{query}"
+            f"[RSS] Mencari: {query}"
         )
 
-        rows = (
-            parse_google_news_feed(
-                query
+        try:
+            rows = parse_google_news_feed(query)
+
+        except Exception as exc:
+
+            print(
+                f"[RSS ERROR] "
+                f"{query} -> "
+                f"{type(exc).__name__}: "
+                f"{exc}"
             )
-        )
+
+            continue
+
+        if not rows:
+            continue
+
+        total_raw += len(rows)
 
         for row in rows:
 
+            if not isinstance(row, dict):
+                continue
+
+            # ------------------------------------------------
+            # NORMALISASI LINK
+            # ------------------------------------------------
+
+            raw_link = row.get("link")
+
             link = normalize_url(
-                row.get("link")
+                raw_link
             )
 
             if not link:
+
+                skipped_empty_link += 1
+
                 continue
 
-            # Dedupe sebelum proses.
+            # Simpan URL yang sudah dinormalisasi.
+            row["link"] = link
+
+            # ------------------------------------------------
+            # NORMALISASI DATA DASAR
+            # ------------------------------------------------
+
+            row["title"] = normalize_text(
+                row.get("title")
+            )
+
+            row["rss_description"] = normalize_text(
+                row.get("rss_description")
+            )
+
+            row["source"] = (
+                normalize_text(
+                    row.get("source")
+                )
+                or "Google News"
+            )
+
+            # ------------------------------------------------
+            # HITUNG KELENGKAPAN KANDIDAT
+            # ------------------------------------------------
+            #
+            # Kandidat yang mempunyai:
+            # - title
+            # - description
+            # - published_date
+            # - source
+            #
+            # dianggap lebih lengkap.
+            # ------------------------------------------------
+
+            current_score = (
+                bool(row.get("title"))
+                + bool(row.get("rss_description"))
+                + bool(row.get("published_date"))
+                + bool(row.get("source"))
+            )
+
+            current_description_length = len(
+                row.get(
+                    "rss_description",
+                    ""
+                )
+            )
+
+            # ------------------------------------------------
+            # DEDUPE DALAM HASIL RSS
+            # ------------------------------------------------
+
             if link not in all_rows:
 
-                all_rows[
-                    link
-                ] = row
+                row["_candidate_score"] = (
+                    current_score
+                )
 
-            else:
+                row["_description_length"] = (
+                    current_description_length
+                )
 
-                # Jika duplicate dari query berbeda,
-                # ambil data yang lebih lengkap.
-                existing = all_rows[
-                    link
-                ]
+                all_rows[link] = row
 
-                if (
-                    len(
-                        normalize_text(
-                            row.get(
-                                "rss_description"
-                            )
-                        )
-                    )
-                    >
-                    len(
-                        normalize_text(
-                            existing.get(
-                                "rss_description"
-                            )
-                        )
-                    )
-                ):
+                continue
 
-                    all_rows[
-                        link
-                    ] = row
+            existing = all_rows[link]
+
+            existing_score = (
+                existing.get(
+                    "_candidate_score",
+                    0
+                )
+            )
+
+            existing_description_length = (
+                existing.get(
+                    "_description_length",
+                    0
+                )
+            )
+
+            # ------------------------------------------------
+            # PILIH DATA YANG LEBIH LENGKAP
+            # ------------------------------------------------
+
+            replace = False
+
+            if current_score > existing_score:
+
+                replace = True
+
+            elif (
+                current_score == existing_score
+                and current_description_length
+                > existing_description_length
+            ):
+
+                replace = True
+
+            if replace:
+
+                row["_candidate_score"] = (
+                    current_score
+                )
+
+                row["_description_length"] = (
+                    current_description_length
+                )
+
+                all_rows[link] = row
+
+                replaced_with_better += 1
+
+    # --------------------------------------------------------
+    # HAPUS FIELD INTERNAL
+    # --------------------------------------------------------
+
+    candidates = []
+
+    for row in all_rows.values():
+
+        row.pop(
+            "_candidate_score",
+            None
+        )
+
+        row.pop(
+            "_description_length",
+            None
+        )
+
+        candidates.append(
+            row
+        )
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
 
     print(
-        f"[PATROLI] "
-        f"Kandidat unik: "
-        f"{len(all_rows)}"
+        f"[RSS] Total hasil mentah     : "
+        f"{total_raw}"
     )
 
-    return list(
-        all_rows.values()
+    print(
+        f"[RSS] Link kosong dilewati   : "
+        f"{skipped_empty_link}"
     )
+
+    print(
+        f"[RSS] Kandidat setelah dedupe: "
+        f"{len(candidates)}"
+    )
+
+    print(
+        f"[RSS] Kandidat diganti data "
+        f"lebih lengkap               : "
+        f"{replaced_with_better}"
+    )
+
+    return candidates
+
 
 
 # ============================================================
 # PROCESS CANDIDATE
 # ============================================================
 
+
 def process_candidate(
     candidate: Dict[str, Any],
 ) -> Dict[str, Any]:
+    """
+    Memproses satu kandidat artikel.
+
+    Tahapan:
+    1. Normalisasi link
+    2. Filter tanggal RSS
+    3. Fetch halaman
+    4. Ekstraksi konten
+    5. Filter panjang konten
+    6. Cek relevansi satker
+    7. Validasi tanggal
+    8. Klasifikasi
+    9. Membentuk record artikel
+
+    Setiap kegagalan mengembalikan reason yang jelas
+    agar dapat dihitung pada run log.
+    """
+
+    result = {
+        "ok": False,
+        "article": None,
+        "reason": "",
+    }
+
+    # ========================================================
+    # BASIC DATA
+    # ========================================================
 
     title = normalize_text(
         candidate.get("title")
@@ -2681,16 +2866,12 @@ def process_candidate(
     )
 
     rss_date = parse_date_safe(
-        candidate.get(
-            "published_date"
-        )
+        candidate.get("published_date")
     )
 
-    result = {
-        "ok": False,
-        "article": None,
-        "reason": "",
-    }
+    # ========================================================
+    # LINK
+    # ========================================================
 
     if not rss_link:
 
@@ -2700,9 +2881,9 @@ def process_candidate(
 
         return result
 
-    # --------------------------------------------------------
-    # FILTER RSS
-    # --------------------------------------------------------
+    # ========================================================
+    # FILTER TANGGAL RSS
+    # ========================================================
 
     if (
         rss_date
@@ -2717,15 +2898,26 @@ def process_candidate(
 
         return result
 
-    # --------------------------------------------------------
+    # ========================================================
     # FETCH
-    # --------------------------------------------------------
+    # ========================================================
 
-    final_url, raw_html = (
-        fetch_webpage_content(
-            rss_link
+    try:
+
+        final_url, raw_html = (
+            fetch_webpage_content(
+                rss_link
+            )
         )
-    )
+
+    except Exception as exc:
+
+        result["reason"] = (
+            f"fetch gagal: "
+            f"{type(exc).__name__}"
+        )
+
+        return result
 
     final_url = normalize_url(
         final_url or rss_link
@@ -2735,26 +2927,66 @@ def process_candidate(
 
         final_url = rss_link
 
-    # --------------------------------------------------------
-    # CONTENT
-    # --------------------------------------------------------
+    # ========================================================
+    # VALIDASI HTML
+    # ========================================================
 
-    content = (
-        extract_article_text(
-            raw_html
+    if not raw_html:
+
+        result["reason"] = (
+            "halaman kosong"
         )
-    )
+
+        return result
+
+    # ========================================================
+    # CONTENT
+    # ========================================================
+
+    try:
+
+        content = (
+            extract_article_text(
+                raw_html
+            )
+        )
+
+    except Exception as exc:
+
+        result["reason"] = (
+            f"ekstraksi konten gagal: "
+            f"{type(exc).__name__}"
+        )
+
+        return result
+
+    # ========================================================
+    # FALLBACK RSS DESCRIPTION
+    # ========================================================
 
     if (
         len(content)
         < MIN_CONTENT_LENGTH
     ):
 
-        content = normalize_text(
-            candidate.get(
-                "rss_description"
+        rss_description = (
+            normalize_text(
+                candidate.get(
+                    "rss_description"
+                )
             )
         )
+
+        if (
+            len(rss_description)
+            >= MIN_CONTENT_LENGTH
+        ):
+
+            content = rss_description
+
+    # ========================================================
+    # KONTEN TERLALU PENDEK
+    # ========================================================
 
     if (
         len(content)
@@ -2767,9 +2999,9 @@ def process_candidate(
 
         return result
 
-    # --------------------------------------------------------
-    # RELEVANCE
-    # --------------------------------------------------------
+    # ========================================================
+    # RELEVANCE SATKER
+    # ========================================================
 
     if not check_satker_relevance(
         title,
@@ -2782,9 +3014,9 @@ def process_candidate(
 
         return result
 
-    # --------------------------------------------------------
-    # DATE
-    # --------------------------------------------------------
+    # ========================================================
+    # TANGGAL FINAL
+    # ========================================================
 
     published = (
         rss_date
@@ -2803,20 +3035,31 @@ def process_candidate(
 
         return result
 
-    # --------------------------------------------------------
+    # ========================================================
     # CLASSIFICATION
-    # --------------------------------------------------------
+    # ========================================================
 
-    classification = (
-        classify_article(
-            title,
-            content,
+    try:
+
+        classification = (
+            classify_article(
+                title,
+                content,
+            )
         )
-    )
 
-    # --------------------------------------------------------
+    except Exception as exc:
+
+        result["reason"] = (
+            f"classification gagal: "
+            f"{type(exc).__name__}"
+        )
+
+        return result
+
+    # ========================================================
     # ARTICLE
-    # --------------------------------------------------------
+    # ========================================================
 
     article = {
         "title": title,
@@ -2918,10 +3161,16 @@ def process_candidate(
         ),
     }
 
+    # ========================================================
+    # SUCCESS
+    # ========================================================
+
     result["ok"] = True
     result["article"] = article
+    result["reason"] = "valid"
 
     return result
+
 
 
 # ============================================================
@@ -3125,48 +3374,87 @@ def reclassify_all() -> Dict[str, int]:
 # RUN ONCE
 # ============================================================
 
+
+# ============================================================
+# RUN ONCE
+# ============================================================
+
 def run_once() -> Dict[str, Any]:
 
     started = time.perf_counter()
 
     print("=" * 70)
-    print(
-        "MEMULAI PATROLI SIBER"
-    )
+    print("MEMULAI PATROLI SIBER")
     print("=" * 70)
 
-    existing_articles = (
-        get_all_articles()
-    )
+    # ========================================================
+    # DATABASE AWAL
+    # ========================================================
+
+    try:
+        existing_articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[DATABASE ERROR] "
+            f"Gagal mengambil database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
 
     existing_links = {
-        normalize_url(
-            article.get(
-                "link"
-            )
-        )
-        for article
-        in existing_articles
-        if normalize_url(
-            article.get(
-                "link"
-            )
-        )
+        normalize_url(article.get("link"))
+        for article in existing_articles
+        if normalize_url(article.get("link"))
     }
 
     print(
         f"[DATABASE] "
-        f"Link sebelum run: "
+        f"Total artikel sebelum run: "
+        f"{len(existing_articles)}"
+    )
+
+    print(
+        f"[DATABASE] "
+        f"Link unik sebelum run: "
         f"{len(existing_links)}"
     )
 
-    candidates = (
-        collect_candidates()
-    )
+    # ========================================================
+    # COLLECT CANDIDATES
+    # ========================================================
+
+    try:
+        candidates = collect_candidates()
+
+    except Exception as exc:
+
+        print(
+            f"[COLLECT ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
+
+    # ========================================================
+    # PROCESS CANDIDATES
+    # ========================================================
 
     valid_articles = []
 
-    failed = 0
+    filtered_count = 0
+
+    worker_errors = 0
+
+    filter_reasons: Dict[str, int] = {}
 
     with ThreadPoolExecutor(
         max_workers=max(
@@ -3180,41 +3468,27 @@ def run_once() -> Dict[str, Any]:
                 process_candidate,
                 candidate,
             )
-            for candidate
-            in candidates
+            for candidate in candidates
         ]
 
-        for future in as_completed(
-            futures
-        ):
+        for future in as_completed(futures):
 
             try:
 
-                result = (
-                    future.result()
-                )
+                result = future.result()
 
-                if result.get(
-                    "ok"
-                ):
+                if result.get("ok"):
 
-                    article = (
-                        result.get(
-                            "article"
-                        )
-                    )
+                    article = result.get("article")
 
                     if article:
-
-                        valid_articles.append(
-                            article
-                        )
+                        valid_articles.append(article)
 
                 else:
 
-                    failed += 1
+                    filtered_count += 1
 
-                    reason = (
+                    reason = normalize_text(
                         result.get(
                             "reason",
                             "",
@@ -3223,6 +3497,14 @@ def run_once() -> Dict[str, Any]:
 
                     if reason:
 
+                        filter_reasons[reason] = (
+                            filter_reasons.get(
+                                reason,
+                                0,
+                            )
+                            + 1
+                        )
+
                         print(
                             f"[FILTER] "
                             f"{reason}"
@@ -3230,7 +3512,7 @@ def run_once() -> Dict[str, Any]:
 
             except Exception as exc:
 
-                failed += 1
+                worker_errors += 1
 
                 print(
                     f"[WORKER ERROR] "
@@ -3238,24 +3520,66 @@ def run_once() -> Dict[str, Any]:
                     f"{exc}"
                 )
 
+    print()
+    print(
+        f"[PATROLI] "
+        f"Kandidat: "
+        f"{len(candidates)}"
+    )
+
     print(
         f"[PATROLI] "
         f"Artikel valid: "
         f"{len(valid_articles)}"
     )
 
+    print(
+        f"[PATROLI] "
+        f"Tidak lolos filter: "
+        f"{filtered_count}"
+    )
+
+    print(
+        f"[PATROLI] "
+        f"Worker error: "
+        f"{worker_errors}"
+    )
+
+    # ========================================================
+    # FILTER SUMMARY
+    # ========================================================
+
+    if filter_reasons:
+
+        print()
+        print(
+            "[PATROLI] RINGKASAN FILTER"
+        )
+        print("-" * 70)
+
+        for reason, count in sorted(
+            filter_reasons.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        ):
+
+            print(
+                f"{reason}: {count}"
+            )
+
     # ========================================================
     # DEDUPE HASIL RUN
     # ========================================================
 
-    unique_articles = {}
+    unique_articles: Dict[
+        str,
+        Dict[str, Any],
+    ] = {}
 
     for article in valid_articles:
 
         link = normalize_url(
-            article.get(
-                "link"
-            )
+            article.get("link")
         )
 
         if not link:
@@ -3263,36 +3587,30 @@ def run_once() -> Dict[str, Any]:
 
         if link not in unique_articles:
 
-            unique_articles[
-                link
-            ] = article
+            unique_articles[link] = article
 
         else:
 
-            existing = (
-                unique_articles[
-                    link
-                ]
+            existing = unique_articles[link]
+
+            current_content_length = len(
+                normalize_text(
+                    article.get("content")
+                )
             )
 
-            # Pertahankan konten lebih panjang.
-            if len(
+            existing_content_length = len(
                 normalize_text(
-                    article.get(
-                        "content"
-                    )
+                    existing.get("content")
                 )
-            ) > len(
-                normalize_text(
-                    existing.get(
-                        "content"
-                    )
-                )
+            )
+
+            if (
+                current_content_length
+                > existing_content_length
             ):
 
-                unique_articles[
-                    link
-                ] = article
+                unique_articles[link] = article
 
     valid_articles = list(
         unique_articles.values()
@@ -3310,23 +3628,19 @@ def run_once() -> Dict[str, Any]:
 
     saved_count = 0
     save_failed = 0
-
     new_articles = []
 
     for article in valid_articles:
 
         link = normalize_url(
-            article.get(
-                "link"
-            )
+            article.get("link")
         )
 
         if not link:
             continue
 
         was_existing = (
-            link
-            in existing_links
+            link in existing_links
         )
 
         print(
@@ -3334,6 +3648,10 @@ def run_once() -> Dict[str, Any]:
             f"{'LAMA' if was_existing else 'BARU'} | "
             f"{link}"
         )
+
+        # ----------------------------------------------------
+        # CEK LANGSUNG KE DATABASE
+        # ----------------------------------------------------
 
         if not was_existing:
 
@@ -3358,12 +3676,14 @@ def run_once() -> Dict[str, Any]:
                     f"{exc}"
                 )
 
+        # ----------------------------------------------------
+        # UPSERT
+        # ----------------------------------------------------
+
         try:
-    
-            saved = (
-                upsert_article(
-                    article
-                )
+
+            saved = upsert_article(
+                article
             )
 
             if saved is None:
@@ -3397,6 +3717,7 @@ def run_once() -> Dict[str, Any]:
                 f"{exc}"
             )
 
+    print()
     print(
         f"[DATABASE] "
         f"Berhasil disimpan/update: "
@@ -3405,7 +3726,7 @@ def run_once() -> Dict[str, Any]:
 
     print(
         f"[DATABASE] "
-        f"Gagal: "
+        f"Gagal simpan: "
         f"{save_failed}"
     )
 
@@ -3429,22 +3750,29 @@ def run_once() -> Dict[str, Any]:
             f"{len(new_articles)}"
         )
 
-        for article in (
-            new_articles
-        ):
+        for article in new_articles:
 
-            if not send_alert_if_needed(
-                article
-            ):
+            try:
 
-                continue
+                if not send_alert_if_needed(
+                    article
+                ):
+                    continue
 
-            telegram_count += 1
+                telegram_count += 1
 
-            print(
-                "[TELEGRAM] Terkirim: "
-                f"{article.get('title', '')[:100]}"
-            )
+                print(
+                    "[TELEGRAM] Terkirim: "
+                    f"{article.get('title', '')[:100]}"
+                )
+
+            except Exception as exc:
+
+                print(
+                    f"[TELEGRAM ERROR] "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
 
     else:
 
@@ -3458,13 +3786,25 @@ def run_once() -> Dict[str, Any]:
     # RECLASSIFICATION
     # ========================================================
 
-    counts = (
-        reclassify_all()
-    )
+    counts = reclassify_all()
 
-    final_articles = (
-        get_all_articles()
-    )
+    # ========================================================
+    # FINAL DATABASE
+    # ========================================================
+
+    try:
+
+        final_articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[DATABASE ERROR] "
+            f"Gagal mengambil database akhir: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        final_articles = []
 
     duration = round(
         time.perf_counter()
@@ -3477,69 +3817,59 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
 
     log = {
-        "duration_seconds": (
-            duration
+
+        "duration_seconds": duration,
+
+        "candidate_count": len(
+            candidates
         ),
 
-        "candidate_count": (
-            len(candidates)
+        "valid_count": len(
+            valid_articles
         ),
 
-        "valid_count": (
-            len(valid_articles)
+        "filtered_count": filtered_count,
+
+        "worker_error_count": worker_errors,
+
+        "saved_count": saved_count,
+
+        "save_failed_count": save_failed,
+
+        "new_article_count": len(
+            new_articles
         ),
 
-        "saved_count": (
-            saved_count
+        "reclassified_count": len(
+            final_articles
         ),
 
-        "failed_count": (
-            failed
-            + save_failed
+        "negative_count": counts.get(
+            "Negatif Kuat",
+            0,
         ),
 
-        "reclassified_count": (
-            len(final_articles)
+        "handling_count": counts.get(
+            "Perlu Penanganan",
+            0,
         ),
 
-        "negative_count": (
-            counts.get(
-                "Negatif Kuat",
-                0,
-            )
+        "neutral_count": counts.get(
+            "Netral",
+            0,
         ),
 
-        "handling_count": (
-            counts.get(
-                "Perlu Penanganan",
-                0,
-            )
+        "positive_count": counts.get(
+            "Positif",
+            0,
         ),
 
-        "neutral_count": (
-            counts.get(
-                "Netral",
-                0,
-            )
-        ),
-
-        "positive_count": (
-            counts.get(
-                "Positif",
-                0,
-            )
-        ),
-
-        "telegram_count": (
-            telegram_count
-        ),
+        "telegram_count": telegram_count,
 
         "status": "Selesai",
     }
 
-    save_run_log(
-        log
-    )
+    save_run_log(log)
 
     # ========================================================
     # SUMMARY
@@ -3547,74 +3877,83 @@ def run_once() -> Dict[str, Any]:
 
     print()
     print("=" * 70)
-    print(
-        "PATROLI SELESAI"
-    )
+    print("PATROLI SELESAI")
     print("=" * 70)
 
     print(
-        f"Durasi            : "
+        f"Durasi                 : "
         f"{duration} detik"
     )
 
     print(
-        f"Kandidat          : "
+        f"Kandidat               : "
         f"{len(candidates)}"
     )
 
     print(
-        f"Artikel valid     : "
+        f"Artikel valid          : "
         f"{len(valid_articles)}"
     )
 
     print(
-        f"Berhasil disimpan : "
+        f"Tidak lolos filter    : "
+        f"{filtered_count}"
+    )
+
+    print(
+        f"Worker error           : "
+        f"{worker_errors}"
+    )
+
+    print(
+        f"Berhasil disimpan      : "
         f"{saved_count}"
     )
 
     print(
-        f"Gagal             : "
-        f"{failed + save_failed}"
+        f"Gagal simpan           : "
+        f"{save_failed}"
     )
 
     print(
-        f"Artikel baru      : "
+        f"Artikel baru           : "
         f"{len(new_articles)}"
     )
 
     print(
-        f"Database          : "
+        f"Database               : "
         f"{len(final_articles)}"
     )
 
     print(
-        f"Negatif Kuat      : "
+        f"Negatif Kuat           : "
         f"{counts.get('Negatif Kuat', 0)}"
     )
 
     print(
-        f"Perlu Penanganan  : "
+        f"Perlu Penanganan       : "
         f"{counts.get('Perlu Penanganan', 0)}"
     )
 
     print(
-        f"Netral            : "
+        f"Netral                 : "
         f"{counts.get('Netral', 0)}"
     )
 
     print(
-        f"Positif           : "
+        f"Positif                : "
         f"{counts.get('Positif', 0)}"
     )
 
     print(
-        f"Telegram terkirim : "
+        f"Telegram terkirim      : "
         f"{telegram_count}"
     )
 
     print("=" * 70)
 
     return log
+
 
 
 # ============================================================
@@ -4283,30 +4622,504 @@ def get_dedupe_record_score(
 # ============================================================
 # DEDUPE DATABASE
 # ============================================================
+# ============================================================
+# DEDUPE DATABASE
+# ============================================================
 
 def dedupe_database() -> Dict[str, Any]:
     """Hapus duplicate berdasarkan normalized URL; record terbaik dipertahankan."""
+
     print("=" * 70)
     print("DEDUPE DATABASE - BERDASARKAN LINK")
     print("=" * 70)
+
     try:
         articles = get_all_articles()
+
     except Exception as exc:
-        print(f"[DEDUPE ERROR] Gagal mengambil database: {type(exc).__name__}: {exc}")
-        return {"success": False, "deleted": 0, "failed": 0, "error": str(exc)}
 
-    groups: Dict[str, List[Dict[str, Any]]] = {}
+        print(
+            f"[DEDUPE ERROR] "
+            f"Gagal mengambil database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "success": False,
+            "deleted": 0,
+            "failed": 0,
+            "duplicate_groups": 0,
+            "remaining": -1,
+            "error": str(exc),
+        }
+
+    groups: Dict[
+        str,
+        List[Dict[str, Any]],
+    ] = {}
+
     empty_links = 0
+
+    # --------------------------------------------------------
+    # KELOMPOKKAN BERDASARKAN NORMALIZED URL
+    # --------------------------------------------------------
+
     for article in articles:
-        normalized = normalize_url(article.get("link"))
+
+        normalized = normalize_url(
+            article.get("link")
+        )
+
         if not normalized:
+
             empty_links += 1
+
             continue
-        groups.setdefault(normalized, []).append(article)
 
-    duplicate_groups = {k: v for k, v in groups.items() if len(v) > 1}
-    delete_candidates: List[Dict[str, Any]] = []
+        groups.setdefault(
+            normalized,
+            [],
+        ).append(article)
 
+    duplicate_groups = {
+        link: rows
+        for link, rows
+        in groups.items()
+        if len(rows) > 1
+    }
+
+    delete_candidates: List[
+        Dict[str, Any]
+    ] = []
+
+    # --------------------------------------------------------
+    # SCORE RECORD
+    #
+    # Prioritas:
+    # 1. Content paling lengkap
+    # 2. Ada title
+    # 3. Ada published_date
+    # 4. ID lebih kecil
+    # --------------------------------------------------------
+
+    def record_score(
+        row: Dict[str, Any],
+    ):
+
+        content = normalize_text(
+            row.get("content")
+            or row.get("summary")
+            or ""
+        )
+
+        title = normalize_text(
+            row.get("title")
+        )
+
+        published = normalize_text(
+            row.get("published_date")
+        )
+
+        try:
+
+            article_id = int(
+                row.get("id")
+            )
+
+        except Exception:
+
+            article_id = 10**18
+
+        return (
+            len(content),
+            bool(title),
+            bool(published),
+            -article_id,
+        )
+
+    # --------------------------------------------------------
+    # SUMMARY AWAL
+    # --------------------------------------------------------
+
+    print(
+        f"[DATABASE] Total artikel: "
+        f"{len(articles)}"
+    )
+
+    print(
+        f"[DEDUPE] Link unik: "
+        f"{len(groups)}"
+    )
+
+    print(
+        f"[DEDUPE] Kelompok duplicate: "
+        f"{len(duplicate_groups)}"
+    )
+
+    print(
+        f"[DEDUPE] Artikel duplicate: "
+        f"{sum(len(v) - 1 for v in duplicate_groups.values())}"
+    )
+
+    # --------------------------------------------------------
+    # TENTUKAN RECORD YANG DIPERTAHANKAN
+    # --------------------------------------------------------
+
+    for number, (
+        normalized_link,
+        rows,
+    ) in enumerate(
+        duplicate_groups.items(),
+        start=1,
+    ):
+
+        rows_sorted = sorted(
+            rows,
+            key=record_score,
+            reverse=True,
+        )
+
+        keep = rows_sorted[0]
+
+        duplicates = rows_sorted[1:]
+
+        print()
+        print(
+            f"[DUPLICATE #{number}] "
+            f"{normalized_link}"
+        )
+
+        print(
+            "  KEEP   "
+            f"ID={keep.get('id')} | "
+            f"{normalize_text(keep.get('title'))[:100]}"
+        )
+
+        for row in duplicates:
+
+            print(
+                "  DELETE "
+                f"ID={row.get('id')} | "
+                f"{normalize_text(row.get('title'))[:100]}"
+            )
+
+        delete_candidates.extend(
+            duplicates
+        )
+
+    # --------------------------------------------------------
+    # DELETE
+    # --------------------------------------------------------
+
+    deleted = 0
+    failed = 0
+
+    for row in delete_candidates:
+
+        article_id = row.get("id")
+
+        if article_id is None:
+
+            failed += 1
+
+            print(
+                "[DELETE ERROR] "
+                "ID artikel tidak ditemukan"
+            )
+
+            continue
+
+        try:
+
+            result = delete_article_by_id(
+                article_id
+            )
+
+            if result:
+
+                deleted += 1
+
+            else:
+
+                failed += 1
+
+                print(
+                    "[DELETE ERROR] "
+                    f"Gagal menghapus ID={article_id}"
+                )
+
+        except Exception as exc:
+
+            failed += 1
+
+            print(
+                "[DELETE ERROR] "
+                f"ID={article_id} -> "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    # --------------------------------------------------------
+    # CEK DATABASE SETELAH DEDUPE
+    # --------------------------------------------------------
+
+    try:
+
+        remaining_articles = (
+            get_all_articles()
+        )
+
+        remaining = len(
+            remaining_articles
+        )
+
+    except Exception as exc:
+
+        remaining = -1
+
+        print(
+            "[DEDUPE WARNING] "
+            "Gagal menghitung database setelah "
+            f"dedupe: {type(exc).__name__}: {exc}"
+        )
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 70)
+    print("DEDUPE SELESAI")
+    print("=" * 70)
+
+    print(
+        f"Record sebelum : "
+        f"{len(articles)}"
+    )
+
+    print(
+        f"Link unik      : "
+        f"{len(groups)}"
+    )
+
+    print(
+        f"Kelompok dup.  : "
+        f"{len(duplicate_groups)}"
+    )
+
+    print(
+        f"Berhasil hapus : "
+        f"{deleted}"
+    )
+
+    print(
+        f"Gagal hapus    : "
+        f"{failed}"
+    )
+
+    print(
+        f"Record sesudah : "
+        f"{remaining}"
+    )
+
+    print(
+        f"Link kosong    : "
+        f"{empty_links}"
+    )
+
+    print("=" * 70)
+
+    return {
+        "success": failed == 0,
+        "deleted": deleted,
+        "failed": failed,
+        "duplicate_groups": len(
+            duplicate_groups
+        ),
+        "duplicate_articles": sum(
+            len(v) - 1
+            for v
+            in duplicate_groups.values()
+        ),
+        "remaining": remaining,
+        "empty_links": empty_links,
+    }
+
+
+# ============================================================
+# SANITIZE DATABASE
+# ============================================================
+
+def sanitize_database() -> Dict[str, Any]:
+    """
+    Membersihkan HTML yang sudah tersimpan di database.
+
+    Tidak:
+    - INSERT artikel
+    - DELETE artikel
+    - mengubah link
+    - mengubah klasifikasi
+    - melakukan dedupe
+
+    Hanya UPDATE field yang memang mengandung perubahan.
+    """
+
+    print("=" * 70)
+    print("SANITASI DATABASE")
+    print("MEMBERSIHKAN HTML DARI DATA ARTIKEL")
+    print("=" * 70)
+
+    try:
+
+        articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            "[SANITIZE ERROR] "
+            "Gagal mengambil database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "success": False,
+            "total": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "failed": 0,
+        }
+
+    total = len(articles)
+
+    updated = 0
+    unchanged = 0
+    failed = 0
+
+    print(
+        f"[SANITIZE] Total artikel: {total}"
+    )
+
+    for index, article in enumerate(
+        articles,
+        start=1,
+    ):
+
+        article_id = article.get(
+            "id"
+        )
+
+        if article_id is None:
+
+            failed += 1
+
+            print(
+                "[SANITIZE ERROR] "
+                f"{index}/{total} -> "
+                "ID artikel tidak ditemukan"
+            )
+
+            continue
+
+        try:
+
+            cleaned = sanitize_article(
+                article
+            )
+
+            payload = {}
+
+            for field in SANITIZE_FIELDS:
+
+                if field not in cleaned:
+                    continue
+
+                old_value = article.get(
+                    field
+                )
+
+                new_value = cleaned.get(
+                    field
+                )
+
+                if new_value != old_value:
+
+                    payload[field] = new_value
+
+            if not payload:
+
+                unchanged += 1
+
+            else:
+
+                supabase = get_supabase()
+
+                (
+                    supabase
+                    .table("articles")
+                    .update(payload)
+                    .eq("id", article_id)
+                    .execute()
+                )
+
+                updated += 1
+
+                print(
+                    "[SANITIZE] UPDATE "
+                    f"ID={article_id} | "
+                    f"field={', '.join(payload.keys())}"
+                )
+
+        except Exception as exc:
+
+            failed += 1
+
+            print(
+                "[SANITIZE ERROR] "
+                f"{index}/{total} | "
+                f"ID={article_id} | "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        if (
+            index % 25 == 0
+            or index == total
+        ):
+
+            print(
+                "[SANITIZE] Progress "
+                f"{index}/{total}"
+            )
+
+    print()
+    print("=" * 70)
+    print("SANITASI SELESAI")
+    print("=" * 70)
+
+    print(
+        f"Total artikel   : {total}"
+    )
+
+    print(
+        f"Berhasil update : {updated}"
+    )
+
+    print(
+        f"Tidak berubah   : {unchanged}"
+    )
+
+    print(
+        f"Gagal           : {failed}"
+    )
+
+    print("=" * 70)
+
+    return {
+        "success": failed == 0,
+        "total": total,
+        "updated": updated,
+        "unchanged": unchanged,
+        "failed": failed,
+    }
+    
 # ============================================================
 # SANITIZE DATABASE
 # ============================================================
