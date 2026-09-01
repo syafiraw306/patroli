@@ -3,6 +3,12 @@ import os
 import re
 import html
 import urllib.parse
+from urllib.parse import (
+    urlparse,
+    parse_qsl,
+    urlencode,
+    urlunparse,
+)
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -122,116 +128,148 @@ TRACKING_PARAMETERS = {
     "source",
 }
 
-def normalize_url(url: Any) -> str:
+def normalize_url(
+    url: str,
+) -> str:
     """
-    Canonical URL untuk deduplikasi.
+    Normalisasi URL untuk deduplikasi.
 
-    Aturan:
-    - http/https diperlakukan sama
-    - disimpan sebagai https
-    - www. dihilangkan
-    - fragment dihilangkan
-    - tracking parameter dihilangkan
-    - trailing slash dihilangkan kecuali root
+    Khusus Google News:
+    URL artikel yang sama dapat memiliki parameter berbeda
+    seperti hl, gl, dan ceid.
+
+    Contoh:
+
+    hl=id&gl=ID&ceid=ID:id
+
+    dan
+
+    hl=en-US&gl=US&ceid=US:en
+
+    Tetap dianggap sebagai artikel yang sama.
     """
 
-    value = str(url or "").strip()
-
-    if not value:
+    if not url:
         return ""
 
-    value = html.unescape(value).strip()
-
-    value = re.sub(r"\s+", "", value)
+    url = url.strip()
 
     try:
-        if not re.match(
-            r"^[a-z][a-z0-9+.-]*://",
-            value,
-            re.I,
-        ):
-            value = "https://" + value
 
-        parsed = urllib.parse.urlsplit(value)
+        parsed = urlparse(url)
 
-        scheme = "https"
+        domain = (
+            parsed.netloc
+            .lower()
+            .replace("www.", "")
+        )
 
-        hostname = (
-            parsed.hostname or ""
-        ).lower()
+        # ====================================================
+        # GOOGLE NEWS
+        # ====================================================
 
-        if not hostname:
-            return ""
+        if domain == "news.google.com":
 
-        if hostname.startswith("www."):
-            hostname = hostname[4:]
+            # Ambil hanya parameter penting.
+            #
+            # hl, gl, ceid adalah parameter regional
+            # sehingga harus diabaikan.
+            #
+            # oc juga diabaikan karena tidak menentukan
+            # identitas artikel.
 
-        # Pertahankan port non-default
-        port = parsed.port
+            query_params = parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
 
-        netloc = hostname
+            important_params = []
 
-        if port is not None and port != 443:
-            netloc = f"{hostname}:{port}"
+            for key, value in query_params:
 
-        tracking_keys = {
+                if key.lower() in {
+                    "hl",
+                    "gl",
+                    "ceid",
+                    "oc",
+                }:
+                    continue
+
+                important_params.append(
+                    (
+                        key,
+                        value,
+                    )
+                )
+
+            normalized_query = urlencode(
+                sorted(
+                    important_params
+                )
+            )
+
+            normalized_url = urlunparse(
+                (
+                    parsed.scheme.lower(),
+                    domain,
+                    parsed.path.rstrip("/"),
+                    "",
+                    normalized_query,
+                    "",
+                )
+            )
+
+            return normalized_url
+
+        # ====================================================
+        # DOMAIN NORMAL
+        # ====================================================
+
+        query_params = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+        )
+
+        # Parameter tracking umum yang tidak penting
+        tracking_params = {
             "utm_source",
             "utm_medium",
             "utm_campaign",
             "utm_term",
             "utm_content",
-            "utm_name",
-            "utm_id",
             "fbclid",
             "gclid",
-            "dclid",
-            "msclkid",
-            "ref",
-            "referrer",
-            "source",
-            "mc_cid",
-            "mc_eid",
-            "_ga",
-            "_gl",
         }
 
-        clean_query = [
+        clean_params = [
             (key, value)
-            for key, value
-            in urllib.parse.parse_qsl(
-                parsed.query,
-                keep_blank_values=True,
-            )
+            for key, value in query_params
             if key.lower()
-            not in tracking_keys
+            not in tracking_params
         ]
 
-        query = urllib.parse.urlencode(
-            clean_query,
-            doseq=True,
+        normalized_query = urlencode(
+            sorted(clean_params)
         )
 
-        path = parsed.path or "/"
-
-        if path != "/":
-            path = path.rstrip("/")
-
-        return urllib.parse.urlunsplit(
+        normalized_url = urlunparse(
             (
-                scheme,
-                netloc,
-                path,
-                query,
+                parsed.scheme.lower(),
+                domain,
+                parsed.path.rstrip("/"),
+                "",
+                normalized_query,
                 "",
             )
         )
 
+        return normalized_url
+
     except Exception:
-        return (
-            value
-            .split("#", 1)[0]
-            .rstrip("/")
-        )
+
+        # Jika parsing gagal,
+        # gunakan URL asli yang sudah dibersihkan.
+        return url.lower().strip()
         
 # ============================================================
 # ARTICLE PAYLOAD CLEANING
