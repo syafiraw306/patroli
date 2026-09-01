@@ -5513,18 +5513,17 @@ def sanitize_database() -> Dict[str, Any]:
         "failed": failed,
     }
     
-def audit_negative_articles() -> None:
+def audit_negative_articles() -> Dict[str, Any]:
     """
-    Audit artikel yang saat ini diklasifikasikan sebagai
-    Negatif Kuat.
+    Audit artikel yang saat ini diklasifikasikan sebagai Negatif Kuat.
 
-    Fungsi ini hanya membaca database.
-    Tidak melakukan INSERT, UPDATE, DELETE, dedupe,
-    sanitasi, maupun reklasifikasi.
+    Fungsi ini TIDAK mengubah database.
+    Hanya menampilkan artikel negatif beserta alasan/konteksnya.
     """
 
     print("=" * 70)
-    print("AUDIT ARTIKEL NEGATIF KUAT")
+    print("AUDIT ARTIKEL NEGATIF")
+    print("TIDAK ADA DATA YANG DIUBAH")
     print("=" * 70)
 
     try:
@@ -5538,38 +5537,60 @@ def audit_negative_articles() -> None:
             f"{type(exc).__name__}: {exc}"
         )
 
-        return
+        return {
+            "success": False,
+            "total": 0,
+            "negative": 0,
+            "error": str(exc),
+        }
 
     negative_articles = [
         article
         for article in articles
-        if article.get("category")
-        == "Negatif Kuat"
+        if normalize_text(
+            article.get("category")
+        ).lower()
+        == "negatif kuat"
     ]
 
     print(
-        f"[AUDIT] Total artikel database : "
-        f"{len(articles)}"
+        f"[AUDIT] Total artikel    : {len(articles)}"
     )
 
     print(
-        f"[AUDIT] Total Negatif Kuat     : "
+        f"[AUDIT] Negatif Kuat     : "
         f"{len(negative_articles)}"
     )
 
-    print("=" * 70)
+    print()
 
     for index, article in enumerate(
         negative_articles,
         start=1,
     ):
 
-        print()
+        title = normalize_text(
+            article.get("title")
+        )
+
+        content = normalize_text(
+            article.get("content")
+        )
+
+        link = normalize_url(
+            article.get("link")
+        )
+
+        classification = classify_article(
+            title,
+            content,
+        )
+
+        print("=" * 70)
+
         print(
             f"NEGATIF #{index}"
         )
-
-        print("-" * 70)
 
         print(
             f"ID          : "
@@ -5578,111 +5599,70 @@ def audit_negative_articles() -> None:
 
         print(
             f"Judul       : "
-            f"{article.get('title', '')}"
+            f"{title}"
         )
 
         print(
             f"Link        : "
-            f"{article.get('link', '')}"
+            f"{link}"
         )
 
         print(
-            f"Negatif     : "
-            f"{article.get('negative_score', 0)}"
+            f"Kategori DB  : "
+            f"{article.get('category')}"
+        )
+
+        print(
+            f"Neg. Score  : "
+            f"{classification.get('negative_score', 0)}"
         )
 
         print(
             f"Handling    : "
-            f"{article.get('handling_score', 0)}"
+            f"{classification.get('handling_score', 0)}"
         )
 
         print(
-            f"Positif     : "
-            f"{article.get('positive_score', 0)}"
+            f"Pos. Score  : "
+            f"{classification.get('positive_score', 0)}"
         )
 
         print(
             f"Satker      : "
-            f"{article.get('satker_matches', [])}"
+            f"{classification.get('satker_matches', [])}"
         )
 
-        print()
-        print("Strong Context:")
-
-        strong_context = (
-            article.get(
-                "strong_context",
-                []
-            )
+        print(
+            f"Strong Ctx  : "
+            f"{classification.get('strong_context', [])}"
         )
 
-        if strong_context:
-
-            for context in strong_context:
-
-                print(
-                    f"  - {context}"
-                )
-
-        else:
-
-            print(
-                "  - Tidak ada"
-            )
-
-        print()
-        print("Positive Context:")
-
-        positive_context = (
-            article.get(
-                "positive_context",
-                []
-            )
+        print(
+            f"Handling Ctx: "
+            f"{classification.get('handling_context', [])}"
         )
 
-        if positive_context:
-
-            for context in positive_context:
-
-                print(
-                    f"  - {context}"
-                )
-
-        else:
-
-            print(
-                "  - Tidak ada"
-            )
-
-        print()
-        print("Handling Context:")
-
-        handling_context = (
-            article.get(
-                "handling_context",
-                []
-            )
+        print(
+            f"Positive Ctx: "
+            f"{classification.get('positive_context', [])}"
         )
 
-        if handling_context:
-
-            for context in handling_context:
-
-                print(
-                    f"  - {context}"
-                )
-
-        else:
-
-            print(
-                "  - Tidak ada"
-            )
+        print(
+            f"Hasil ulang : "
+            f"{classification.get('category', 'Netral')}"
+        )
 
     print()
     print("=" * 70)
-    print("AUDIT SELESAI")
+    print("AUDIT NEGATIF SELESAI")
+    print("TIDAK ADA DATA YANG DIUBAH")
     print("=" * 70)
-    
+
+    return {
+        "success": True,
+        "total": len(articles),
+        "negative": len(negative_articles),
+    }
 # ============================================================
 # MAIN
 # ============================================================
