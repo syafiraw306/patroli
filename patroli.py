@@ -9,9 +9,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from patroli.audit_event_duplicates import (
-    audit_event_duplicates
-)
+from audit_event_duplicates import audit_event_duplicates
 
 
 import feedparser
