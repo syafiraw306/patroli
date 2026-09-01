@@ -1,6 +1,18 @@
 name: Patroli Siber
 
 on:
+  # ==========================================
+  # PATROLI OTOMATIS
+  # 08.00 WIB = 01.00 UTC
+  # 15.00 WIB = 08.00 UTC
+  # ==========================================
+  schedule:
+    - cron: "0 1 * * *"
+    - cron: "0 8 * * *"
+
+  # ==========================================
+  # PATROLI MANUAL
+  # ==========================================
   workflow_dispatch:
     inputs:
       mode:
@@ -46,27 +58,44 @@ jobs:
           echo "      PATROLI SIBER GITHUB ACTIONS"
           echo "=========================================="
 
-          echo "Mode: ${{ inputs.mode }}"
+          # ==========================================
+          # JIKA DIJALANKAN OTOMATIS OLEH SCHEDULE
+          # ==========================================
+          if [ "${{ github.event_name }}" = "schedule" ]; then
 
-          if [ "${{ inputs.mode }}" = "reclassify" ]; then
+            echo "Mode: SCHEDULE"
+            echo "Menjalankan patroli normal (--once)..."
 
-            echo "Menjalankan reklasifikasi..."
-            python patroli.py --reclassify
+            python patroli.py --once
 
-          elif [ "${{ inputs.mode }}" = "dedupe-dry-run" ]; then
-
-            echo "Menjalankan dedupe dry run..."
-            python patroli.py --dedupe-dry-run
-
-          elif [ "${{ inputs.mode }}" = "dedupe" ]; then
-
-            echo "Menjalankan DEDUPE..."
-            python patroli.py --dedupe
-
+          # ==========================================
+          # JIKA DIJALANKAN MANUAL
+          # ==========================================
           else
 
-            echo "Menjalankan patroli normal..."
-            python patroli.py --once
+            echo "Mode: ${{ inputs.mode }}"
+
+            if [ "${{ inputs.mode }}" = "reclassify" ]; then
+
+              echo "Menjalankan reklasifikasi..."
+              python patroli.py --reclassify
+
+            elif [ "${{ inputs.mode }}" = "dedupe-dry-run" ]; then
+
+              echo "Menjalankan dedupe dry run..."
+              python patroli.py --dedupe-dry-run
+
+            elif [ "${{ inputs.mode }}" = "dedupe" ]; then
+
+              echo "Menjalankan DEDUPE..."
+              python patroli.py --dedupe
+
+            else
+
+              echo "Menjalankan patroli normal..."
+              python patroli.py --once
+
+            fi
 
           fi
 
@@ -74,6 +103,9 @@ jobs:
           echo "         PATROLI SELESAI"
           echo "=========================================="
 
+      # ==========================================
+      # UPLOAD LAPORAN DEDUPE
+      # ==========================================
       - name: Upload Dedupe Report
         if: ${{ inputs.mode == 'dedupe-dry-run' || inputs.mode == 'dedupe' }}
         uses: actions/upload-artifact@v4
@@ -88,8 +120,3 @@ jobs:
             dedupe_diagnostic_report.json
           if-no-files-found: warn
           retention-days: 30
-
-
-
-
-          
