@@ -29,6 +29,7 @@ on:
           - audit-negative
           - audit-content-duplicates
           - audit-title-duplicates
+          - audit-exact-duplicates
 
 jobs:
   patroli:
@@ -117,7 +118,11 @@ jobs:
             elif [ "${{ inputs.mode }}" = "audit-title-duplicates" ]; then
               echo "Menjalankan audit duplicate title..."
               python patroli.py --audit-title-duplicates
-          
+
+            elif [ "${{ inputs.mode }}" = "audit-exact-duplicates" ]; then
+              echo "Menjalankan audit exact duplicate..."
+              python patroli.py --audit-exact-duplicates
+              
             else
           
               echo "Mode tidak dikenal: ${{ inputs.mode }}"
