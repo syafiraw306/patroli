@@ -5,6 +5,10 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import re
+import html
+
+
 
 from database import (
     get_all_articles,
@@ -49,7 +53,81 @@ if "username" not in st.session_state:
 if "role" not in st.session_state:
     st.session_state.role = ""
 
+def clean_html_text(value):
+    """
+    Membersihkan HTML dari teks yang berasal dari database/sumber berita.
 
+    Contoh:
+        <a href="https://...">Judul Berita</a>
+        <font color="#6f6f6f">Media Online</font>
+
+    Menjadi:
+        Judul Berita Media Online
+    """
+
+    if value is None:
+        return ""
+
+    # Jika list, bersihkan setiap item
+    if isinstance(value, list):
+        cleaned = []
+
+        for item in value:
+            text = clean_html_text(item)
+
+            if text:
+                cleaned.append(text)
+
+        return cleaned
+
+    text = str(value)
+
+    # Decode HTML entity:
+    # &amp; -> &
+    # &quot; -> "
+    # &nbsp; -> spasi
+    text = html.unescape(text)
+
+    # Hapus tag <script>...</script>
+    text = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # Hapus tag <style>...</style>
+    text = re.sub(
+        r"<style\b[^>]*>.*?</style>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # <br>, <p>, </p>, </div>, dll -> spasi
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # Hapus sisa pola HTML entity
+    text = re.sub(
+        r"&(?:[a-zA-Z][a-zA-Z0-9]+|#\d+|#x[0-9a-fA-F]+);",
+        " ",
+        text,
+    )
+
+    # Normalisasi whitespace
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+    
 # ============================================================
 # FUNGSI AUTHENTICATION
 # ============================================================
@@ -366,6 +444,27 @@ def filter_date(
 
     return True
 
+def clean_list(value):
+    """
+    Membersihkan semua item dalam list dari HTML.
+    """
+
+    if not value:
+        return []
+
+    if not isinstance(value, list):
+        value = [value]
+
+    result = []
+
+    for item in value:
+
+        cleaned = clean_html_text(item)
+
+        if cleaned:
+            result.append(cleaned)
+
+    return result
 
 def article_matches_search(
     article: Dict[str, Any],
@@ -381,16 +480,13 @@ def article_matches_search(
 
     q = query.lower().strip()
 
-    keywords = " ".join(
-        safe_list(
-            article.get("detected_keywords")
-        )
+    keywords = clean_list(
+        item.get("detected_keywords")
     )
 
-    satker = " ".join(
-        safe_list(
-            article.get("satker_matches")
-        )
+
+    satker = clean_list(
+        item.get("satker_matches")
     )
 
     searchable_text = " ".join(
@@ -1008,37 +1104,45 @@ def render_article(
                 )
             )
 
-        strong_context = safe_list(
+        strong_context = clean_html_text(
             item.get(
                 "strong_context"
             )
         )
 
-        if strong_context:
+        context_html = ""
 
-            st.warning(
-                "⚠️ **Konteks Negatif Kuat:** "
+        if strong_context:
+        
+            context_html += (
+                '<div class="info-box" style="margin-top:10px;">'
+                "⚠️ <b>Konteks Negatif Kuat:</b> "
                 + ", ".join(
-                    strong_context
+                    html.escape(str(x))
+                    for x in strong_context
                 )
+                + "</div>"
             )
 
-        handling_context = safe_list(
+
+        handling_context = clean_html_text(
             item.get(
                 "handling_context"
             )
         )
 
         if handling_context:
-
-            st.info(
-                "📌 **Konteks Penanganan:** "
+        
+            context_html += (
+                '<div class="info-box" style="margin-top:10px;">'
+                "📌 <b>Konteks Penanganan:</b> "
                 + ", ".join(
-                    handling_context
+                    html.escape(str(x))
+                    for x in handling_context
                 )
+                + "</div>"
             )
-
-        satker = safe_list(
+        satker = clean_html_text(
             item.get(
                 "satker_matches"
             )
