@@ -211,17 +211,7 @@ POSITIVE_ACTION_PATTERNS = [
     r"\bmenetapkan\s+.*?\bsebagai\s+tersangka\b",
     r"\bditetapkan\s+.*?\bsebagai\s+tersangka\b",
 
-    # penyidikan
-    r"\bmelakukan\s+penyidikan\b",
-    r"\bmelaksanakan\s+penyidikan\b",
-    r"\bmelakukan\s+penyelidikan\b",
-    r"\bmelaksanakan\s+penyelidikan\b",
-    r"\bberhasil\s+melakukan\s+penyidikan\b",
-    r"\bberhasil\s+melakukan\s+penyelidikan\b",
 
-    # penuntutan
-    r"\bmelakukan\s+penuntutan\b",
-    r"\bmelaksanakan\s+penuntutan\b",
     r"\bmenuntut\s+.*?\bdi\s+persidangan\b",
     r"\bmembacakan\s+tuntutan\b",
 
@@ -281,12 +271,15 @@ OFFICIAL_ACTIVITY_PATTERNS = [
     r"\bsosialisasi\b",
 
     # ========================================================
+    # ========================================================
     # KEGIATAN KEDINASAN
     # ========================================================
-
+    
     r"\bpelantikan\b",
     r"\bpengambilan sumpah\b",
     r"\bserah terima\b",
+    r"\bserah terima jabatan\b",
+    r"\bsertijab\b",
     r"\bpenandatanganan\b",
     r"\bkerja sama\b",
     r"\bmoa\b",
@@ -316,7 +309,10 @@ OFFICIAL_ACTIVITY_PATTERNS = [
     # ========================================================
     # MEMIMPIN KEGIATAN
     # ========================================================
-
+    
+    r"\bpimpin\b",
+    r"\bpimpin sertijab\b",
+    r"\bmemimpin kegiatan\b",
     r"\bmemimpin rapat\b",
     r"\bmemimpin apel\b",
     r"\bmemimpin upacara\b",
