@@ -5994,6 +5994,358 @@ def audit_content_duplicates() -> None:
     )
 
     print("=" * 70)
+
+def audit_title_duplicates() -> None:
+    """
+    Audit artikel yang memiliki judul sama.
+
+    Fungsi ini TIDAK menghapus data.
+
+    Menampilkan:
+    - ID
+    - Judul
+    - Link
+    - Domain/source
+    - Tanggal
+    - Panjang konten
+    - Preview konten
+
+    Tujuan:
+    Membantu menentukan apakah artikel dengan judul
+    sama benar-benar duplicate atau hanya memiliki
+    judul yang kebetulan sama.
+    """
+
+    from urllib.parse import urlparse
+
+    print("=" * 70)
+    print("AUDIT TITLE DUPLICATES DETAIL")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[AUDIT ERROR] "
+            f"Gagal mengambil artikel: {exc}"
+        )
+
+        return
+
+    print(
+        f"[AUDIT] Total artikel: "
+        f"{len(articles)}"
+    )
+
+    # ========================================================
+    # GROUP BERDASARKAN NORMALIZED TITLE
+    # ========================================================
+
+    title_groups = {}
+
+    for article in articles:
+
+        title = normalize_text(
+            article.get("title") or ""
+        )
+
+        normalized_title = (
+            title.lower()
+            .strip()
+        )
+
+        if not normalized_title:
+            continue
+
+        if normalized_title not in title_groups:
+
+            title_groups[
+                normalized_title
+            ] = []
+
+        title_groups[
+            normalized_title
+        ].append(article)
+
+    # ========================================================
+    # AMBIL HANYA TITLE DUPLICATE
+    # ========================================================
+
+    duplicate_titles = {
+
+        title: items
+
+        for title, items
+        in title_groups.items()
+
+        if len(items) > 1
+    }
+
+    print()
+    print("=" * 70)
+    print(
+        f"DUPLIKAT JUDUL: "
+        f"{len(duplicate_titles)} KELOMPOK"
+    )
+    print("=" * 70)
+
+    # ========================================================
+    # COUNTER
+    # ========================================================
+
+    total_duplicate_records = 0
+
+    same_content_groups = 0
+    different_content_groups = 0
+
+    # ========================================================
+    # LOOP DUPLICATE TITLE
+    # ========================================================
+
+    for group_number, (
+        normalized_title,
+        items,
+    ) in enumerate(
+        duplicate_titles.items(),
+        start=1,
+    ):
+
+        total_duplicate_records += len(items)
+
+        print()
+        print("#" * 70)
+
+        print(
+            f"DUPLICATE TITLE GROUP "
+            f"#{group_number}"
+        )
+
+        print("#" * 70)
+
+        print()
+
+        print("TITLE:")
+
+        print(
+            normalize_text(
+                items[0].get("title") or ""
+            )
+        )
+
+        print()
+
+        print(
+            f"JUMLAH ARTIKEL: "
+            f"{len(items)}"
+        )
+
+        # ====================================================
+        # CEK APAKAH CONTENT SAMA
+        # ====================================================
+
+        normalized_contents = set()
+
+        for item in items:
+
+            content = normalize_text(
+                item.get("content")
+                or item.get("summary")
+                or ""
+            )
+
+            normalized_content = (
+                content.lower()
+                .strip()
+            )
+
+            if normalized_content:
+
+                normalized_contents.add(
+                    normalized_content
+                )
+
+        if len(normalized_contents) <= 1:
+
+            content_status = (
+                "⚠️ CONTENT IDENTIK / SANGAT MUNGKIN DUPLIKAT"
+            )
+
+            same_content_groups += 1
+
+        else:
+
+            content_status = (
+                "ℹ️ CONTENT BERBEDA"
+            )
+
+            different_content_groups += 1
+
+        print()
+
+        print(
+            f"STATUS CONTENT: "
+            f"{content_status}"
+        )
+
+        print()
+
+        print("-" * 70)
+
+        # ====================================================
+        # DETAIL SETIAP ARTIKEL
+        # ====================================================
+
+        for index, item in enumerate(
+            items,
+            start=1,
+        ):
+
+            article_id = item.get("id")
+
+            title = normalize_text(
+                item.get("title") or ""
+            )
+
+            link = (
+                item.get("link")
+                or ""
+            )
+
+            # ------------------------------------------------
+            # DOMAIN
+            # ------------------------------------------------
+
+            domain = ""
+
+            try:
+
+                if link:
+
+                    domain = (
+                        urlparse(link)
+                        .netloc
+                    )
+
+            except Exception:
+
+                domain = ""
+
+            # ------------------------------------------------
+            # DATE
+            # ------------------------------------------------
+
+            published_date = (
+                item.get("published_at")
+                or item.get("published_date")
+                or ""
+            )
+
+            # ------------------------------------------------
+            # CONTENT
+            # ------------------------------------------------
+
+            content = normalize_text(
+                item.get("content")
+                or item.get("summary")
+                or ""
+            )
+
+            content_length = len(content)
+
+            content_preview = (
+                content[:300]
+                if content
+                else "[CONTENT KOSONG]"
+            )
+
+            print()
+
+            print(
+                f"ARTIKEL #{index}"
+            )
+
+            print()
+
+            print(
+                f"ID            : "
+                f"{article_id}"
+            )
+
+            print(
+                f"DOMAIN        : "
+                f"{domain}"
+            )
+
+            print(
+                f"DATE          : "
+                f"{published_date}"
+            )
+
+            print(
+                f"CONTENT LENGTH: "
+                f"{content_length}"
+            )
+
+            print(
+                f"LINK:"
+            )
+
+            print(
+                link
+            )
+
+            print()
+
+            print(
+                "CONTENT PREVIEW:"
+            )
+
+            print(
+                content_preview
+            )
+
+            print()
+
+            print("-" * 70)
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    print()
+
+    print("=" * 70)
+    print("AUDIT TITLE DUPLICATES SELESAI")
+    print("=" * 70)
+
+    print(
+        f"Total artikel                  : "
+        f"{len(articles)}"
+    )
+
+    print(
+        f"Kelompok duplicate title       : "
+        f"{len(duplicate_titles)}"
+    )
+
+    print(
+        f"Total record dalam duplicate   : "
+        f"{total_duplicate_records}"
+    )
+
+    print(
+        f"Content identik                : "
+        f"{same_content_groups} kelompok"
+    )
+
+    print(
+        f"Content berbeda                : "
+        f"{different_content_groups} kelompok"
+    )
+
+    print("=" * 70)
     
 # ============================================================
 # MAIN
@@ -6067,6 +6419,14 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--audit-title-duplicates",
+        action="store_true",
+        help=(
+            "audit detail artikel dengan judul sama"
+        ),
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -6119,6 +6479,16 @@ def main() -> None:
 
         audit_content_duplicates()
 
+        return
+
+    # --------------------------------------------------------
+    # AUDIT TITLE DUPLICATES
+    # --------------------------------------------------------
+    
+    if args.audit_title_duplicates:
+    
+        audit_title_duplicates()
+    
         return
 
     # --------------------------------------------------------
