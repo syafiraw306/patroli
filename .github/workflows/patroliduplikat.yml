@@ -30,6 +30,7 @@ on:
           - audit-content-duplicates
           - audit-title-duplicates
           - audit-exact-duplicates
+          - audit-event-duplicates
 
 jobs:
   patroli:
@@ -122,6 +123,10 @@ jobs:
             elif [ "${{ inputs.mode }}" = "audit-exact-duplicates" ]; then
               echo "Menjalankan audit exact duplicate..."
               python patroli.py --audit-exact-duplicates
+
+            elif [ "${{ inputs.mode }}" = "audit-event-duplicates" ]; then
+              echo "Menjalankan audit event duplicate..."
+              python patroli.py --audit-event-duplicates
               
             else
           
