@@ -25,6 +25,7 @@ on:
           - reclassify
           - dedupe-dry-run
           - dedupe
+          - sanitize-database
 
 jobs:
   patroli:
@@ -90,11 +91,16 @@ jobs:
               echo "Menjalankan DEDUPE..."
               python patroli.py --dedupe
 
-            else
+            elif [ "${{ inputs.mode }}" = "once" ]; then
 
               echo "Menjalankan patroli normal..."
               python patroli.py --once
-
+              
+            else
+            
+              echo "Menjalankan patroli normal..."
+              python patroli.py --sanitize-database
+              
             fi
 
           fi
