@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-
-      - name: Run Patroli Tests
+      
+      - name: Run Classification Tests
         run: |
-          python test_patroli.py
+          python test_classifier.py
