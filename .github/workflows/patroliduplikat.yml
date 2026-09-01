@@ -100,6 +100,11 @@ jobs:
           
               echo "Menjalankan sanitasi database..."
               python patroli.py --sanitize-database
+            
+            elif [ "${{ inputs.mode }}" = "audit-negative" ]; then
+          
+              echo "Menjalankan audit klasifikasi negatif..."
+              python patroli.py --audit-negative-articles
           
             else
           
