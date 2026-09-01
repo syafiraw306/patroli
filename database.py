@@ -322,6 +322,10 @@ def get_all_articles(
     page_size: int = 1000,
 ) -> List[Dict[str, Any]]:
 
+    # ========================================================
+    # VALIDASI PARAMETER
+    # ========================================================
+
     if not isinstance(page_size, int):
         raise TypeError(
             f"page_size harus integer, "
@@ -333,9 +337,22 @@ def get_all_articles(
             "page_size harus lebih besar dari 0"
         )
 
-    """
-    Mengambil seluruh artikel menggunakan pagination.
-    """
+    # ========================================================
+    # DEBUG
+    # ========================================================
+
+    print("=" * 70)
+    print("[DEBUG] get_all_articles DIPANGGIL")
+    print(f"[DEBUG] page_size = {page_size}")
+    print(
+        f"[DEBUG] type(page_size) = "
+        f"{type(page_size).__name__}"
+    )
+    print("=" * 70)
+
+    # ========================================================
+    # AMBIL SUPABASE CLIENT
+    # ========================================================
 
     client = get_supabase()
 
@@ -343,17 +360,32 @@ def get_all_articles(
 
     start = 0
 
+    # ========================================================
+    # PAGINATION
+    # ========================================================
+
     while True:
 
         try:
+
+            end = start + page_size - 1
+
+            print(
+                f"[SUPABASE] Mengambil artikel "
+                f"offset {start} sampai {end}"
+            )
+
             response = (
                 client
                 .table("articles")
                 .select("*")
-                .order("published_date", desc=True)
+                .order(
+                    "published_date",
+                    desc=True,
+                )
                 .range(
                     start,
-                    start + page_size - 1,
+                    end,
                 )
                 .execute()
             )
@@ -372,17 +404,25 @@ def get_all_articles(
         results.extend(rows)
 
         print(
-            f"[SUPABASE] Mengambil {len(rows)} artikel "
+            f"[SUPABASE] Mengambil "
+            f"{len(rows)} artikel "
             f"(offset {start})."
         )
 
+        # Jika hasil kurang dari page_size,
+        # berarti sudah halaman terakhir.
         if len(rows) < page_size:
             break
 
         start += page_size
 
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
     print(
-        f"[SUPABASE] Total artikel: {len(results)}"
+        f"[SUPABASE] Total artikel: "
+        f"{len(results)}"
     )
 
     return results
