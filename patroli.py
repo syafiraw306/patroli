@@ -9,6 +9,9 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from patroli.audit_event_duplicates import (
+    audit_event_duplicates
+)
 
 
 import feedparser
@@ -6668,6 +6671,14 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--audit-event-duplicates",
+        action="store_true",
+        help=(
+            "audit artikel dengan event yg sama"
+        ),
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -6713,6 +6724,12 @@ def main() -> None:
     if args.audit_negative_articles:
 
         audit_negative_articles()
+
+        return
+
+    if args.audit_event_duplicates:
+
+        audit_event_duplicates()
 
         return
 
