@@ -17,11 +17,12 @@ from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
 from database import (
+    normalize_url,
     get_all_articles,
     get_supabase,
     get_article_by_link,
-    save_run_log,
     upsert_article,
+    save_run_log,
     update_article_classification_by_id,
     delete_article_by_id,
 )
@@ -235,43 +236,90 @@ POSITIVE_ACTION_PATTERNS = [
 # ============================================================
 
 OFFICIAL_ACTIVITY_PATTERNS = [
+
+    # ========================================================
+    # APEL / UPACARA
+    # ========================================================
+
+    r"\bapel pagi\b",
+    r"\bapel gabungan\b",
     r"\bapel\b",
     r"\bupacara\b",
+    r"\bupacara peringatan\b",
+
+    # ========================================================
+    # RAPAT / KOORDINASI / KONSOLIDASI
+    # ========================================================
+
     r"\brapat\b",
+    r"\brapat koordinasi\b",
+    r"\brapat kerja\b",
     r"\bfgd\b",
     r"\bfocus group discussion\b",
-    r"\bkunjungan\b",
-    r"\bsilaturahmi\b",
     r"\bkonsolidasi\b",
     r"\bkoordinasi\b",
     r"\bmonitoring\b",
     r"\bevaluasi\b",
+
+    # ========================================================
+    # KUNJUNGAN / SILATURAHMI
+    # ========================================================
+
+    r"\bkunjungan kerja\b",
+    r"\bkunjungan\b",
+    r"\bsilaturahmi\b",
+
+    # ========================================================
+    # PENERANGAN / PENYULUHAN HUKUM
+    # ========================================================
+
     r"\bpenyuluhan hukum\b",
     r"\bpenerangan hukum\b",
+    r"\bsosialisasi hukum\b",
     r"\bsosialisasi\b",
+
+    # ========================================================
+    # KEGIATAN KEDINASAN
+    # ========================================================
+
     r"\bpelantikan\b",
     r"\bpengambilan sumpah\b",
     r"\bserah terima\b",
-    r"\blaunching\b",
-    r"\bperesmian\b",
     r"\bpenandatanganan\b",
     r"\bkerja sama\b",
     r"\bmoa\b",
     r"\bmou\b",
+    r"\blaunching\b",
+    r"\bperesmian\b",
+
+    # ========================================================
+    # KEGIATAN SOSIAL / KEMASYARAKATAN
+    # ========================================================
+
     r"\bziarah\b",
     r"\bbakti sosial\b",
     r"\bgotong royong\b",
-    r"\bkunjungan kerja\b",
+
+    # ========================================================
+    # PARTISIPASI KEGIATAN RESMI
+    # ========================================================
+
     r"\bmengikuti zoom\b",
-    r"\bmenghadiri\b",
-    r"\bhadiri\b",
+    r"\bmengikuti rapat\b",
+    r"\bmengikuti kegiatan\b",
+    r"\bmenghadiri rapat\b",
+    r"\bmenghadiri kegiatan\b",
+    r"\bmenghadiri acara\b",
+
+    # ========================================================
+    # MEMIMPIN KEGIATAN
+    # ========================================================
+
     r"\bmemimpin rapat\b",
-    r"\bmemimpin\b",
-    r"\bmengikuti\b",
-    r"\bupacara peringatan\b",
-    r"\bapel pagi\b",
-    r"\bapel gabungan\b",
+    r"\bmemimpin apel\b",
+    r"\bmemimpin upacara\b",
 ]
+
 
 
 # ============================================================
@@ -701,42 +749,6 @@ def sanitize_article(
 
     return cleaned
     
-
-def normalize_url(url: Any) -> str:
-    """
-    Canonical URL untuk deduplikasi:
-    - http/https diperlakukan sama dan disimpan sebagai https
-    - www. dihilangkan
-    - fragment dihilangkan
-    - tracking parameter umum dihilangkan
-    - trailing slash dihilangkan (kecuali root)
-    """
-    value = str(url or "").strip()
-    if not value:
-        return ""
-    try:
-        if not re.match(r"^[a-z][a-z0-9+.-]*://", value, re.I):
-            value = "https://" + value
-        parsed = urllib.parse.urlsplit(value)
-        scheme = "https" if parsed.scheme.lower() in {"http", "https"} else parsed.scheme.lower()
-        netloc = parsed.netloc.lower()
-        if netloc.startswith("www."):
-            netloc = netloc[4:]
-        path = parsed.path.rstrip("/") or "/"
-        tracking_keys = {
-            "utm_source", "utm_medium", "utm_campaign", "utm_term",
-            "utm_content", "fbclid", "gclid", "dclid", "msclkid",
-            "ref", "referrer", "source", "mc_cid", "mc_eid", "_ga", "_gl",
-        }
-        clean_query = [
-            (k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-            if k.lower() not in tracking_keys
-        ]
-        query = urllib.parse.urlencode(clean_query, doseq=True)
-        return urllib.parse.urlunsplit((scheme, netloc, path, query, ""))
-    except Exception:
-        return value.split("#", 1)[0].rstrip("/")
-
 
 def load_existing_normalized_links():
     """
@@ -1295,22 +1307,39 @@ def split_sentences(
 def sentence_contains_satker(
     sentence: str,
 ) -> bool:
+    """
+    Mengecek apakah kalimat secara eksplisit menyebut
+    Kejari/satker target.
+    """
 
-    text = sentence.lower()
+    text = normalize_text(
+        sentence
+    ).lower()
+
+    if not text:
+        return False
 
     return any(
-        keyword.lower()
-        in text
-        for keyword
-        in TARGET_KEJARI_KEYWORDS
+        keyword.lower() in text
+        for keyword in TARGET_KEJARI_KEYWORDS
+        if keyword
     )
 
 
 def sentence_contains_internal_actor(
     sentence: str,
 ) -> bool:
+    """
+    Mengecek apakah kalimat menyebut aktor internal
+    seperti Kajari, jaksa, Kasi, atau unsur internal lainnya.
+    """
 
-    text = sentence.lower()
+    text = normalize_text(
+        sentence
+    ).lower()
+
+    if not text:
+        return False
 
     return any(
         re.search(
@@ -1318,8 +1347,8 @@ def sentence_contains_internal_actor(
             text,
             re.I,
         )
-        for pattern
-        in INTERNAL_ACTOR_PATTERNS
+        for pattern in INTERNAL_ACTOR_PATTERNS
+        if pattern
     )
 
 
@@ -1432,32 +1461,74 @@ def find_positive_context(
     title: str,
     content: str,
 ) -> List[str]:
+    """
+    Mencari konteks positif yang benar-benar relevan
+    dengan Kejari/Kajari/jaksa/internal actor.
+
+    Prinsip:
+    - Kalimat harus mengandung aksi positif.
+    - Kalimat yang dinegasikan tidak dihitung.
+    - Aksi positif harus dilakukan oleh satker/internal actor.
+    - Kalimat positif yang hanya menyebut pihak lain tidak
+      dianggap sebagai keberhasilan Kejari.
+    """
 
     sentences = split_sentences(
         f"{title}. {content}"
     )
 
-    contexts = []
+    contexts: List[str] = []
 
     for sentence in sentences:
+
+        sentence = normalize_text(
+            sentence
+        )
+
+        if not sentence:
+            continue
+
+        # ----------------------------------------------------
+        # NEGASI
+        # ----------------------------------------------------
 
         if sentence_has_negation(
             sentence
         ):
-
             continue
 
-        if regex_hits(
+        # ----------------------------------------------------
+        # AKSI POSITIF
+        # ----------------------------------------------------
+
+        positive_hits = regex_hits(
             sentence,
             POSITIVE_ACTION_PATTERNS,
-        ):
+        )
 
-            contexts.append(
+        if not positive_hits:
+            continue
+
+        # ----------------------------------------------------
+        # HARUS RELEVAN DENGAN SATKER / INTERNAL ACTOR
+        # ----------------------------------------------------
+
+        if not (
+            sentence_contains_satker(
                 sentence
             )
+            or sentence_contains_internal_actor(
+                sentence
+            )
+        ):
+            continue
+
+        contexts.append(
+            sentence
+        )
 
     return contexts[:20]
-
+    
 
 def find_official_activity_context(
     title: str,
@@ -1498,51 +1569,122 @@ def find_negative_context(
     title: str,
     content: str,
 ) -> List[str]:
+    """
+    Mencari konteks negatif yang benar-benar berpotensi
+    merupakan masalah terhadap Kejari/Kajari/jaksa/internal actor.
+
+    Prinsip:
+    - Harus ada pola negatif.
+    - Harus menyebut satker atau aktor internal.
+    - Negasi/bantahan dikecualikan.
+    - Konteks keberhasilan/aktivitas resmi dikecualikan.
+    - Istilah hukum seperti kasus, tersangka, narkotika,
+      penyidikan, korupsi, dll. tidak otomatis berarti
+      Kejari adalah pihak yang bermasalah.
+    """
 
     sentences = split_sentences(
         f"{title}. {content}"
     )
 
-    contexts = []
+    contexts: List[str] = []
 
     for sentence in sentences:
+
+        sentence = normalize_text(
+            sentence
+        )
+
+        if not sentence:
+            continue
+
+        # ====================================================
+        # NEGASI / BANTAHAN
+        # ====================================================
 
         if sentence_has_negation(
             sentence
         ):
-
             continue
 
-        hits = regex_hits(
+        # ====================================================
+        # HARUS MENYEBUT SATKER / INTERNAL ACTOR
+        # ====================================================
+
+        has_satker = (
+            sentence_contains_satker(
+                sentence
+            )
+        )
+
+        has_internal_actor = (
+            sentence_contains_internal_actor(
+                sentence
+            )
+        )
+
+        if not (
+            has_satker
+            or has_internal_actor
+        ):
+            continue
+
+        # ====================================================
+        # NEGATIVE PATTERN
+        # ====================================================
+
+        negative_hits = regex_hits(
             sentence,
             NEGATIVE_STRONG_PATTERNS,
         )
 
-        if not hits:
+        if not negative_hits:
             continue
 
-        # ----------------------------------------------------
-        # PENTING:
+        # ====================================================
+        # POSITIVE ACTION OVERRIDE
         #
-        # Pastikan kalimat memang menyebut satker/internal.
-        # ----------------------------------------------------
+        # Contoh:
+        # "Kejari berhasil menangkap tersangka..."
+        #
+        # Kata negatif seperti "tersangka", "korupsi",
+        # "narkotika" tidak boleh membuat berita ini
+        # menjadi negatif terhadap Kejari.
+        # ====================================================
 
-        if (
-            sentence_contains_satker(
-                sentence
-            )
-            or sentence_contains_internal_actor(
-                sentence
-            )
-        ):
+        positive_hits = regex_hits(
+            sentence,
+            POSITIVE_ACTION_PATTERNS,
+        )
 
-            contexts.append(
-                sentence
-            )
+        if positive_hits:
+            continue
+
+        # ====================================================
+        # OFFICIAL ACTIVITY OVERRIDE
+        #
+        # Apel, rapat, FGD, kunjungan, penyuluhan,
+        # konsolidasi, dll. bukan masalah satker.
+        # ====================================================
+
+        official_hits = regex_hits(
+            sentence,
+            OFFICIAL_ACTIVITY_PATTERNS,
+        )
+
+        if official_hits:
+            continue
+
+        # ====================================================
+        # SIMPAN KONTEKS
+        # ====================================================
+
+        contexts.append(
+            sentence
+        )
 
     return contexts[:20]
-
-
+    
 # ============================================================
 # HANDLING CONTEXT
 # ============================================================
@@ -1592,38 +1734,35 @@ def calculate_positive_score(
     title: str,
     content: str,
 ) -> int:
+    """
+    Menghitung skor positif berdasarkan konteks.
 
-    title = normalize_text(
-        title
-    )
+    Prinsip:
+    - Keberhasilan penegakan hukum diberi bobot tinggi.
+    - Kegiatan resmi satker diberi bobot positif.
+    - Konteks positif lebih penting daripada jumlah keyword.
+    - Aksi positif yang secara jelas terkait Kejari/Kajari/jaksa
+      mendapat bobot tambahan.
+    - Berita hukum tidak otomatis positif hanya karena memiliki
+      kata seperti kasus, tersangka, penyidikan, atau narkotika.
+    """
 
-    content = normalize_text(
-        content
-    )
+    title = normalize_text(title)
+    content = normalize_text(content)
 
     full = (
         f"{title}. {content}"
     ).lower()
 
-    positive_action_hits = (
-        regex_hits(
-            full,
-            POSITIVE_ACTION_PATTERNS,
-        )
-    )
+    score = 0
 
-    official_hits = (
-        regex_hits(
-            full,
-            OFFICIAL_ACTIVITY_PATTERNS,
-        )
-    )
+    # ========================================================
+    # KONTEKS POSITIF
+    # ========================================================
 
-    positive_context = (
-        find_positive_context(
-            title,
-            content,
-        )
+    positive_context = find_positive_context(
+        title,
+        content,
     )
 
     official_context = (
@@ -1633,62 +1772,121 @@ def calculate_positive_score(
         )
     )
 
-    score = 0
+    # ========================================================
+    # AKSI POSITIF
+    # ========================================================
 
-    # Aksi penegakan hukum
-    score += (
-        4 * len(
-            positive_action_hits
-        )
+    positive_action_hits = regex_hits(
+        full,
+        POSITIVE_ACTION_PATTERNS,
     )
 
-    # Kegiatan resmi
-    score += (
-        3 * len(
-            official_hits
+    if positive_action_hits:
+        # Satu atau lebih aksi positif sudah cukup
+        # untuk memberikan dasar skor.
+        score += min(
+            8 * len(positive_action_hits),
+            20,
         )
+
+    # ========================================================
+    # KEGIATAN RESMI
+    # ========================================================
+
+    official_hits = regex_hits(
+        full,
+        OFFICIAL_ACTIVITY_PATTERNS,
     )
 
-    # Konteks positif
-    score += (
-        3 * len(
+    if official_hits:
+        score += min(
+            4 * len(official_hits),
+            12,
+        )
+
+    # ========================================================
+    # KONTEKS POSITIF
+    # ========================================================
+
+    if positive_context:
+        score += min(
+            5 * len(positive_context),
+            15,
+        )
+
+    # ========================================================
+    # KONTEKS KEGIATAN RESMI
+    # ========================================================
+
+    if official_context:
+        score += min(
+            3 * len(official_context),
+            9,
+        )
+
+    # ========================================================
+    # POSITIF YANG TERKAIT SATKER
+    # ========================================================
+
+    positive_satker_context = [
+        sentence
+        for sentence in (
             positive_context
+            + official_context
         )
-    )
-
-    # Konteks kegiatan
-    score += (
-        2 * len(
-            official_context
+        if sentence_contains_satker(
+            sentence
         )
-    )
+    ]
 
-    # Positive di judul
+    if positive_satker_context:
+        score += 6
+
+    # ========================================================
+    # AKSI POSITIF DI JUDUL
+    # ========================================================
+
     title_positive = regex_hits(
         title.lower(),
         POSITIVE_ACTION_PATTERNS,
     )
 
     if title_positive:
+        score += 7
 
+    # ========================================================
+    # KEGIATAN RESMI DI JUDUL
+    # ========================================================
+
+    title_official = regex_hits(
+        title.lower(),
+        OFFICIAL_ACTIVITY_PATTERNS,
+    )
+
+    if title_official:
         score += 5
 
-    # Positive activity yang jelas menyebut satker
+    # ========================================================
+    # RELEVANSI SATKER
+    # ========================================================
+
     if (
-        official_context
-        and check_satker_relevance(
+        check_satker_relevance(
             title,
             content,
         )
+        and (
+            positive_context
+            or official_context
+            or positive_action_hits
+        )
     ):
-
-        score += 3
+        score += 4
 
     return min(
         score,
         40,
     )
-
 
 # ============================================================
 # NEGATIVE SCORE
@@ -1698,14 +1896,20 @@ def calculate_negative_score(
     title: str,
     content: str,
 ) -> int:
+    """
+    Menghitung skor negatif berdasarkan konteks.
 
-    title = normalize_text(
-        title
-    )
+    Prinsip:
+    - Kata hukum seperti kasus, tersangka, penyidikan,
+      narkotika, korupsi, dll. TIDAK otomatis menjadi negatif.
+    - Negatif kuat harus mengarah kepada satker/internal actor
+      sebagai pihak yang bermasalah.
+    - Konteks keberhasilan penegakan hukum tidak diberi skor negatif.
+    - Negasi/bantahan tidak diberi skor negatif.
+    """
 
-    content = normalize_text(
-        content
-    )
+    title = normalize_text(title)
+    content = normalize_text(content)
 
     contexts = find_negative_context(
         title,
@@ -1717,55 +1921,109 @@ def calculate_negative_score(
 
     score = 0
 
+    # ========================================================
+    # KONTEKS NEGATIF
+    # ========================================================
+
     for context in contexts:
 
-        if sentence_has_negation(
-            context
-        ):
+        context = normalize_text(context)
 
+        if not context:
             continue
 
-        # Satu konteks negatif langsung = kuat.
+        # ----------------------------------------------------
+        # NEGASI / BANTAHAN
+        # ----------------------------------------------------
+
+        if sentence_has_negation(context):
+            continue
+
+        # ----------------------------------------------------
+        # KONTEKS POSITIF
+        #
+        # Jangan menghukum berita keberhasilan hukum.
+        # ----------------------------------------------------
+
+        if (
+            regex_hits(
+                context,
+                POSITIVE_ACTION_PATTERNS,
+            )
+            or regex_hits(
+                context,
+                OFFICIAL_ACTIVITY_PATTERNS,
+            )
+        ):
+            continue
+
+        # ----------------------------------------------------
+        # NEGATIVE HARUS TERKAIT SATKER / INTERNAL ACTOR
+        # ----------------------------------------------------
+
+        has_satker = sentence_contains_satker(
+            context
+        )
+
+        has_internal_actor = (
+            sentence_contains_internal_actor(
+                context
+            )
+        )
+
+        # Jika konteks negatif tidak menyebut satker
+        # maupun aktor internal, jangan langsung dianggap
+        # sebagai masalah terhadap Kejari.
+        if not (
+            has_satker
+            or has_internal_actor
+        ):
+            continue
+
+        # ----------------------------------------------------
+        # SKOR DASAR
+        # ----------------------------------------------------
+
         score += 12
 
-        # Jika Kajari/internal actor disebut,
-        # tambah bobot.
-        if sentence_contains_internal_actor(
-            context
-        ):
-
+        # Internal actor lebih sensitif.
+        if has_internal_actor:
             score += 4
+
+    # ========================================================
+    # NEGATIVE TITLE CONTEXT
+    # ========================================================
 
     title_contexts = [
         sentence
-        for sentence
-        in split_sentences(
-            title
-        )
+        for sentence in split_sentences(title)
         if (
-            sentence_contains_satker(
-                sentence
-            )
-            or sentence_contains_internal_actor(
-                sentence
-            )
+            sentence_contains_satker(sentence)
+            or sentence_contains_internal_actor(sentence)
         )
         and regex_hits(
             sentence,
             NEGATIVE_STRONG_PATTERNS,
         )
+        and not sentence_has_negation(sentence)
+        and not regex_hits(
+            sentence,
+            POSITIVE_ACTION_PATTERNS,
+        )
+        and not regex_hits(
+            sentence,
+            OFFICIAL_ACTIVITY_PATTERNS,
+        )
     ]
 
     if title_contexts:
-
         score += 8
 
     return min(
         score,
         40,
     )
-
-
+    
 # ============================================================
 # HANDLING SCORE
 # ============================================================
@@ -3569,54 +3827,9 @@ def dedupe_dry_run() -> Dict[str, Any]:
         start=1,
     ):
 
-        def record_score(row):
-
-            content = normalize_text(
-                row.get(
-                    "content"
-                )
-                or row.get(
-                    "summary"
-                )
-                or ""
-            )
-
-            title = normalize_text(
-                row.get(
-                    "title"
-                )
-            )
-
-            published = normalize_text(
-                row.get(
-                    "published_date"
-                )
-            )
-
-            try:
-
-                article_id = int(
-                    row.get(
-                        "id"
-                    )
-                )
-
-            except Exception:
-
-                article_id = (
-                    999999999
-                )
-
-            return (
-                len(content),
-                bool(title),
-                bool(published),
-                -article_id,
-            )
-
         rows_sorted = sorted(
             rows,
-            key=record_score,
+            key=get_dedupe_record_score,
             reverse=True,
         )
 
@@ -4115,6 +4328,46 @@ def dedupe() -> Dict[str, Any]:
     """Alias kompatibilitas untuk dedupe_database()."""
     return dedupe_database()
 
+def get_dedupe_record_score(
+    row: Dict[str, Any],
+) -> tuple:
+    """
+    Menentukan kualitas record untuk deduplikasi.
+
+    Prioritas:
+    1. Content paling lengkap
+    2. Memiliki title
+    3. Memiliki published_date
+    4. ID lebih kecil jika kualitas lainnya sama
+    """
+
+    content = normalize_text(
+        row.get("content")
+        or row.get("summary")
+        or ""
+    )
+
+    title = normalize_text(
+        row.get("title")
+    )
+
+    published = normalize_text(
+        row.get("published_date")
+    )
+
+    try:
+        article_id = int(
+            row.get("id")
+        )
+    except Exception:
+        article_id = 10**18
+
+    return (
+        len(content),
+        bool(title),
+        bool(published),
+        -article_id,
+    )
 
 # ============================================================
 # DEDUPE DATABASE
@@ -4142,63 +4395,6 @@ def dedupe_database() -> Dict[str, Any]:
 
     duplicate_groups = {k: v for k, v in groups.items() if len(v) > 1}
     delete_candidates: List[Dict[str, Any]] = []
-
-    def record_score(row: Dict[str, Any]):
-        content = normalize_text(row.get("content") or row.get("summary") or "")
-        title = normalize_text(row.get("title"))
-        published = normalize_text(row.get("published_date"))
-        try:
-            article_id = int(row.get("id"))
-        except Exception:
-            article_id = 10**18
-        return (len(content), bool(title), bool(published), -article_id)
-
-    print(f"[DATABASE] Total artikel: {len(articles)}")
-    print(f"[DEDUPE] Link unik: {len(groups)}")
-    print(f"[DEDUPE] Kelompok duplicate: {len(duplicate_groups)}")
-    print(f"[DEDUPE] Artikel duplicate: {sum(len(v)-1 for v in duplicate_groups.values())}")
-
-    for number, (normalized_link, rows) in enumerate(duplicate_groups.items(), start=1):
-        rows_sorted = sorted(rows, key=record_score, reverse=True)
-        keep = rows_sorted[0]
-        duplicates = rows_sorted[1:]
-        print(f"\n[DUPLICATE #{number}] {normalized_link}")
-        print(f"  KEEP   ID={keep.get('id')} | {normalize_text(keep.get('title'))[:100]}")
-        for row in duplicates:
-            print(f"  DELETE ID={row.get('id')} | {normalize_text(row.get('title'))[:100]}")
-        delete_candidates.extend(duplicates)
-
-    deleted = 0
-    failed = 0
-    for row in delete_candidates:
-        article_id = row.get("id")
-        if article_id is None:
-            failed += 1
-            continue
-        try:
-            if delete_article_by_id(article_id):
-                deleted += 1
-            else:
-                failed += 1
-        except Exception as exc:
-            failed += 1
-            print(f"[DELETE ERROR] ID={article_id} -> {type(exc).__name__}: {exc}")
-
-    try:
-        remaining = len(get_all_articles())
-    except Exception:
-        remaining = -1
-
-    print("\n" + "=" * 70)
-    print("DEDUPE SELESAI")
-    print("=" * 70)
-    print(f"Record sebelum : {len(articles)}")
-    print(f"Berhasil hapus : {deleted}")
-    print(f"Gagal hapus    : {failed}")
-    print(f"Record sesudah : {remaining}")
-    print(f"Link kosong    : {empty_links}")
-    print("=" * 70)
-    return {"success": failed == 0, "deleted": deleted, "failed": failed, "duplicate_groups": len(duplicate_groups), "remaining": remaining}
 
 # ============================================================
 # SANITIZE DATABASE
