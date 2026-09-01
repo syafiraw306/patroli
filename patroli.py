@@ -1797,10 +1797,22 @@ def find_negative_context(
 # HANDLING CONTEXT
 # ============================================================
 
+
 def find_handling_context(
     title: str,
     content: str,
 ) -> List[str]:
+    """
+    Mencari konteks yang perlu ditangani/dipantau.
+
+    Syarat:
+    1. Kalimat tidak mengandung negasi.
+    2. Kalimat mengandung pola HANDLING_PATTERNS.
+    3. Kalimat berkaitan dengan satker atau aktor internal.
+
+    Handling tidak otomatis berarti masalah berat terhadap satker.
+    Konteks ini digunakan untuk berita hukum/isu yang perlu dipantau.
+    """
 
     sentences = split_sentences(
         f"{title}. {content}"
@@ -1810,30 +1822,177 @@ def find_handling_context(
 
     for sentence in sentences:
 
+        # ----------------------------------------------------
+        # NEGASI
+        # ----------------------------------------------------
+
         if sentence_has_negation(
             sentence
         ):
-
             continue
 
-        if not sentence_contains_satker(
-            sentence
-        ):
+        # ----------------------------------------------------
+        # HANDLING PATTERN
+        # ----------------------------------------------------
 
-            continue
-
-        if regex_hits(
+        if not regex_hits(
             sentence,
             HANDLING_PATTERNS,
         ):
+            continue
 
-            contexts.append(
+        # ----------------------------------------------------
+        # HARUS BERKAITAN DENGAN SATKER
+        # ATAU AKTOR INTERNAL
+        # ----------------------------------------------------
+
+        if not (
+            sentence_contains_satker(
                 sentence
             )
+            or sentence_contains_internal_actor(
+                sentence
+            )
+        ):
+            continue
+
+        contexts.append(
+            sentence
+        )
 
     return contexts[:20]
 
 
+def audit_negative_articles() -> None:
+    """
+    Menampilkan seluruh artikel yang saat ini diklasifikasikan
+    sebagai Negatif Kuat beserta alasan/context yang terdeteksi.
+    Tidak mengubah database.
+    """
+
+    print("=" * 70)
+    print("AUDIT ARTIKEL NEGATIF KUAT")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+    except Exception as exc:
+        print(
+            f"[AUDIT ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return
+
+    negative_articles = [
+        article
+        for article in articles
+        if article.get("category")
+        == "Negatif Kuat"
+    ]
+
+    print(
+        f"[AUDIT] Total Negatif Kuat: "
+        f"{len(negative_articles)}"
+    )
+
+    print("=" * 70)
+
+    for index, article in enumerate(
+        negative_articles,
+        start=1,
+    ):
+
+        print()
+        print(
+            f"NEGATIF #{index}"
+        )
+        print("-" * 70)
+
+        print(
+            f"ID          : "
+            f"{article.get('id')}"
+        )
+
+        print(
+            f"Judul       : "
+            f"{article.get('title', '')}"
+        )
+
+        print(
+            f"Link        : "
+            f"{article.get('link', '')}"
+        )
+
+        print(
+            f"Negatif     : "
+            f"{article.get('negative_score', 0)}"
+        )
+
+        print(
+            f"Handling    : "
+            f"{article.get('handling_score', 0)}"
+        )
+
+        print(
+            f"Positif     : "
+            f"{article.get('positive_score', 0)}"
+        )
+
+        print(
+            f"Satker      : "
+            f"{article.get('satker_matches', [])}"
+        )
+
+        print(
+            "Strong Context:"
+        )
+
+        for context in (
+            article.get(
+                "strong_context",
+                []
+            )
+        ):
+
+            print(
+                f"  - {context}"
+            )
+
+        print(
+            "Positive Context:"
+        )
+
+        for context in (
+            article.get(
+                "positive_context",
+                []
+            )
+        ):
+
+            print(
+                f"  - {context}"
+            )
+
+        print(
+            "Handling Context:"
+        )
+
+        for context in (
+            article.get(
+                "handling_context",
+                []
+            )
+        ):
+
+            print(
+                f"  - {context}"
+            )
+
+    print()
+    print("=" * 70)
+    print("AUDIT SELESAI")
+    print("=" * 70)
+    
 # ============================================================
 # POSITIVE SCORE
 # ============================================================
@@ -2001,15 +2160,20 @@ def calculate_negative_score(
 
     Prinsip:
     - Kata hukum seperti kasus, tersangka, penyidikan,
-      narkotika, korupsi, dll. TIDAK otomatis menjadi negatif.
-    - Negatif kuat harus mengarah kepada satker/internal actor
-      sebagai pihak yang bermasalah.
-    - Konteks keberhasilan penegakan hukum tidak diberi skor negatif.
-    - Negasi/bantahan tidak diberi skor negatif.
+      narkotika, korupsi, dll. TIDAK otomatis negatif.
+    - Negatif hanya dihitung jika masalah benar-benar
+      berkaitan dengan satker atau aktor internal.
+    - Keberhasilan penegakan hukum tidak dianggap negatif.
+    - Kalimat negasi/bantahan tidak dianggap negatif.
+    - Konteks negatif yang sama tidak dihitung berulang kali.
     """
 
     title = normalize_text(title)
     content = normalize_text(content)
+
+    # ========================================================
+    # NEGATIVE CONTEXT
+    # ========================================================
 
     contexts = find_negative_context(
         title,
@@ -2021,9 +2185,8 @@ def calculate_negative_score(
 
     score = 0
 
-    # ========================================================
-    # KONTEKS NEGATIF
-    # ========================================================
+    # Mencegah kalimat yang sama dihitung berulang
+    seen_contexts = set()
 
     for context in contexts:
 
@@ -2032,37 +2195,54 @@ def calculate_negative_score(
         if not context:
             continue
 
-        # ----------------------------------------------------
-        # NEGASI / BANTAHAN
-        # ----------------------------------------------------
+        context_key = context.lower()
 
-        if sentence_has_negation(context):
+        if context_key in seen_contexts:
             continue
 
-        # ----------------------------------------------------
-        # KONTEKS POSITIF
-        #
-        # Jangan menghukum berita keberhasilan hukum.
-        # ----------------------------------------------------
+        seen_contexts.add(
+            context_key
+        )
 
-        if (
-            regex_hits(
-                context,
-                POSITIVE_ACTION_PATTERNS,
-            )
-            or regex_hits(
-                context,
-                OFFICIAL_ACTIVITY_PATTERNS,
-            )
+        # ====================================================
+        # NEGASI / BANTAHAN
+        # ====================================================
+
+        if sentence_has_negation(
+            context
         ):
             continue
 
-        # ----------------------------------------------------
-        # NEGATIVE HARUS TERKAIT SATKER / INTERNAL ACTOR
-        # ----------------------------------------------------
+        # ====================================================
+        # POSITIVE OVERRIDE
+        #
+        # Contoh:
+        # "Kejari berhasil menangkap tersangka..."
+        #
+        # Jangan dianggap negatif hanya karena terdapat
+        # kata "tersangka", "kasus", "narkotika", dll.
+        # ====================================================
 
-        has_satker = sentence_contains_satker(
-            context
+        if regex_hits(
+            context,
+            POSITIVE_ACTION_PATTERNS,
+        ):
+            continue
+
+        if regex_hits(
+            context,
+            OFFICIAL_ACTIVITY_PATTERNS,
+        ):
+            continue
+
+        # ====================================================
+        # HARUS ADA HUBUNGAN DENGAN SATKER / INTERNAL ACTOR
+        # ====================================================
+
+        has_satker = (
+            sentence_contains_satker(
+                context
+            )
         )
 
         has_internal_actor = (
@@ -2071,53 +2251,98 @@ def calculate_negative_score(
             )
         )
 
-        # Jika konteks negatif tidak menyebut satker
-        # maupun aktor internal, jangan langsung dianggap
-        # sebagai masalah terhadap Kejari.
         if not (
             has_satker
             or has_internal_actor
         ):
             continue
 
-        # ----------------------------------------------------
-        # SKOR DASAR
-        # ----------------------------------------------------
+        # ====================================================
+        # NEGATIVE SCORE
+        # ====================================================
 
+        # Konteks negatif yang benar-benar menyebut
+        # satker/internal actor = dasar negatif kuat.
         score += 12
 
-        # Internal actor lebih sensitif.
+        # Aktor internal membuat konteks lebih sensitif.
         if has_internal_actor:
             score += 4
+
+        # Batasi agar satu konteks tidak terlalu dominan.
+        score = min(
+            score,
+            32,
+        )
 
     # ========================================================
     # NEGATIVE TITLE CONTEXT
     # ========================================================
 
-    title_contexts = [
-        sentence
-        for sentence in split_sentences(title)
-        if (
-            sentence_contains_satker(sentence)
-            or sentence_contains_internal_actor(sentence)
+    title_contexts = []
+
+    for sentence in split_sentences(
+        title
+    ):
+
+        sentence = normalize_text(
+            sentence
         )
-        and regex_hits(
+
+        if not sentence:
+            continue
+
+        if not (
+            sentence_contains_satker(
+                sentence
+            )
+            or sentence_contains_internal_actor(
+                sentence
+            )
+        ):
+            continue
+
+        if not regex_hits(
             sentence,
             NEGATIVE_STRONG_PATTERNS,
-        )
-        and not sentence_has_negation(sentence)
-        and not regex_hits(
+        ):
+            continue
+
+        if sentence_has_negation(
+            sentence
+        ):
+            continue
+
+        if regex_hits(
             sentence,
             POSITIVE_ACTION_PATTERNS,
-        )
-        and not regex_hits(
+        ):
+            continue
+
+        if regex_hits(
             sentence,
             OFFICIAL_ACTIVITY_PATTERNS,
+        ):
+            continue
+
+        title_contexts.append(
+            sentence
         )
-    ]
+
+    # ========================================================
+    # TITLE SCORE
+    #
+    # Judul negatif merupakan sinyal tambahan,
+    # bukan pengganti konteks isi.
+    # ========================================================
 
     if title_contexts:
+
         score += 8
+
+    # ========================================================
+    # FINAL
+    # ========================================================
 
     return min(
         score,
