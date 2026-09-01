@@ -478,6 +478,174 @@ SESSION.headers.update(
     }
 )
 
+# ============================================================
+# SANITASI TEKS
+# ============================================================
+
+def clean_html_text(value):
+    """
+    Membersihkan HTML dari teks yang berasal dari RSS,
+    Google News, website berita, atau sumber eksternal.
+
+    Contoh:
+
+        <a href="https://...">Judul Berita</a>
+        <font color="#6f6f6f">Media Online</font>
+
+    menjadi:
+
+        Judul Berita Media Online
+    """
+
+    if value is None:
+        return ""
+
+    if isinstance(value, (dict, list, tuple)):
+        return str(value)
+
+    text = str(value)
+
+    if not text:
+        return ""
+
+    # --------------------------------------------------------
+    # Decode HTML entities
+    # --------------------------------------------------------
+
+    text = html.unescape(text)
+
+    # --------------------------------------------------------
+    # Hapus script
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"<script\b[^>]*>.*?</script>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # --------------------------------------------------------
+    # Hapus style
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"<style\b[^>]*>.*?</style>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # --------------------------------------------------------
+    # Pertahankan isi anchor <a>...</a>
+    # tetapi buang tag-nya.
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"<a\b[^>]*>(.*?)</a>",
+        r" \1 ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # --------------------------------------------------------
+    # Hapus seluruh tag HTML lainnya
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # --------------------------------------------------------
+    # Decode entity sekali lagi
+    # --------------------------------------------------------
+
+    text = html.unescape(text)
+
+    # --------------------------------------------------------
+    # Hapus URL Google News yang berdiri sendiri
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"https?://news\.google\.com/\S+",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # --------------------------------------------------------
+    # Hapus URL yang tersisa jika memang tidak diperlukan
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"https?://\S+",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    # --------------------------------------------------------
+    # Hapus karakter kontrol
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]",
+        " ",
+        text,
+    )
+
+    # --------------------------------------------------------
+    # Normalisasi whitespace
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
+def clean_text_list(value):
+    """
+    Membersihkan field yang dapat berupa list/string.
+
+    Contoh:
+        [
+            '<a href="...">Judul</a>',
+            '<font>Media</font>'
+        ]
+
+    menjadi:
+        [
+            'Judul',
+            'Media'
+        ]
+    """
+
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        value = [value]
+
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+
+    result = []
+
+    for item in value:
+
+        cleaned = clean_html_text(item)
+
+        if cleaned and cleaned not in result:
+            result.append(cleaned)
+
+    return result
 
 # ============================================================
 # TEXT UTILITIES
