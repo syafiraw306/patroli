@@ -123,7 +123,7 @@ TRACKING_PARAMETERS = {
 }
 
 
-def normalize_link(link: Any) -> str:
+def normalize_url(link: Any) -> str:
     """
     Normalisasi URL untuk membantu konsistensi database dan deduplikasi.
 
@@ -243,6 +243,7 @@ def normalize_link(link: Any) -> str:
         return value
 
 
+
 # ============================================================
 # ARTICLE PAYLOAD CLEANING
 # ============================================================
@@ -272,7 +273,7 @@ def clean_article_payload(
         data["summary"] = clean_html(data.get("summary"))
 
     if "link" in data:
-        data["link"] = normalize_link(data.get("link"))
+        data["link"] = normalize_url(data.get("link"))
 
     # Kolom belum ada di tabel articles
     data.pop("keywords", None)
@@ -400,7 +401,7 @@ def get_article_by_link(
     Mengambil artikel berdasarkan link yang sudah dinormalisasi.
     """
 
-    normalized = normalize_link(link)
+    normalized = normalize_url(link)
 
     if not normalized:
         return None
@@ -459,7 +460,7 @@ def upsert_article(
 
     data = clean_article_payload(article)
 
-    normalized_link = normalize_link(
+    normalized_link = normalize_url(
         data.get("link")
     )
 
@@ -560,7 +561,7 @@ def update_article(
     Ini dipertahankan sebagai kontrak utama patroli.py.
     """
 
-    normalized_link = normalize_link(link)
+    normalized_link = normalize_url(link)
 
     if not normalized_link:
         print("[DB UPDATE ERROR] Link artikel kosong.")
@@ -573,7 +574,7 @@ def update_article(
 
     # Jangan sampai update mengubah link menjadi format berbeda
     if "link" in data:
-        data["link"] = normalize_link(
+        data["link"] = normalize_url(
             data.get("link")
         )
 
