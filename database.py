@@ -122,128 +122,117 @@ TRACKING_PARAMETERS = {
     "source",
 }
 
-
-def normalize_url(link: Any) -> str:
+def normalize_url(url: Any) -> str:
     """
-    Normalisasi URL untuk membantu konsistensi database dan deduplikasi.
+    Canonical URL untuk deduplikasi.
 
     Aturan:
-    - None -> ""
-    - trim whitespace
-    - http/https dipertahankan
-    - hostname dibuat lowercase
-    - www. dihapus
-    - fragment (#...) dihapus
-    - tracking parameter dihapus
-    - parameter query lainnya dipertahankan
-    - trailing slash dihapus, kecuali root domain
+    - http/https diperlakukan sama
+    - disimpan sebagai https
+    - www. dihilangkan
+    - fragment dihilangkan
+    - tracking parameter dihilangkan
+    - trailing slash dihilangkan kecuali root
     """
 
-    if link is None:
-        return ""
-
-    value = str(link).strip()
+    value = str(url or "").strip()
 
     if not value:
         return ""
 
-    # HTML entity
     value = html.unescape(value).strip()
 
-    # Buang whitespace internal yang tidak semestinya
     value = re.sub(r"\s+", "", value)
 
-    # Jika URL tidak memiliki scheme
-    # tetap kita beri http untuk kebutuhan parsing.
-    parse_value = value
-
-    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+\-.]*://", parse_value):
-        parse_value = "http://" + parse_value
-
     try:
-        parsed = urllib.parse.urlsplit(parse_value)
+        if not re.match(
+            r"^[a-z][a-z0-9+.-]*://",
+            value,
+            re.I,
+        ):
+            value = "https://" + value
 
-        scheme = (parsed.scheme or "http").lower()
+        parsed = urllib.parse.urlsplit(value)
 
-        hostname = parsed.hostname or ""
+        scheme = "https"
+
+        hostname = (
+            parsed.hostname or ""
+        ).lower()
 
         if not hostname:
-            return value
+            return ""
 
-        hostname = hostname.lower()
-
-        # Hilangkan www.
         if hostname.startswith("www."):
             hostname = hostname[4:]
 
-        # Pertahankan port jika ada
+        # Pertahankan port non-default
         port = parsed.port
 
         netloc = hostname
 
-        if port is not None:
-            # Port default tidak perlu ditulis
-            if not (
-                (scheme == "http" and port == 80)
-                or (scheme == "https" and port == 443)
-            ):
-                netloc = f"{hostname}:{port}"
+        if port is not None and port != 443:
+            netloc = f"{hostname}:{port}"
 
-        # Bersihkan query parameter tracking
-        query_pairs = urllib.parse.parse_qsl(
-            parsed.query,
-            keep_blank_values=True,
-        )
+        tracking_keys = {
+            "utm_source",
+            "utm_medium",
+            "utm_campaign",
+            "utm_term",
+            "utm_content",
+            "utm_name",
+            "utm_id",
+            "fbclid",
+            "gclid",
+            "dclid",
+            "msclkid",
+            "ref",
+            "referrer",
+            "source",
+            "mc_cid",
+            "mc_eid",
+            "_ga",
+            "_gl",
+        }
 
-        cleaned_pairs = []
+        clean_query = [
+            (key, value)
+            for key, value
+            in urllib.parse.parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
+            if key.lower()
+            not in tracking_keys
+        ]
 
-        for key, val in query_pairs:
-            key_lower = key.lower()
-
-            if key_lower in TRACKING_PARAMETERS:
-                continue
-
-            cleaned_pairs.append((key, val))
-
-        cleaned_query = urllib.parse.urlencode(
-            cleaned_pairs,
+        query = urllib.parse.urlencode(
+            clean_query,
             doseq=True,
         )
 
         path = parsed.path or "/"
 
-        # Hilangkan trailing slash kecuali root
         if path != "/":
             path = path.rstrip("/")
 
-        # URL hasil normalisasi
-        normalized = urllib.parse.urlunsplit(
+        return urllib.parse.urlunsplit(
             (
                 scheme,
                 netloc,
                 path,
-                cleaned_query,
+                query,
                 "",
             )
         )
 
-        return normalized.strip()
-
     except Exception:
-        # Jika parsing gagal, setidaknya lakukan cleaning sederhana
-        value = value.split("#", 1)[0].strip()
-
-        if value.endswith("/") and not re.match(
-            r"^https?://[^/]+/$",
-            value,
-            flags=re.I,
-        ):
-            value = value.rstrip("/")
-
-        return value
-
-
-
+        return (
+            value
+            .split("#", 1)[0]
+            .rstrip("/")
+        )
+        
 # ============================================================
 # ARTICLE PAYLOAD CLEANING
 # ============================================================
