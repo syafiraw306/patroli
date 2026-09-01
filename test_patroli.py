@@ -30,19 +30,19 @@ TEST_CASES = [
         False,
     ),
     (
-    "Kajari Deliserdang Pimpin Sertijab Kasi Pidsus, Tekankan Integritas dan Percepatan Penanganan Korupsi",
-    True,
-    True,
+        "Kajari Deliserdang Pimpin Sertijab Kasi Pidsus, Tekankan Integritas dan Percepatan Penanganan Korupsi",
+        True,
+        True,
     ),
     (
-    "Kejari Deli Serdang berhasil menangkap tersangka korupsi",
-    True,
-    True,
+        "Kejari Deli Serdang berhasil menangkap tersangka korupsi",
+        True,
+        True,
     ),
     (
-    "Kejari Deli Serdang melakukan penyidikan kasus korupsi",
-    True,
-    True,
+        "Kejari Deli Serdang melakukan penyidikan kasus korupsi",
+        True,
+        True,
     ),
 ]
 
