@@ -27,6 +27,7 @@ on:
           - dedupe
           - sanitize-database
           - audit-negative
+          - audit-content-duplicates
 
 jobs:
   patroli:
@@ -106,6 +107,11 @@ jobs:
           
               echo "Menjalankan audit klasifikasi negatif..."
               python patroli.py --audit-negative-articles
+
+            elif [ "${{ inputs.mode }}" = "audit-content-duplicates" ]; then
+
+              echo "Menjalankan audit konten duplikat..."
+              python patroli.py --audit-content-duplicates
           
             else
           
