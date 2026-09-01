@@ -1173,10 +1173,21 @@ def extract_article_text(
 # SATKER MATCH
 # ============================================================
 
+
 def find_satker_matches(
     title: str,
     content: str,
 ) -> List[str]:
+    """
+    Mencari kecocokan nama/keyword satker
+    pada judul dan isi artikel.
+
+    Pencocokan menggunakan word boundary agar
+    tidak mudah menghasilkan false positive akibat
+    substring yang kebetulan sama.
+
+    Mengembalikan daftar keyword satker yang ditemukan.
+    """
 
     text = normalize_text(
         f"{title}. {content}"
@@ -1186,11 +1197,25 @@ def find_satker_matches(
 
     for keyword in TARGET_KEJARI_KEYWORDS:
 
-        if (
-            keyword.lower()
-            in text
-        ):
+        keyword_clean = normalize_text(
+            keyword
+        ).lower()
 
+        if not keyword_clean:
+            continue
+
+        # Escape agar keyword aman digunakan sebagai regex.
+        pattern = (
+            r"(?<!\w)"
+            + re.escape(keyword_clean)
+            + r"(?!\w)"
+        )
+
+        if re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
             matches.append(
                 keyword
             )
@@ -1200,6 +1225,7 @@ def find_satker_matches(
             matches
         )
     )
+
 
 
 def find_satker_match_location(
@@ -1463,10 +1489,37 @@ def sentence_has_negation(
 # POSITIVE CONTEXT
 # ============================================================
 
+
 def find_positive_context(
     title: str,
     content: str,
 ) -> List[str]:
+    """
+    Mencari konteks positif yang benar-benar berkaitan
+    dengan satker atau aktor internal.
+
+    Positif mencakup:
+    1. Keberhasilan penegakan hukum
+       - berhasil mengungkap
+       - berhasil menangkap
+       - menyita
+       - memusnahkan barang bukti
+       - menghentikan perkara melalui RJ
+       - dan pola keberhasilan lainnya
+
+    2. Kegiatan resmi satker
+       - apel
+       - rapat
+       - FGD
+       - kunjungan
+       - penyuluhan
+       - pelantikan
+       - silaturahmi
+       - kegiatan resmi lainnya
+
+    Kalimat yang mengandung negasi tidak dianggap positif.
+    Kalimat tetap harus berkaitan dengan satker/internal actor.
+    """
 
     sentences = split_sentences(
         f"{title}. {content}"
@@ -1476,18 +1529,52 @@ def find_positive_context(
 
     for sentence in sentences:
 
+        # ----------------------------------------------------
+        # Abaikan kalimat yang mengandung negasi.
+        #
+        # Contoh:
+        # "Kejari tidak berhasil menangkap..."
+        # tidak boleh dianggap positif.
+        # ----------------------------------------------------
+
         if sentence_has_negation(
             sentence
         ):
             continue
 
-        if not regex_hits(
+        # ----------------------------------------------------
+        # CEK AKSI POSITIF
+        # ----------------------------------------------------
+
+        positive_hits = regex_hits(
             sentence,
             POSITIVE_ACTION_PATTERNS,
+        )
+
+        # ----------------------------------------------------
+        # CEK KEGIATAN RESMI
+        # ----------------------------------------------------
+
+        official_hits = regex_hits(
+            sentence,
+            OFFICIAL_ACTIVITY_PATTERNS,
+        )
+
+        # ----------------------------------------------------
+        # Tidak ada indikator positif sama sekali.
+        # ----------------------------------------------------
+
+        if not (
+            positive_hits
+            or official_hits
         ):
             continue
 
-        # Positive harus punya hubungan dengan satker
+        # ----------------------------------------------------
+        # Positive harus berkaitan langsung dengan satker
+        # atau aktor internal.
+        # ----------------------------------------------------
+
         if not (
             sentence_contains_satker(
                 sentence
@@ -1502,12 +1589,36 @@ def find_positive_context(
             sentence
         )
 
-    return contexts[:20]    
+    return contexts[:20]
+
 
 def find_official_activity_context(
     title: str,
     content: str,
 ) -> List[str]:
+    """
+    Mencari kalimat yang menunjukkan kegiatan resmi satker.
+
+    Syarat:
+    1. Tidak mengandung negasi.
+    2. Mengandung pola kegiatan resmi.
+    3. Berkaitan dengan satker atau aktor internal.
+
+    Contoh yang dapat dianggap positif:
+    - Kejari Deli Serdang menggelar apel.
+    - Kajari Deli Serdang menghadiri rapat.
+    - Kejari Deli Serdang melaksanakan FGD.
+    - Kajari Deli Serdang menerima kunjungan.
+    - Jaksa Kejari Deli Serdang memberikan penyuluhan.
+
+    Tidak dianggap positif:
+    - Polres menggelar apel.
+    - Pemkab mengadakan rapat.
+    - Instansi lain melakukan kegiatan.
+
+    Kecuali kalimat tersebut juga secara jelas menghubungkan
+    kegiatan dengan satker atau aktor internal.
+    """
 
     sentences = split_sentences(
         f"{title}. {content}"
@@ -1517,32 +1628,74 @@ def find_official_activity_context(
 
     for sentence in sentences:
 
+        # ----------------------------------------------------
+        # NEGASI
+        # ----------------------------------------------------
+
         if sentence_has_negation(
             sentence
         ):
-
             continue
 
-        if regex_hits(
+        # ----------------------------------------------------
+        # KEGIATAN RESMI
+        # ----------------------------------------------------
+
+        activity_hits = regex_hits(
             sentence,
             OFFICIAL_ACTIVITY_PATTERNS,
-        ):
+        )
 
-            contexts.append(
+        if not activity_hits:
+            continue
+
+        # ----------------------------------------------------
+        # HUBUNGAN DENGAN SATKER / AKTOR INTERNAL
+        # ----------------------------------------------------
+
+        if not (
+            sentence_contains_satker(
                 sentence
             )
+            or sentence_contains_internal_actor(
+                sentence
+            )
+        ):
+            continue
+
+        contexts.append(
+            sentence
+        )
 
     return contexts[:20]
+
+
 
 
 # ============================================================
 # NEGATIVE CONTEXT
 # ============================================================
 
+
 def find_negative_context(
     title: str,
     content: str,
 ) -> List[str]:
+
+    """
+    Mencari kalimat yang benar-benar menunjukkan
+    masalah negatif langsung terhadap satker atau
+    aktor internal kejaksaan.
+
+    Prinsip:
+    1. Kalimat yang dinegasikan tidak dianggap negatif.
+    2. Kalimat keberhasilan penegakan hukum tidak dianggap negatif.
+    3. Kalimat kegiatan resmi tidak dianggap negatif.
+    4. Harus ada hubungan langsung dengan satker
+       atau aktor internal kejaksaan.
+    5. Hanya kalimat yang memenuhi NEGATIVE_STRONG_PATTERNS
+       yang dikembalikan.
+    """
 
     sentences = split_sentences(
         f"{title}. {content}"
@@ -1552,15 +1705,32 @@ def find_negative_context(
 
     for sentence in sentences:
 
+        sentence = normalize_text(
+            sentence
+        )
+
+        if not sentence:
+            continue
+
+        # ====================================================
+        # NEGASI / BANTAHAN
+        # ====================================================
+
         if sentence_has_negation(
             sentence
         ):
             continue
 
-        # ----------------------------------------------------
-        # Jangan anggap negatif jika kalimat jelas merupakan
-        # keberhasilan penegakan hukum.
-        # ----------------------------------------------------
+        # ====================================================
+        # KEBERHASILAN PENEGAKAN HUKUM
+        #
+        # Contoh:
+        # "Kejari berhasil menangkap tersangka."
+        # "Kejari mengungkap kasus korupsi."
+        #
+        # Jangan dianggap negatif hanya karena ada
+        # kata "tersangka", "korupsi", "kasus", dll.
+        # ====================================================
 
         positive_hits = regex_hits(
             sentence,
@@ -1570,6 +1740,26 @@ def find_negative_context(
         if positive_hits:
             continue
 
+        # ====================================================
+        # KEGIATAN RESMI
+        #
+        # Contoh:
+        # apel, rapat, FGD, kunjungan, koordinasi,
+        # monitoring, evaluasi, sosialisasi, dll.
+        # ====================================================
+
+        official_hits = regex_hits(
+            sentence,
+            OFFICIAL_ACTIVITY_PATTERNS,
+        )
+
+        if official_hits:
+            continue
+
+        # ====================================================
+        # NEGATIVE STRONG PATTERN
+        # ====================================================
+
         hits = regex_hits(
             sentence,
             NEGATIVE_STRONG_PATTERNS,
@@ -1578,9 +1768,9 @@ def find_negative_context(
         if not hits:
             continue
 
-        # ----------------------------------------------------
-        # Harus berkaitan langsung dengan satker/internal actor
-        # ----------------------------------------------------
+        # ====================================================
+        # HUBUNGAN LANGSUNG DENGAN SATKER / INTERNAL
+        # ====================================================
 
         if not (
             sentence_contains_satker(
@@ -1592,11 +1782,17 @@ def find_negative_context(
         ):
             continue
 
+        # ====================================================
+        # SIMPAN KONTEKS
+        # ====================================================
+
         contexts.append(
             sentence
         )
 
-    return contexts[:20]    
+    return contexts[:20]
+
+ 
 # ============================================================
 # HANDLING CONTEXT
 # ============================================================
@@ -1642,34 +1838,31 @@ def find_handling_context(
 # POSITIVE SCORE
 # ============================================================
 
+
 def calculate_positive_score(
     title: str,
     content: str,
 ) -> int:
     """
-    Menghitung skor positif berdasarkan konteks.
+    Menghitung skor positif berdasarkan konteks yang benar-benar
+    berkaitan dengan satker.
 
     Prinsip:
-    - Keberhasilan penegakan hukum diberi bobot tinggi.
-    - Kegiatan resmi satker diberi bobot positif.
-    - Konteks positif lebih penting daripada jumlah keyword.
-    - Aksi positif yang secara jelas terkait Kejari/Kajari/jaksa
-      mendapat bobot tambahan.
-    - Berita hukum tidak otomatis positif hanya karena memiliki
-      kata seperti kasus, tersangka, penyidikan, atau narkotika.
+    - Aksi keberhasilan penegakan hukum mendapat bobot tinggi.
+    - Kegiatan resmi satker mendapat bobot positif.
+    - Hubungan langsung dengan satker menjadi syarat utama.
+    - Keyword hukum seperti kasus, tersangka, narkotika, penyidikan,
+      dll. TIDAK otomatis menghasilkan skor positif.
+    - Menghindari double counting berlebihan.
     """
 
     title = normalize_text(title)
     content = normalize_text(content)
 
-    full = (
-        f"{title}. {content}"
-    ).lower()
-
     score = 0
 
     # ========================================================
-    # KONTEKS POSITIF
+    # CONTEXT
     # ========================================================
 
     positive_context = find_positive_context(
@@ -1685,120 +1878,115 @@ def calculate_positive_score(
     )
 
     # ========================================================
-    # AKSI POSITIF
-    # ========================================================
-
-    positive_action_hits = regex_hits(
-        full,
-        POSITIVE_ACTION_PATTERNS,
-    )
-
-    if positive_action_hits:
-        # Satu atau lebih aksi positif sudah cukup
-        # untuk memberikan dasar skor.
-        score += min(
-            8 * len(positive_action_hits),
-            20,
-        )
-
-    # ========================================================
-    # KEGIATAN RESMI
-    # ========================================================
-
-    official_hits = regex_hits(
-        full,
-        OFFICIAL_ACTIVITY_PATTERNS,
-    )
-
-    if official_hits:
-        score += min(
-            4 * len(official_hits),
-            12,
-        )
-
-    # ========================================================
-    # KONTEKS POSITIF
-    # ========================================================
-
-    if positive_context:
-        score += min(
-            5 * len(positive_context),
-            15,
-        )
-
-    # ========================================================
-    # KONTEKS KEGIATAN RESMI
-    # ========================================================
-
-    if official_context:
-        score += min(
-            3 * len(official_context),
-            9,
-        )
-
-    # ========================================================
-    # POSITIF YANG TERKAIT SATKER
+    # POSITIVE CONTEXT YANG BENAR-BENAR TERKAIT SATKER
     # ========================================================
 
     positive_satker_context = [
         sentence
-        for sentence in (
-            positive_context
-            + official_context
-        )
-        if sentence_contains_satker(
-            sentence
+        for sentence in positive_context
+        if (
+            sentence_contains_satker(sentence)
+            or sentence_contains_internal_actor(sentence)
         )
     ]
 
+    official_satker_context = [
+        sentence
+        for sentence in official_context
+        if (
+            sentence_contains_satker(sentence)
+            or sentence_contains_internal_actor(sentence)
+        )
+    ]
+
+    # ========================================================
+    # 1. KEBERHASILAN PENEGAKAN HUKUM
+    # ========================================================
+
     if positive_satker_context:
-        score += 6
+
+        # Ada konteks keberhasilan yang secara langsung
+        # berkaitan dengan satker/aktor internal.
+        score += 12
+
+        # Tambahan jika ada lebih dari satu konteks positif.
+        if len(positive_satker_context) >= 2:
+            score += 4
+
+        if len(positive_satker_context) >= 3:
+            score += 3
 
     # ========================================================
-    # AKSI POSITIF DI JUDUL
+    # 2. KEGIATAN RESMI SATKER
     # ========================================================
 
-    title_positive = regex_hits(
+    if official_satker_context:
+
+        # Kegiatan resmi satker merupakan indikator positif.
+        score += 8
+
+        if len(official_satker_context) >= 2:
+            score += 3
+
+        if len(official_satker_context) >= 3:
+            score += 2
+
+    # ========================================================
+    # 3. AKSI POSITIF DI JUDUL
+    # ========================================================
+
+    title_positive_hits = regex_hits(
         title.lower(),
         POSITIVE_ACTION_PATTERNS,
     )
 
-    if title_positive:
-        score += 7
+    if title_positive_hits:
+
+        # Jangan beri bonus judul apabila judul positif
+        # tidak menyebut/berhubungan dengan satker.
+        if (
+            sentence_contains_satker(title)
+            or sentence_contains_internal_actor(title)
+        ):
+            score += 7
 
     # ========================================================
-    # KEGIATAN RESMI DI JUDUL
+    # 4. KEGIATAN RESMI DI JUDUL
     # ========================================================
 
-    title_official = regex_hits(
+    title_official_hits = regex_hits(
         title.lower(),
         OFFICIAL_ACTIVITY_PATTERNS,
     )
 
-    if title_official:
-        score += 5
+    if title_official_hits:
+
+        if (
+            sentence_contains_satker(title)
+            or sentence_contains_internal_actor(title)
+        ):
+            score += 5
 
     # ========================================================
-    # RELEVANSI SATKER
+    # 5. BONUS HUBUNGAN LANGSUNG DENGAN SATKER
     # ========================================================
 
     if (
-        check_satker_relevance(
-            title,
-            content,
-        )
-        and (
-            positive_context
-            or official_context
-            or positive_action_hits
-        )
+        positive_satker_context
+        or official_satker_context
     ):
+
         score += 4
+
+    # ========================================================
+    # BATAS MAKSIMUM
+    # ========================================================
 
     return min(
         score,
         40,
     )
+
 
 # ============================================================
 # NEGATIVE SCORE
@@ -1981,6 +2169,7 @@ def calculate_handling_score(
 # CLASSIFIER
 # ============================================================
 
+
 def classify_article(
     title: str,
     content: str,
@@ -1997,6 +2186,10 @@ def classify_article(
     full = (
         f"{title}. {content}"
     ).lower()
+
+    # ========================================================
+    # SATKER
+    # ========================================================
 
     satker_matches = (
         find_satker_matches(
@@ -2018,6 +2211,10 @@ def classify_article(
             content,
         )
     )
+
+    # ========================================================
+    # CONTEXT
+    # ========================================================
 
     positive_context = (
         find_positive_context(
@@ -2047,6 +2244,10 @@ def classify_article(
         )
     )
 
+    # ========================================================
+    # SCORE
+    # ========================================================
+
     negative_score = (
         calculate_negative_score(
             title,
@@ -2067,6 +2268,10 @@ def classify_article(
             content,
         )
     )
+
+    # ========================================================
+    # HITS
+    # ========================================================
 
     positive_hits = (
         regex_hits(
@@ -2090,7 +2295,7 @@ def classify_article(
     )
 
     # ========================================================
-    # NEGASI / BANTAHAN
+    # NEGATION
     # ========================================================
 
     negated_danger = any(
@@ -2132,50 +2337,20 @@ def classify_article(
 
     category = "Netral"
 
-    # --------------------------------------------------------
+    # ========================================================
     # RULE 1
     #
-    # Kegiatan resmi satker.
+    # NEGATIF KUAT
     #
-    # Negatif langsung harus mengalahkan ini.
-    # --------------------------------------------------------
+    # Ini memiliki prioritas tertinggi.
+    #
+    # Hanya berlaku apabila:
+    # - ada konteks negatif langsung
+    # - score cukup kuat
+    # - bukan kalimat yang dinegasikan
+    # ========================================================
 
     if (
-        official_context
-        and check_satker_relevance(
-            title,
-            content,
-        )
-        and negative_score == 0
-    ):
-
-        category = "Positif"
-
-    # --------------------------------------------------------
-    # RULE 2
-    #
-    # Keberhasilan penegakan hukum.
-    #
-    # Misalnya:
-    # "Kejari berhasil menangkap tersangka."
-    # --------------------------------------------------------
-
-    elif (
-        positive_context
-        and negative_score == 0
-    ):
-
-        category = "Positif"
-
-    # --------------------------------------------------------
-    # RULE 3
-    #
-    # NEGATIF KUAT.
-    #
-    # Harus ada konteks negatif langsung.
-    # --------------------------------------------------------
-
-    elif (
         direct_negative
         and negative_score >= 12
         and not negated_danger
@@ -2183,13 +2358,63 @@ def classify_article(
 
         category = "Negatif Kuat"
 
-    # --------------------------------------------------------
+    # ========================================================
+    # RULE 2
+    #
+    # KEGIATAN RESMI SATKER
+    #
+    # Keyword hukum seperti:
+    # kasus, perkara, tersangka, korupsi,
+    # narkotika, penyidikan, dll.
+    #
+    # TIDAK BOLEH otomatis membatalkan
+    # kegiatan resmi.
+    # ========================================================
+
+    elif (
+        official_context
+        and check_satker_relevance(
+            title,
+            content,
+        )
+    ):
+
+        category = "Positif"
+
+    # ========================================================
+    # RULE 3
+    #
+    # KEBERHASILAN PENEGAKAN HUKUM
+    #
+    # Misalnya:
+    # - berhasil menangkap
+    # - berhasil mengungkap
+    # - menyita
+    # - memusnahkan
+    # - menghentikan penuntutan
+    # - menetapkan tersangka dalam proses resmi
+    #
+    # Selama bukan negative direct context.
+    # ========================================================
+
+    elif (
+        positive_context
+        and check_satker_relevance(
+            title,
+            content,
+        )
+    ):
+
+        category = "Positif"
+
+    # ========================================================
     # RULE 4
     #
-    # PERLU PENANGANAN.
+    # PERLU PENANGANAN
     #
-    # Hanya jika konteks handling menyebut satker.
-    # --------------------------------------------------------
+    # Isu perlu dipantau tetapi belum memenuhi
+    # kriteria negatif kuat.
+    # ========================================================
 
     elif (
         handling_score >= 3
@@ -2198,53 +2423,25 @@ def classify_article(
 
         category = "Perlu Penanganan"
 
-    # --------------------------------------------------------
+    # ========================================================
     # RULE 5
     #
-    # POSITIF SCORE.
-    # --------------------------------------------------------
+    # POSITIVE SCORE
+    # ========================================================
 
     elif positive_score >= 3:
 
         category = "Positif"
 
+    # ========================================================
+    # RULE 6
+    #
+    # DEFAULT
+    # ========================================================
+
     else:
 
         category = "Netral"
-
-    # ========================================================
-    # SAFETY OVERRIDE
-    #
-    # Jika positif jauh lebih jelas daripada negatif,
-    # pertahankan POSITIF.
-    # ========================================================
-
-    if (
-        category == "Negatif Kuat"
-        and positive_score > 0
-        and positive_score >= negative_score
-        and negative_score < 25
-    ):
-
-        category = "Positif"
-
-    # ========================================================
-    # POSITIVE DOMINANCE
-    #
-    # Jika ada aksi positif satker yang jelas dan
-    # negatif tidak langsung, jangan jadikan negatif.
-    # ========================================================
-
-    if (
-        positive_satker_context
-        and not direct_negative
-        and category in {
-            "Perlu Penanganan",
-            "Negatif Kuat",
-        }
-    ):
-
-        category = "Positif"
 
     # ========================================================
     # NEGATION OVERRIDE
@@ -2264,17 +2461,40 @@ def classify_article(
                 "Perlu Penanganan"
             )
 
+        elif (
+            positive_context
+            or official_context
+        ):
+
+            category = "Positif"
+
         else:
 
             category = "Netral"
 
     # ========================================================
+    # POSITIVE DOMINANCE
+    #
+    # Hanya berlaku jika tidak ada negative direct.
+    # ========================================================
+
+    if (
+        positive_satker_context
+        and not direct_negative
+        and category == "Perlu Penanganan"
+    ):
+
+        category = "Positif"
+
+    # ========================================================
     # PRIORITY
     # ========================================================
 
-    priority = PRIORITY_BY_CATEGORY[
-        category
-    ]
+    priority = (
+        PRIORITY_BY_CATEGORY[
+            category
+        ]
+    )
 
     # ========================================================
     # LEGAL KEYWORDS
@@ -2300,7 +2520,9 @@ def classify_article(
     # ========================================================
 
     return {
+
         "category": category,
+
         "priority": priority,
 
         "negative_score": int(
@@ -2825,28 +3047,28 @@ def collect_candidates() -> List[Dict[str, Any]]:
 # PROCESS CANDIDATE
 # ============================================================
 
-
 def process_candidate(
-    candidate: Dict[str, Any],
+candidate: Dict[str, Any],
 ) -> Dict[str, Any]:
     """
     Memproses satu kandidat artikel.
+    
 
-    Tahapan:
+    Alur:
     1. Normalisasi link
-    2. Filter tanggal RSS
+    2. Validasi tanggal RSS
     3. Fetch halaman
     4. Ekstraksi konten
-    5. Filter panjang konten
-    6. Cek relevansi satker
-    7. Validasi tanggal
+    5. Fallback ke RSS description
+    6. Validasi relevansi satker
+    7. Validasi tanggal final
     8. Klasifikasi
     9. Membentuk record artikel
-
-    Setiap kegagalan mengembalikan reason yang jelas
-    agar dapat dihitung pada run log.
+    
+    Fetch halaman yang gagal tidak langsung menggagalkan
+    artikel jika RSS description masih cukup untuk diproses.
     """
-
+    
     result = {
         "ok": False,
         "article": None,
@@ -2856,224 +3078,274 @@ def process_candidate(
     # ========================================================
     # BASIC DATA
     # ========================================================
-
+    
     title = normalize_text(
         candidate.get("title")
     )
-
+    
     rss_link = normalize_url(
         candidate.get("link")
     )
-
+    
     rss_date = parse_date_safe(
         candidate.get("published_date")
     )
-
+    
+    rss_description = normalize_text(
+        candidate.get("rss_description")
+    )
+    
     # ========================================================
     # LINK
     # ========================================================
-
+    
     if not rss_link:
-
-        result["reason"] = (
-            "link kosong"
-        )
-
+    
+        result["reason"] = "link kosong"
+    
         return result
-
+    
+    # ========================================================
+    # TITLE
+    # ========================================================
+    
+    if not title:
+    
+        result["reason"] = "judul kosong"
+    
+        return result
+    
     # ========================================================
     # FILTER TANGGAL RSS
     # ========================================================
-
+    
     if (
         rss_date
         and not is_article_2026(
             rss_date
         )
     ):
-
+    
         result["reason"] = (
             "bukan tahun target"
         )
-
+    
         return result
-
+    
     # ========================================================
     # FETCH
     # ========================================================
-
+    
+    final_url = rss_link
+    raw_html = ""
+    
     try:
-
+    
         final_url, raw_html = (
             fetch_webpage_content(
                 rss_link
             )
         )
-
+    
     except Exception as exc:
-
-        result["reason"] = (
-            f"fetch gagal: "
-            f"{type(exc).__name__}"
+    
+        print(
+            "[FETCH WARNING] "
+            f"{rss_link} -> "
+            f"{type(exc).__name__}: "
+            f"{exc}"
         )
-
-        return result
-
+    
+        final_url = rss_link
+        raw_html = ""
+    
     final_url = normalize_url(
         final_url or rss_link
     )
-
+    
     if not final_url:
-
+    
         final_url = rss_link
-
-    # ========================================================
-    # VALIDASI HTML
-    # ========================================================
-
-    if not raw_html:
-
-        result["reason"] = (
-            "halaman kosong"
-        )
-
-        return result
-
+    
     # ========================================================
     # CONTENT
     # ========================================================
-
-    try:
-
-        content = (
-            extract_article_text(
-                raw_html
+    
+    content = ""
+    
+    if raw_html:
+    
+        try:
+    
+            content = (
+                extract_article_text(
+                    raw_html
+                )
             )
-        )
-
-    except Exception as exc:
-
-        result["reason"] = (
-            f"ekstraksi konten gagal: "
-            f"{type(exc).__name__}"
-        )
-
-        return result
-
+    
+        except Exception as exc:
+    
+            print(
+                "[EXTRACT WARNING] "
+                f"{rss_link} -> "
+                f"{type(exc).__name__}: "
+                f"{exc}"
+            )
+    
     # ========================================================
     # FALLBACK RSS DESCRIPTION
+    #
+    # Penting:
+    # Jika website tidak bisa di-fetch tetapi RSS description
+    # cukup panjang, artikel tetap dapat diproses.
     # ========================================================
-
+    
     if (
         len(content)
         < MIN_CONTENT_LENGTH
     ):
-
-        rss_description = (
-            normalize_text(
-                candidate.get(
-                    "rss_description"
-                )
-            )
-        )
-
+    
         if (
             len(rss_description)
             >= MIN_CONTENT_LENGTH
         ):
-
+    
             content = rss_description
-
+    
     # ========================================================
     # KONTEN TERLALU PENDEK
     # ========================================================
-
+    
     if (
         len(content)
         < MIN_CONTENT_LENGTH
     ):
-
-        result["reason"] = (
-            "konten terlalu pendek"
-        )
-
+    
+        if not raw_html:
+    
+            result["reason"] = (
+                "fetch gagal / halaman kosong "
+                "dan RSS description terlalu pendek"
+            )
+    
+        else:
+    
+            result["reason"] = (
+                "konten terlalu pendek"
+            )
+    
         return result
-
+    
     # ========================================================
     # RELEVANCE SATKER
     # ========================================================
-
+    
     if not check_satker_relevance(
         title,
         content,
     ):
-
+    
         result["reason"] = (
             "tidak relevan dengan satker"
         )
-
+    
         return result
-
+    
     # ========================================================
     # TANGGAL FINAL
+    #
+    # Jangan menggunakan datetime.now().
+    # Artikel tanpa tanggal tidak boleh otomatis
+    # dianggap sebagai artikel tahun 2026.
     # ========================================================
-
-    published = (
-        rss_date
-        or datetime.now(
-            timezone.utc
+    
+    published = rss_date
+    
+    if not published:
+    
+        try:
+    
+            published = (
+                extract_published_date(
+                    candidate
+                )
+            )
+    
+        except Exception as exc:
+    
+            print(
+                "[DATE WARNING] "
+                f"{rss_link} -> "
+                f"{type(exc).__name__}: "
+                f"{exc}"
+            )
+    
+    # ========================================================
+    # TANGGAL TIDAK DITEMUKAN
+    # ========================================================
+    
+    if not published:
+    
+        result["reason"] = (
+            "tanggal artikel tidak ditemukan"
         )
-    )
-
+    
+        return result
+    
+    # ========================================================
+    # VALIDASI TAHUN FINAL
+    # ========================================================
+    
     if not is_article_2026(
         published
     ):
-
+    
         result["reason"] = (
             "tanggal artikel bukan 2026"
         )
-
+    
         return result
-
+    
     # ========================================================
     # CLASSIFICATION
     # ========================================================
-
+    
     try:
-
+    
         classification = (
             classify_article(
                 title,
                 content,
             )
         )
-
+    
     except Exception as exc:
-
+    
         result["reason"] = (
             f"classification gagal: "
             f"{type(exc).__name__}"
         )
-
+    
         return result
-
+    
     # ========================================================
     # ARTICLE
     # ========================================================
-
+    
     article = {
+    
         "title": title,
-
+    
         "link": final_url,
-
+    
         "content": content[
             :15000
         ],
-
+    
         "published_date": (
             published.isoformat()
         ),
-
+    
         "source": (
             normalize_text(
                 candidate.get(
@@ -3082,77 +3354,77 @@ def process_candidate(
             )
             or "Google News"
         ),
-
+    
         "category": (
             classification.get(
                 "category",
                 "Netral",
             )
         ),
-
+    
         "priority": (
             classification.get(
                 "priority",
                 "Rendah",
             )
         ),
-
+    
         "negative_score": int(
             classification.get(
                 "negative_score",
                 0,
             )
         ),
-
+    
         "handling_score": int(
             classification.get(
                 "handling_score",
                 0,
             )
         ),
-
+    
         "positive_score": int(
             classification.get(
                 "positive_score",
                 0,
             )
         ),
-
+    
         "detected_keywords": (
             classification.get(
                 "keywords",
                 [],
             )
         ),
-
+    
         "satker_matches": (
             classification.get(
                 "satker_matches",
                 [],
             )
         ),
-
+    
         "satker_match_location": (
             classification.get(
                 "satker_match_location",
                 "",
             )
         ),
-
+    
         "strong_context": (
             classification.get(
                 "strong_context",
                 [],
             )
         ),
-
+    
         "positive_context": (
             classification.get(
                 "positive_context",
                 [],
             )
         ),
-
+    
         "handling_context": (
             classification.get(
                 "handling_context",
@@ -3160,16 +3432,19 @@ def process_candidate(
             )
         ),
     }
-
+    
     # ========================================================
     # SUCCESS
     # ========================================================
-
+    
     result["ok"] = True
+    
     result["article"] = article
+    
     result["reason"] = "valid"
-
+    
     return result
+   
 
 
 
