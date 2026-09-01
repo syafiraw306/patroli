@@ -5995,6 +5995,238 @@ def audit_content_duplicates() -> None:
 
     print("=" * 70)
 
+def audit_exact_duplicates() -> None:
+    """
+    Audit artikel yang merupakan duplicate kuat.
+
+    Syarat:
+    - Title identik setelah normalisasi
+    - Content identik setelah normalisasi
+
+    Fungsi ini TIDAK menghapus data.
+    """
+
+    print("=" * 70)
+    print("AUDIT EXACT DUPLICATES")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[AUDIT ERROR] "
+            f"Gagal mengambil artikel: {exc}"
+        )
+
+        return
+
+    print(
+        f"[AUDIT] Total artikel: "
+        f"{len(articles)}"
+    )
+
+    # ========================================================
+    # KELOMPOKKAN BERDASARKAN TITLE + CONTENT
+    # ========================================================
+
+    exact_groups = {}
+
+    for article in articles:
+
+        title = normalize_text(
+            article.get("title") or ""
+        )
+
+        content = normalize_text(
+            article.get("content")
+            or article.get("summary")
+            or ""
+        )
+
+        normalized_title = (
+            title.lower().strip()
+        )
+
+        normalized_content = (
+            content.lower().strip()
+        )
+
+        # ----------------------------------------------------
+        # Abaikan artikel tanpa title
+        # ----------------------------------------------------
+
+        if not normalized_title:
+            continue
+
+        # ----------------------------------------------------
+        # Abaikan artikel tanpa content
+        # ----------------------------------------------------
+
+        if not normalized_content:
+            continue
+
+        # ----------------------------------------------------
+        # Hindari snippet terlalu pendek
+        # ----------------------------------------------------
+
+        if len(normalized_content) < 50:
+            continue
+
+        # ----------------------------------------------------
+        # KEY = TITLE + CONTENT
+        # ----------------------------------------------------
+
+        key = (
+            normalized_title,
+            normalized_content,
+        )
+
+        if key not in exact_groups:
+
+            exact_groups[key] = []
+
+        exact_groups[key].append(
+            article
+        )
+
+    # ========================================================
+    # AMBIL YANG BENAR-BENAR DUPLICATE
+    # ========================================================
+
+    exact_duplicates = {
+
+        key: items
+
+        for key, items
+        in exact_groups.items()
+
+        if len(items) > 1
+    }
+
+    # ========================================================
+    # TAMPILKAN HASIL
+    # ========================================================
+
+    print()
+    print("=" * 70)
+
+    print(
+        f"EXACT DUPLICATES: "
+        f"{len(exact_duplicates)} KELOMPOK"
+    )
+
+    print("=" * 70)
+
+    total_duplicate_records = 0
+
+    for index, (
+        key,
+        items,
+    ) in enumerate(
+        exact_duplicates.items(),
+        start=1,
+    ):
+
+        title, content = key
+
+        total_duplicate_records += len(
+            items
+        )
+
+        print()
+        print("-" * 70)
+
+        print(
+            f"EXACT DUPLICATE "
+            f"#{index}"
+        )
+
+        print()
+
+        print("TITLE:")
+
+        print(title)
+
+        print()
+
+        print(
+            f"CONTENT LENGTH: "
+            f"{len(content)}"
+        )
+
+        print()
+
+        print(
+            f"JUMLAH RECORD: "
+            f"{len(items)}"
+        )
+
+        print()
+
+        print("CONTENT PREVIEW:")
+
+        print(
+            content[:300]
+        )
+
+        print()
+
+        for item in items:
+
+            print(
+                f"ID     : "
+                f"{item.get('id')}"
+            )
+
+            print(
+                f"LINK   : "
+                f"{item.get('link')}"
+            )
+
+            print(
+                f"DATE   : "
+                f"{item.get('published_date')}"
+            )
+
+            print(
+                f"SOURCE : "
+                f"{item.get('source')}"
+            )
+
+            print()
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    print()
+    print("=" * 70)
+
+    print(
+        "AUDIT EXACT DUPLICATES SELESAI"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"Total artikel            : "
+        f"{len(articles)}"
+    )
+
+    print(
+        f"Kelompok exact duplicate : "
+        f"{len(exact_duplicates)}"
+    )
+
+    print(
+        f"Total record duplicate   : "
+        f"{total_duplicate_records}"
+    )
+
+    print("=" * 70)
+
 def audit_title_duplicates() -> None:
     """
     Audit artikel yang memiliki judul sama.
@@ -6411,6 +6643,15 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--audit-exact-duplicates",
+        action="store_true",
+        help=(
+            "audit artikel dengan title dan "
+            "content identik"
+        ),
+    )
+    
+    parser.add_argument(
         "--audit-content-duplicates",
         action="store_true",
         help=(
@@ -6474,6 +6715,17 @@ def main() -> None:
         audit_negative_articles()
 
         return
+
+    # --------------------------------------------------------
+    # AUDIT EXACT DUPLICATES
+    # --------------------------------------------------------
+    
+    if args.audit_exact_duplicates:
+    
+        audit_exact_duplicates()
+    
+        return
+
 
     if args.audit_content_duplicates:
 
