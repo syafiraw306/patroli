@@ -1701,35 +1701,26 @@ def find_positive_context(
 
         contexts.append(sentence)
 
-        # Hilangkan context duplikat
-        unique_contexts = []
-        seen = set()
+    # Hilangkan context duplikat
+    unique_contexts = []
+    seen = set()
         
-        for context in contexts:
-            normalized = context.strip().lower()
+    for context in contexts:
+        normalized = context.strip().lower()
         
-            if normalized in seen:
-                continue
+        if normalized in seen:
+            continue
         
-            seen.add(normalized)
-            unique_contexts.append(context)
-        
-        return unique_contexts[:20]
+        seen.add(normalized)
+        unique_contexts.append(context)
+    
+    return unique_contexts[:20]
 
 
 def find_official_activity_context(
     title: str,
     content: str,
 ) -> List[str]:
-    """
-    Mencari kalimat yang menunjukkan kegiatan resmi satker.
-
-    Syarat:
-    1. Tidak mengandung negasi.
-    2. Mengandung pola kegiatan resmi.
-    3. Berkaitan dengan satker atau aktor internal.
-    4. Tidak menunjukkan satker/aktor sebagai pihak bermasalah.
-    """
 
     sentences = split_sentences(
         f"{title}. {content}"
@@ -1739,33 +1730,8 @@ def find_official_activity_context(
 
     for sentence in sentences:
 
-        # ----------------------------------------------------
-        # NEGASI
-        # ----------------------------------------------------
-
         if sentence_has_negation(sentence):
             continue
-
-        # ----------------------------------------------------
-        # HARUS TERKAIT SATKER TARGET
-        # ----------------------------------------------------
-
-        has_satker = sentence_contains_satker(
-            sentence
-        )
-
-        has_internal_actor = (
-            sentence_contains_internal_actor(
-                sentence
-            )
-        )
-
-        if not (has_satker or has_internal_actor):
-            continue
-
-        # ----------------------------------------------------
-        # KEGIATAN RESMI
-        # ----------------------------------------------------
 
         activity_hits = regex_hits(
             sentence,
@@ -1775,37 +1741,29 @@ def find_official_activity_context(
         if not activity_hits:
             continue
 
-        # ----------------------------------------------------
-        # JANGAN ANGKAT KEGIATAN RESMI JIKA
-        # AKTOR INTERNAL ADALAH PIHAK BERMASALAH
-        # ----------------------------------------------------
-
-        strong_negative_hits = regex_hits(
-            sentence,
-            NEGATIVE_STRONG_PATTERNS,
-        )
-
-        if strong_negative_hits:
+        if not (
+            sentence_contains_satker(sentence)
+            or sentence_contains_internal_actor(sentence)
+        ):
             continue
 
         contexts.append(sentence)
-        contexts.append(sentence)
 
-        # Hilangkan context duplikat
-        unique_contexts = []
-        seen = set()
-        
-        for context in contexts:
-            normalized = context.strip().lower()
-        
-            if normalized in seen:
-                continue
-        
-            seen.add(normalized)
-            unique_contexts.append(context)
-        
-        return unique_contexts[:20]
+    # Hilangkan duplikasi
+    unique_contexts = []
+    seen = set()
 
+    for context in contexts:
+
+        normalized = context.strip().lower()
+
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        unique_contexts.append(context)
+
+    return unique_contexts[:20]
 
 
 # ============================================================
@@ -2035,7 +1993,7 @@ def calculate_positive_score(
     positive_context = find_positive_context(
         title,
         content,
-    )
+    ) or []
 
     official_context = (
         find_official_activity_context(
@@ -2461,6 +2419,7 @@ def classify_article(
             title,
             content,
         )
+        or []
     )
 
     negative_context = (
