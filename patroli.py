@@ -478,174 +478,6 @@ SESSION.headers.update(
     }
 )
 
-# ============================================================
-# SANITASI TEKS
-# ============================================================
-
-def clean_html_text(value):
-    """
-    Membersihkan HTML dari teks yang berasal dari RSS,
-    Google News, website berita, atau sumber eksternal.
-
-    Contoh:
-
-        <a href="https://...">Judul Berita</a>
-        <font color="#6f6f6f">Media Online</font>
-
-    menjadi:
-
-        Judul Berita Media Online
-    """
-
-    if value is None:
-        return ""
-
-    if isinstance(value, (dict, list, tuple)):
-        return str(value)
-
-    text = str(value)
-
-    if not text:
-        return ""
-
-    # --------------------------------------------------------
-    # Decode HTML entities
-    # --------------------------------------------------------
-
-    text = html.unescape(text)
-
-    # --------------------------------------------------------
-    # Hapus script
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"<script\b[^>]*>.*?</script>",
-        " ",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    # --------------------------------------------------------
-    # Hapus style
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"<style\b[^>]*>.*?</style>",
-        " ",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    # --------------------------------------------------------
-    # Pertahankan isi anchor <a>...</a>
-    # tetapi buang tag-nya.
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"<a\b[^>]*>(.*?)</a>",
-        r" \1 ",
-        text,
-        flags=re.IGNORECASE | re.DOTALL,
-    )
-
-    # --------------------------------------------------------
-    # Hapus seluruh tag HTML lainnya
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"<[^>]+>",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # --------------------------------------------------------
-    # Decode entity sekali lagi
-    # --------------------------------------------------------
-
-    text = html.unescape(text)
-
-    # --------------------------------------------------------
-    # Hapus URL Google News yang berdiri sendiri
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"https?://news\.google\.com/\S+",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # --------------------------------------------------------
-    # Hapus URL yang tersisa jika memang tidak diperlukan
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"https?://\S+",
-        " ",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    # --------------------------------------------------------
-    # Hapus karakter kontrol
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]",
-        " ",
-        text,
-    )
-
-    # --------------------------------------------------------
-    # Normalisasi whitespace
-    # --------------------------------------------------------
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    )
-
-    return text.strip()
-
-
-def clean_text_list(value):
-    """
-    Membersihkan field yang dapat berupa list/string.
-
-    Contoh:
-        [
-            '<a href="...">Judul</a>',
-            '<font>Media</font>'
-        ]
-
-    menjadi:
-        [
-            'Judul',
-            'Media'
-        ]
-    """
-
-    if value is None:
-        return []
-
-    if isinstance(value, str):
-        value = [value]
-
-    if not isinstance(value, (list, tuple)):
-        value = [value]
-
-    result = []
-
-    for item in value:
-
-        cleaned = clean_html_text(item)
-
-        if cleaned and cleaned not in result:
-            result.append(cleaned)
-
-    return result
 
 # ============================================================
 # TEXT UTILITIES
@@ -667,6 +499,208 @@ def normalize_text(
 
     return text.strip()
 
+def sanitize_html_text(value: Any) -> Any:
+    """
+    Membersihkan HTML dari nilai teks database.
+
+    Contoh:
+        <a href="...">Judul</a>
+        <font color="#6f6f6f">Media</font>
+
+    menjadi:
+        Judul Media
+
+    Tidak mengubah None menjadi string kosong.
+    """
+
+    if value is None:
+        return None
+
+    if not isinstance(value, str):
+        return value
+
+    text = value.strip()
+
+    if not text:
+        return ""
+
+    # --------------------------------------------------------
+    # Hapus script/style beserta isinya
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"<\s*(script|style|noscript)\b[^>]*>.*?</\s*\1\s*>",
+        " ",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    # --------------------------------------------------------
+    # Gunakan BeautifulSoup untuk menghapus HTML
+    # --------------------------------------------------------
+
+    try:
+        soup = BeautifulSoup(
+            text,
+            "html.parser",
+        )
+
+        # Tag yang biasanya hanya pembungkus visual.
+        for tag in soup.find_all(
+            [
+                "br",
+                "p",
+                "div",
+                "li",
+                "tr",
+            ]
+        ):
+            tag.insert_before(" ")
+            tag.insert_after(" ")
+
+        text = soup.get_text(
+            " ",
+            strip=True,
+        )
+
+    except Exception:
+        # Fallback jika parser bermasalah
+        text = re.sub(
+            r"<[^>]+>",
+            " ",
+            text,
+        )
+
+    # --------------------------------------------------------
+    # Decode HTML entity
+    #
+    # &amp;  -> &
+    # &quot; -> "
+    # &#39;  -> '
+    # --------------------------------------------------------
+
+    text = html.unescape(
+        text
+    )
+
+    # --------------------------------------------------------
+    # Hapus sisa tag HTML
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+    )
+
+    # --------------------------------------------------------
+    # Normalisasi whitespace
+    # --------------------------------------------------------
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    ).strip()
+
+    return text
+
+SANITIZE_FIELDS = [
+    "title",
+    "snippet",
+    "content",
+    "summary",
+    "source",
+
+    "strong_context",
+    "handling_context",
+    "positive_context",
+    "satker_context",
+
+    "detected_keywords",
+    "satker_matches",
+
+    "positive_hits",
+    "negative_hits",
+    "handling_hits",
+]
+
+def sanitize_article(
+    article: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Membersihkan field teks/list teks dari HTML.
+
+    Field yang tidak termasuk SANITIZE_FIELDS
+    tidak disentuh.
+    """
+
+    cleaned = {}
+
+    for field in SANITIZE_FIELDS:
+
+        if field not in article:
+            continue
+
+        value = article.get(field)
+
+        if value is None:
+            continue
+
+        # ----------------------------------------------------
+        # List
+        # ----------------------------------------------------
+
+        if isinstance(value, list):
+
+            new_list = []
+
+            for item in value:
+
+                if isinstance(item, str):
+
+                    cleaned_item = (
+                        sanitize_html_text(
+                            item
+                        )
+                    )
+
+                    if cleaned_item:
+                        new_list.append(
+                            cleaned_item
+                        )
+
+                else:
+
+                    # Jangan merusak tipe data non-string
+                    new_list.append(
+                        item
+                    )
+
+            cleaned[field] = new_list
+
+        # ----------------------------------------------------
+        # String
+        # ----------------------------------------------------
+
+        elif isinstance(value, str):
+
+            cleaned[field] = (
+                sanitize_html_text(
+                    value
+                )
+            )
+
+        # ----------------------------------------------------
+        # Tipe lainnya
+        # ----------------------------------------------------
+
+        else:
+
+            cleaned[field] = value
+
+    return cleaned
+    
 
 def normalize_url(url: Any) -> str:
     """
@@ -4073,6 +4107,14 @@ def dedupe_dry_run() -> Dict[str, Any]:
     }
 
 
+# ============================================================
+# DEDUPE REAL
+# ============================================================
+
+def dedupe() -> Dict[str, Any]:
+    """Alias kompatibilitas untuk dedupe_database()."""
+    return dedupe_database()
+
 
 # ============================================================
 # DEDUPE DATABASE
@@ -4159,12 +4201,199 @@ def dedupe_database() -> Dict[str, Any]:
     return {"success": failed == 0, "deleted": deleted, "failed": failed, "duplicate_groups": len(duplicate_groups), "remaining": remaining}
 
 # ============================================================
-# DEDUPE REAL
+# SANITIZE DATABASE
 # ============================================================
 
-def dedupe() -> Dict[str, Any]:
-    """Alias kompatibilitas untuk dedupe_database()."""
-    return dedupe_database()
+def sanitize_database() -> Dict[str, Any]:
+    """
+    Membersihkan HTML yang sudah tersimpan di database.
+
+    Tidak:
+    - INSERT artikel
+    - DELETE artikel
+    - mengubah link
+    - mengubah klasifikasi
+    - melakukan dedupe
+
+    Hanya UPDATE field yang memang mengandung perubahan.
+    """
+
+    print("=" * 70)
+    print("SANITASI DATABASE")
+    print("MEMBERSIHKAN HTML DARI DATA ARTIKEL")
+    print("=" * 70)
+
+    try:
+
+        articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            "[SANITIZE ERROR] "
+            "Gagal mengambil database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "success": False,
+            "total": 0,
+            "updated": 0,
+            "unchanged": 0,
+            "failed": 0,
+        }
+
+    total = len(articles)
+
+    updated = 0
+    unchanged = 0
+    failed = 0
+
+    print(
+        f"[SANITIZE] Total artikel: {total}"
+    )
+
+    # --------------------------------------------------------
+    # Proses satu per satu
+    # --------------------------------------------------------
+
+    for index, article in enumerate(
+        articles,
+        start=1,
+    ):
+
+        article_id = article.get(
+            "id"
+        )
+
+        if article_id is None:
+
+            failed += 1
+
+            print(
+                "[SANITIZE ERROR] "
+                f"{index}/{total} -> "
+                "ID artikel tidak ditemukan"
+            )
+
+            continue
+
+        try:
+
+            cleaned = sanitize_article(
+                article
+            )
+
+            payload = {}
+
+            # ------------------------------------------------
+            # Hanya update field yang berubah
+            # ------------------------------------------------
+
+            for field in SANITIZE_FIELDS:
+
+                if field not in cleaned:
+                    continue
+
+                old_value = article.get(
+                    field
+                )
+
+                new_value = cleaned.get(
+                    field
+                )
+
+                if new_value != old_value:
+
+                    payload[field] = new_value
+
+            # ------------------------------------------------
+            # Tidak ada perubahan
+            # ------------------------------------------------
+
+            if not payload:
+
+                unchanged += 1
+
+            else:
+
+                supabase = get_supabase()
+
+                (
+                    supabase
+                    .table("articles")
+                    .update(payload)
+                    .eq("id", article_id)
+                    .execute()
+                )
+
+                updated += 1
+
+                print(
+                    "[SANITIZE] UPDATE "
+                    f"ID={article_id} | "
+                    f"field={', '.join(payload.keys())}"
+                )
+
+        except Exception as exc:
+
+            failed += 1
+
+            print(
+                "[SANITIZE ERROR] "
+                f"{index}/{total} | "
+                f"ID={article_id} | "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        # ----------------------------------------------------
+        # Progress
+        # ----------------------------------------------------
+
+        if (
+            index % 25 == 0
+            or index == total
+        ):
+
+            print(
+                "[SANITIZE] Progress "
+                f"{index}/{total}"
+            )
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 70)
+    print("SANITASI SELESAI")
+    print("=" * 70)
+
+    print(
+        f"Total artikel   : {total}"
+    )
+
+    print(
+        f"Berhasil update : {updated}"
+    )
+
+    print(
+        f"Tidak berubah   : {unchanged}"
+    )
+
+    print(
+        f"Gagal           : {failed}"
+    )
+
+    print("=" * 70)
+
+    return {
+        "success": failed == 0,
+        "total": total,
+        "updated": updated,
+        "unchanged": unchanged,
+        "failed": failed,
+    }
 
 # ============================================================
 # MAIN
@@ -4214,7 +4443,26 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--sanitize-database",
+        action="store_true",
+        help=(
+            "membersihkan HTML dari "
+            "data artikel di database"
+        ),
+    )
+
     args = parser.parse_args()
+
+    # --------------------------------------------------------
+    # SANITIZE DATABASE
+    # --------------------------------------------------------
+
+    if args.sanitize_database:
+
+        sanitize_database()
+
+        return
 
     # --------------------------------------------------------
     # DEDUPE DRY RUN
