@@ -28,6 +28,7 @@ on:
           - sanitize-database
           - audit-negative
           - audit-content-duplicates
+          - audit-title-duplicates
 
 jobs:
   patroli:
@@ -112,6 +113,10 @@ jobs:
 
               echo "Menjalankan audit konten duplikat..."
               python patroli.py --audit-content-duplicates
+
+            elif [ "${{ inputs.mode }}" = "audit-title-duplicates" ]; then
+              echo "Menjalankan audit duplicate title..."
+              python patroli.py --audit-title-duplicates
           
             else
           
