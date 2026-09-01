@@ -1,5 +1,4 @@
 import datetime
-import html
 import os
 from typing import Any, Dict, List, Optional
 
@@ -14,7 +13,7 @@ from database import (
 
 
 # ============================================================
-# KONFIGURASI APLIKASI
+# KONFIGURASI
 # ============================================================
 
 st.set_page_config(
@@ -24,12 +23,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-NAMA_SATKER = (
-    os.getenv(
-        "NAMA_SATKER",
-        "Kejaksaan Negeri Deli Serdang",
-    ).strip()
-    or "Kejaksaan Negeri Deli Serdang"
+NAMA_SATKER = os.getenv(
+    "NAMA_SATKER",
+    "Kejaksaan Negeri Deli Serdang",
 )
 
 try:
@@ -41,434 +37,38 @@ except (TypeError, ValueError):
 
 
 # ============================================================
-# KONSTANTA
-# ============================================================
-
-CATEGORY_NEGATIVE = "Negatif Kuat"
-CATEGORY_HANDLING = "Perlu Penanganan"
-CATEGORY_NEUTRAL = "Netral"
-CATEGORY_POSITIVE = "Positif"
-
-CATEGORIES = [
-    CATEGORY_NEGATIVE,
-    CATEGORY_HANDLING,
-    CATEGORY_NEUTRAL,
-    CATEGORY_POSITIVE,
-]
-
-PRIORITY_CATEGORIES = [
-    CATEGORY_NEGATIVE,
-    CATEGORY_HANDLING,
-]
-
-MONTHS = {
-    0: "Semua Bulan",
-    1: "Januari",
-    2: "Februari",
-    3: "Maret",
-    4: "April",
-    5: "Mei",
-    6: "Juni",
-    7: "Juli",
-    8: "Agustus",
-    9: "September",
-    10: "Oktober",
-    11: "November",
-    12: "Desember",
-}
-
-DATE_FILTERS = [
-    "24 jam terakhir",
-    "7 hari terakhir",
-    "1 bulan terakhir",
-    f"Tahun {TAHUN_TARGET}",
-    "Semua data",
-]
-
-SORT_OPTIONS = [
-    "Terbaru → Terlama",
-    "Terlama → Terbaru",
-]
-
-
-# ============================================================
-# CSS
-# ============================================================
-
-st.markdown(
-    """
-    <style>
-
-    /* =====================================================
-       GLOBAL
-       ===================================================== */
-
-    .stApp {
-        background: #f5f7fb;
-    }
-
-    .block-container {
-        max-width: 1500px;
-        padding-top: 1.5rem;
-        padding-bottom: 3rem;
-    }
-
-    section[data-testid="stSidebar"] {
-        background: #ffffff;
-        border-right: 1px solid #e5e7eb;
-    }
-
-    section[data-testid="stSidebar"] > div {
-        padding-top: 1.5rem;
-    }
-
-
-    /* =====================================================
-       HEADER
-       ===================================================== */
-
-    .dashboard-header {
-        background:
-            linear-gradient(
-                135deg,
-                #7f1d1d 0%,
-                #991b1b 45%,
-                #b91c1c 100%
-            );
-
-        padding: 28px 32px;
-        border-radius: 18px;
-        margin-bottom: 24px;
-
-        box-shadow:
-            0 10px 30px rgba(127, 29, 29, 0.18);
-
-        color: white;
-    }
-
-    .dashboard-header-title {
-        font-size: 30px;
-        font-weight: 800;
-        letter-spacing: -0.5px;
-    }
-
-    .dashboard-header-subtitle {
-        margin-top: 6px;
-        font-size: 14px;
-        opacity: 0.90;
-    }
-
-    .dashboard-header-badge {
-        display: inline-block;
-        margin-top: 16px;
-        padding: 6px 12px;
-        border-radius: 999px;
-
-        background: rgba(255,255,255,0.15);
-        border: 1px solid rgba(255,255,255,0.25);
-
-        font-size: 12px;
-        font-weight: 600;
-    }
-
-
-    /* =====================================================
-       SECTION
-       ===================================================== */
-
-    .section-title {
-        font-size: 21px;
-        font-weight: 800;
-        color: #111827;
-        margin-top: 8px;
-        margin-bottom: 4px;
-    }
-
-    .section-description {
-        color: #6b7280;
-        font-size: 13px;
-        margin-bottom: 16px;
-    }
-
-
-    /* =====================================================
-       KPI
-       ===================================================== */
-
-    .kpi-card {
-        background: #ffffff;
-
-        border: 1px solid #e5e7eb;
-        border-radius: 16px;
-
-        padding: 18px 20px;
-
-        min-height: 120px;
-
-        box-shadow:
-            0 4px 14px rgba(15, 23, 42, 0.05);
-
-        transition: all 0.2s ease;
-    }
-
-    .kpi-card:hover {
-        transform: translateY(-2px);
-
-        box-shadow:
-            0 8px 22px rgba(15, 23, 42, 0.09);
-    }
-
-    .kpi-icon {
-        font-size: 22px;
-    }
-
-    .kpi-label {
-        color: #6b7280;
-        font-size: 12px;
-        font-weight: 600;
-        margin-top: 8px;
-    }
-
-    .kpi-value {
-        color: #111827;
-        font-size: 29px;
-        font-weight: 800;
-        margin-top: 2px;
-    }
-
-
-    /* =====================================================
-       ARTICLE
-       ===================================================== */
-
-    .article-card {
-        background: #ffffff;
-
-        border: 1px solid #e5e7eb;
-        border-radius: 16px;
-
-        padding: 20px;
-        margin-bottom: 10px;
-
-        box-shadow:
-            0 3px 12px rgba(15, 23, 42, 0.04);
-
-        transition: all 0.2s ease;
-    }
-
-    .article-card:hover {
-        border-color: #cbd5e1;
-
-        box-shadow:
-            0 8px 22px rgba(15, 23, 42, 0.08);
-
-        transform: translateY(-1px);
-    }
-
-    .article-title {
-        font-size: 17px;
-        font-weight: 750;
-        color: #111827;
-        line-height: 1.45;
-        margin-bottom: 10px;
-    }
-
-    .article-date {
-        color: #6b7280;
-        font-size: 12px;
-        margin-top: 10px;
-        margin-bottom: 10px;
-    }
-
-    .article-snippet {
-        color: #374151;
-        font-size: 13px;
-        line-height: 1.6;
-        margin-top: 10px;
-    }
-
-
-    /* =====================================================
-       BADGES
-       ===================================================== */
-
-    .badge {
-        display: inline-block;
-
-        padding: 5px 10px;
-
-        border-radius: 999px;
-
-        font-size: 11px;
-        font-weight: 700;
-
-        margin-right: 5px;
-        margin-bottom: 5px;
-    }
-
-    .badge-red {
-        background: #fee2e2;
-        color: #991b1b;
-    }
-
-    .badge-orange {
-        background: #ffedd5;
-        color: #9a3412;
-    }
-
-    .badge-yellow {
-        background: #fef9c3;
-        color: #854d0e;
-    }
-
-    .badge-green {
-        background: #dcfce7;
-        color: #166534;
-    }
-
-    .badge-gray {
-        background: #f3f4f6;
-        color: #374151;
-    }
-
-
-    /* =====================================================
-       INFO BOX
-       ===================================================== */
-
-    .info-box {
-        background: #f8fafc;
-
-        border: 1px solid #e2e8f0;
-
-        border-radius: 14px;
-
-        padding: 14px 16px;
-
-        color: #475569;
-
-        font-size: 13px;
-        line-height: 1.6;
-
-        margin-top: 10px;
-    }
-
-
-    /* =====================================================
-       SIDEBAR
-       ===================================================== */
-
-    .sidebar-brand {
-        text-align: center;
-        padding: 5px 5px 18px 5px;
-    }
-
-    .sidebar-logo {
-        font-size: 42px;
-    }
-
-    .sidebar-title {
-        font-size: 18px;
-        font-weight: 800;
-        color: #111827;
-    }
-
-    .sidebar-subtitle {
-        color: #6b7280;
-        font-size: 12px;
-        margin-top: 3px;
-    }
-
-
-    /* =====================================================
-       TABS
-       ===================================================== */
-
-    button[data-baseweb="tab"] {
-        font-weight: 700;
-    }
-
-
-    /* =====================================================
-       METRIC
-       ===================================================== */
-
-    [data-testid="stMetricValue"] {
-        font-size: 27px;
-        font-weight: 800;
-    }
-
-    [data-testid="stMetricLabel"] {
-        font-weight: 650;
-    }
-
-
-    /* =====================================================
-       BUTTON
-       ===================================================== */
-
-    .stButton > button,
-    .stLinkButton > a {
-        border-radius: 10px;
-        font-weight: 650;
-    }
-
-
-    /* =====================================================
-       FOOTER
-       ===================================================== */
-
-    .footer {
-        text-align: center;
-        color: #94a3b8;
-        font-size: 11px;
-        padding-top: 12px;
-        line-height: 1.6;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
 # SESSION STATE
 # ============================================================
 
-def initialize_session_state() -> None:
-    defaults = {
-        "logged_in": False,
-        "username": "",
-        "role": "",
-    }
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
 
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+if "username" not in st.session_state:
+    st.session_state.username = ""
 
-
-initialize_session_state()
+if "role" not in st.session_state:
+    st.session_state.role = ""
 
 
 # ============================================================
-# AUTHENTICATION
+# FUNGSI AUTHENTICATION
 # ============================================================
 
 def get_users() -> Dict[str, Dict[str, str]]:
     """
-    Membaca konfigurasi user dari st.secrets.
+    Membaca daftar pengguna dari st.secrets.
 
-    Format:
-        [users.admin]
-        username = "admin"
-        password = "..."
-        role = "admin"
+    Format secrets yang didukung:
 
-        [users.viewer]
-        username = "viewer"
-        password = "..."
-        role = "viewer"
+    [users.admin]
+    username = "admin"
+    password = "password"
+    role = "admin"
+
+    [users.viewer]
+    username = "viewer"
+    password = "password"
+    role = "viewer"
     """
 
     users: Dict[str, Dict[str, str]] = {}
@@ -480,7 +80,6 @@ def get_users() -> Dict[str, Dict[str, str]]:
         secret_users = st.secrets["users"]
 
         for user_key in secret_users:
-
             user_data = secret_users[user_key]
 
             username = str(
@@ -517,6 +116,7 @@ def authenticate(
     username: str,
     password: str,
 ) -> Optional[Dict[str, str]]:
+    """Memeriksa username dan password."""
 
     users = get_users()
 
@@ -537,53 +137,33 @@ def authenticate(
 
 
 # ============================================================
-# LOGIN PAGE
+# HALAMAN LOGIN
 # ============================================================
 
-def render_login_page() -> None:
+def show_login_page() -> None:
+    """Menampilkan halaman login."""
+
+    st.title("🛡️ Patroli Siber")
+
+    st.subheader(
+        "Sistem Monitoring Pemberitaan"
+    )
+
+    st.caption(
+        f"{NAMA_SATKER} • Tahun {TAHUN_TARGET}"
+    )
+
+    st.divider()
 
     left, center, right = st.columns(
-        [1, 1.3, 1]
+        [1, 1.4, 1]
     )
 
     with center:
 
-        st.markdown(
-            """
-            <div style="
-                text-align:center;
-                margin-top:50px;
-                margin-bottom:25px;
-            ">
-                <div style="font-size:55px;">
-                    🛡️
-                </div>
-
-                <div style="
-                    font-size:28px;
-                    font-weight:800;
-                    color:#111827;
-                ">
-                    Patroli Siber
-                </div>
-
-                <div style="
-                    color:#6b7280;
-                    font-size:13px;
-                    margin-top:5px;
-                ">
-                    Sistem Monitoring Pemberitaan
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
         with st.container(border=True):
 
-            st.markdown(
-                "### 🔐 Login Sistem"
-            )
+            st.header("🔐 Login Sistem")
 
             with st.form(
                 "login_form",
@@ -611,183 +191,113 @@ def render_login_page() -> None:
 
                 if login_button:
 
-                    if not username or not password:
-
+                    if (
+                        not username
+                        or not password
+                    ):
                         st.error(
                             "Username dan password wajib diisi."
                         )
+                        return
 
-                    else:
+                    user = authenticate(
+                        username,
+                        password,
+                    )
 
-                        user = authenticate(
-                            username,
-                            password,
+                    if user is None:
+                        st.error(
+                            "❌ Username atau password salah."
                         )
+                        return
 
-                        if user is None:
+                    st.session_state.logged_in = True
+                    st.session_state.username = (
+                        user["username"]
+                    )
+                    st.session_state.role = (
+                        user["role"]
+                    )
 
-                            st.error(
-                                "❌ Username atau password salah."
-                            )
+                    st.rerun()
 
-                        else:
+    st.divider()
 
-                            st.session_state.logged_in = True
-                            st.session_state.username = (
-                                user["username"]
-                            )
-                            st.session_state.role = (
-                                user["role"]
-                            )
-
-                            st.rerun()
-
-        st.markdown(
-            f"""
-            <div style="
-                text-align:center;
-                color:#94a3b8;
-                font-size:11px;
-                margin-top:18px;
-                line-height:1.6;
-            ">
-                🏛️ {html.escape(NAMA_SATKER)}<br>
-                Sistem Internal • Tahun {TAHUN_TARGET}
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-if not st.session_state.logged_in:
-
-    render_login_page()
-
-    st.stop()
-
-
-# ============================================================
-# USER & ROLE
-# ============================================================
-
-CURRENT_USERNAME = str(
-    st.session_state.get(
-        "username",
-        "",
-    )
-)
-
-CURRENT_ROLE = str(
-    st.session_state.get(
-        "role",
-        "",
-    )
-).lower()
-
-IS_ADMIN = CURRENT_ROLE == "admin"
-IS_VIEWER = CURRENT_ROLE == "viewer"
-
-if CURRENT_ROLE not in {"admin", "viewer"}:
-
-    st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.session_state.role = ""
-
-    st.error(
-        "Role pengguna tidak valid."
+    st.caption(
+        "Sistem Internal • "
+        f"{NAMA_SATKER} • "
+        f"Tahun {TAHUN_TARGET}"
     )
 
-    st.stop()
-
 
 # ============================================================
-# DATA LOADING
+# HELPER DATA
 # ============================================================
 
-@st.cache_data(ttl=60)
-def load_articles() -> List[Dict[str, Any]]:
-    return get_all_articles()
-
-
-@st.cache_data(ttl=30)
-def load_logs() -> List[Dict[str, Any]]:
-    return get_run_logs(300)
-
-
-def load_application_data():
-    articles: List[Dict[str, Any]] = []
-    logs: List[Dict[str, Any]] = []
-
-    try:
-        articles = load_articles()
-
-    except Exception as exc:
-
-        st.error(
-            f"Gagal mengambil data artikel: {exc}"
-        )
-
-    if IS_ADMIN:
-
-        try:
-            logs = load_logs()
-
-        except Exception as exc:
-
-            st.warning(
-                f"Gagal mengambil log patroli: {exc}"
-            )
-
-    return articles, logs
-
-
-articles, logs = load_application_data()
-
-
-# ============================================================
-# HELPER: HTML SAFE
-# ============================================================
-
-def safe_text(
+def parse_date(
     value: Any,
-    default: str = "",
-) -> str:
+) -> Optional[datetime.datetime]:
     """
-    Mengubah nilai menjadi teks aman untuk HTML.
+    Mengubah nilai tanggal menjadi datetime.
+    Aman terhadap nilai kosong dan format tidak valid.
     """
 
     if value is None:
-        return default
+        return None
 
-    text = str(value).strip()
+    if isinstance(value, datetime.datetime):
+        dt = value
 
-    if not text:
-        return default
+    else:
+        try:
+            dt = pd.to_datetime(
+                value,
+                errors="coerce",
+            )
 
-    return html.escape(
-        text,
-        quote=True,
-    )
+            if pd.isna(dt):
+                return None
+
+            if isinstance(dt, pd.Timestamp):
+                if dt.tzinfo is not None:
+                    dt = dt.tz_convert(None)
+
+                dt = dt.to_pydatetime()
+
+        except Exception:
+            return None
+
+    return dt
 
 
-def safe_list(
-    value: Any,
-) -> List[Any]:
+def safe_list(value: Any) -> List[str]:
     """
-    Menormalkan nilai list dari Supabase.
+    Memastikan nilai menjadi list string.
     """
 
     if value is None:
         return []
 
     if isinstance(value, list):
-        return value
+        return [
+            str(item)
+            for item in value
+            if item is not None
+        ]
 
     if isinstance(value, tuple):
-        return list(value)
+        return [
+            str(item)
+            for item in value
+            if item is not None
+        ]
 
     if isinstance(value, set):
-        return list(value)
+        return [
+            str(item)
+            for item in value
+            if item is not None
+        ]
 
     if isinstance(value, str):
 
@@ -798,88 +308,28 @@ def safe_list(
 
         return [value]
 
-    return [value]
+    return [str(value)]
 
 
-# ============================================================
-# HELPER: DATE
-# ============================================================
-
-def parse_date(
-    value: Any,
-) -> Optional[datetime.datetime]:
-
-    if value is None:
-        return None
-
-    if isinstance(value, datetime.datetime):
-
-        dt = value
-
-    else:
-
-        try:
-
-            dt = pd.to_datetime(
-                value,
-                errors="coerce",
-            )
-
-        except Exception:
-            return None
-
-        if pd.isna(dt):
-            return None
-
-        try:
-            dt = dt.to_pydatetime()
-
-        except AttributeError:
-            return None
-
-    if dt.tzinfo is not None:
-
-        try:
-            dt = dt.astimezone(
-                datetime.timezone.utc
-            ).replace(
-                tzinfo=None
-            )
-
-        except Exception:
-            dt = dt.replace(
-                tzinfo=None
-            )
-
-    return dt
-
-
-def article_datetime(
+def get_article_date(
     article: Dict[str, Any],
-) -> datetime.datetime:
+) -> Optional[datetime.datetime]:
+    """Mengambil tanggal artikel."""
 
-    dt = parse_date(
+    return parse_date(
         article.get("published_date")
     )
 
-    if dt is None:
-        return datetime.datetime.min
-
-    return dt
-
-
-# ============================================================
-# DATE FILTER
-# ============================================================
 
 def filter_date(
     article: Dict[str, Any],
     mode: str,
 ) -> bool:
+    """
+    Memfilter artikel berdasarkan periode.
+    """
 
-    dt = parse_date(
-        article.get("published_date")
-    )
+    dt = get_article_date(article)
 
     if dt is None:
         return False
@@ -889,25 +339,22 @@ def filter_date(
     if mode == "24 jam terakhir":
 
         return (
-            now - datetime.timedelta(hours=24)
-            <= dt
-            <= now
+            dt >= now - datetime.timedelta(hours=24)
+            and dt <= now
         )
 
     if mode == "7 hari terakhir":
 
         return (
-            now - datetime.timedelta(days=7)
-            <= dt
-            <= now
+            dt >= now - datetime.timedelta(days=7)
+            and dt <= now
         )
 
     if mode == "1 bulan terakhir":
 
         return (
-            now - datetime.timedelta(days=30)
-            <= dt
-            <= now
+            dt >= now - datetime.timedelta(days=30)
+            and dt <= now
         )
 
     if mode == f"Tahun {TAHUN_TARGET}":
@@ -920,142 +367,138 @@ def filter_date(
     return True
 
 
-# ============================================================
-# SEARCH TEXT
-# ============================================================
-
-def article_search_text(
+def article_matches_search(
     article: Dict[str, Any],
-) -> str:
+    query: str,
+) -> bool:
+    """
+    Mencari kata pada judul, snippet, content,
+    indikator, dan satker.
+    """
 
-    keyword_text = " ".join(
-        str(value)
-        for value in safe_list(
+    if not query:
+        return True
+
+    q = query.lower().strip()
+
+    keywords = " ".join(
+        safe_list(
             article.get("detected_keywords")
         )
     )
 
-    satker_text = " ".join(
-        str(value)
-        for value in safe_list(
+    satker = " ".join(
+        safe_list(
             article.get("satker_matches")
         )
     )
 
-    return " ".join(
+    searchable_text = " ".join(
         [
             str(article.get("title", "")),
             str(article.get("snippet", "")),
             str(article.get("content", "")),
-            keyword_text,
-            satker_text,
+            keywords,
+            satker,
             str(article.get("source", "")),
         ]
     ).lower()
 
+    return q in searchable_text
 
-def apply_filters(
-    source_articles: List[Dict[str, Any]],
-    filter_mode: str,
-    selected_month: str,
-    search_text: str,
-) -> List[Dict[str, Any]]:
 
-    result: List[Dict[str, Any]] = []
+def article_datetime(
+    article: Dict[str, Any],
+) -> datetime.datetime:
+    """
+    Nilai tanggal untuk sorting.
+    """
 
-    month_number = next(
-        (
-            number
-            for number, name
-            in MONTHS.items()
-            if name == selected_month
-        ),
-        0,
-    )
+    dt = get_article_date(article)
 
-    query = (
-        search_text
-        or ""
-    ).strip().lower()
+    if dt is None:
+        return datetime.datetime.min
 
-    for article in source_articles:
+    return dt
 
-        if (
-            filter_mode != "Semua data"
-            and not filter_date(
-                article,
-                filter_mode,
-            )
-        ):
-            continue
 
-        if selected_month != "Semua Bulan":
+# ============================================================
+# LOAD DATA
+# ============================================================
 
-            dt = parse_date(
-                article.get("published_date")
-            )
+@st.cache_data(ttl=60)
+def load_articles() -> List[Dict[str, Any]]:
+    """
+    Mengambil seluruh artikel dari database.py.
+    """
 
-            if dt is None:
-                continue
+    try:
+        data = get_all_articles()
 
-            if (
-                dt.year != TAHUN_TARGET
-                or dt.month != month_number
-            ):
-                continue
+        if data is None:
+            return []
 
-        if query:
+        if isinstance(data, list):
+            return data
 
-            if query not in article_search_text(
-                article
-            ):
-                continue
+        return list(data)
 
-        result.append(article)
+    except Exception as exc:
+        st.error(
+            f"Gagal mengambil data artikel dari Supabase: {exc}"
+        )
+        return []
 
-    return result
+
+@st.cache_data(ttl=30)
+def load_logs() -> List[Dict[str, Any]]:
+    """
+    Mengambil log patroli.
+    """
+
+    try:
+        data = get_run_logs(300)
+
+        if data is None:
+            return []
+
+        if isinstance(data, list):
+            return data
+
+        return list(data)
+
+    except Exception:
+        return []
 
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 
-def render_sidebar() -> None:
+def show_sidebar(
+    username: str,
+    role: str,
+) -> None:
+
+    is_admin = role == "admin"
 
     with st.sidebar:
 
-        st.markdown(
-            """
-            <div class="sidebar-brand">
+        st.title("🛡️ Patroli Siber")
 
-                <div class="sidebar-logo">
-                    🛡️
-                </div>
-
-                <div class="sidebar-title">
-                    Patroli Siber
-                </div>
-
-                <div class="sidebar-subtitle">
-                    Dashboard Monitoring
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True,
+        st.caption(
+            f"Dashboard Monitoring {TAHUN_TARGET}"
         )
 
         st.divider()
 
-        st.markdown(
-            "### 👤 Pengguna"
-        )
+        st.subheader("👤 Pengguna")
 
         st.write(
-            f"**{CURRENT_USERNAME}**"
+            f"**{username}**"
         )
 
-        if IS_ADMIN:
+        if is_admin:
 
             st.success(
                 "👑 ADMIN"
@@ -1090,8 +533,8 @@ def render_sidebar() -> None:
 
         st.divider()
 
-        st.markdown(
-            "### ℹ️ Informasi Sistem"
+        st.subheader(
+            "ℹ️ Informasi Sistem"
         )
 
         st.text_input(
@@ -1115,12 +558,12 @@ def render_sidebar() -> None:
         telegram_token = os.getenv(
             "TELEGRAM_BOT_TOKEN",
             "",
-        ).strip()
+        )
 
         telegram_chat_id = os.getenv(
             "TELEGRAM_CHAT_ID",
             "",
-        ).strip()
+        )
 
         telegram_status = (
             "Aktif ✅"
@@ -1135,12 +578,12 @@ def render_sidebar() -> None:
             disabled=True,
         )
 
-        if IS_ADMIN:
+        if is_admin:
 
             st.divider()
 
-            st.markdown(
-                "### ⚙️ Administrasi"
+            st.subheader(
+                "⚙️ Administrasi"
             )
 
             if st.button(
@@ -1149,304 +592,309 @@ def render_sidebar() -> None:
             ):
 
                 st.cache_data.clear()
-
                 st.rerun()
 
         st.divider()
 
         st.caption(
             "Patroli otomatis menjalankan "
-            "pengambilan, deduplikasi, dan "
-            "klasifikasi awal pemberitaan."
+            "pengambilan dan klasifikasi berita "
+            "melalui GitHub Actions."
         )
-
-
-render_sidebar()
 
 
 # ============================================================
 # HEADER
 # ============================================================
 
-st.markdown(
-    f"""
-    <div class="dashboard-header">
+def show_header() -> None:
 
-        <div class="dashboard-header-title">
-            🛡️ Patroli Siber {TAHUN_TARGET}
-        </div>
+    st.title(
+        f"🛡️ Patroli Siber {TAHUN_TARGET}"
+    )
 
-        <div class="dashboard-header-subtitle">
-            Sistem Monitoring dan Klasifikasi Awal Pemberitaan
-            • {html.escape(NAMA_SATKER)}
-        </div>
+    st.subheader(
+        "Sistem Monitoring dan Klasifikasi Awal Pemberitaan"
+    )
 
-        <div class="dashboard-header-badge">
-            ● SISTEM INTERNAL
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            📡 MONITORING AKTIF
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            📅 {TAHUN_TARGET}
-        </div>
+    st.caption(
+        f"{NAMA_SATKER} • "
+        "📡 Monitoring Aktif • "
+        f"📅 Tahun {TAHUN_TARGET}"
+    )
 
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    st.divider()
 
 
 # ============================================================
 # FILTER
 # ============================================================
 
-st.markdown(
-    '<div class="section-title">🔎 Filter & Pengurutan</div>',
-    unsafe_allow_html=True,
-)
+def show_filters(
+    articles: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
 
-st.markdown(
-    """
-    <div class="section-description">
-        Saring pemberitaan berdasarkan periode,
-        bulan, kata kunci, dan urutan tanggal.
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-with st.container(border=True):
-
-    col1, col2, col3 = st.columns(
-        [1.2, 1.2, 1.2]
+    st.header(
+        "🔎 Filter & Pengurutan"
     )
 
-    with col1:
+    st.caption(
+        "Saring pemberitaan berdasarkan periode, "
+        "bulan, kata kunci, dan urutan tanggal."
+    )
 
-        filter_mode = st.selectbox(
-            "📅 Periode",
-            DATE_FILTERS,
-            index=1,
+    with st.container(border=True):
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+
+            filter_mode = st.selectbox(
+                "📅 Periode",
+                [
+                    "24 jam terakhir",
+                    "7 hari terakhir",
+                    "1 bulan terakhir",
+                    f"Tahun {TAHUN_TARGET}",
+                    "Semua data",
+                ],
+                index=1,
+            )
+
+        with col2:
+
+            bulan_options = {
+                0: "Semua Bulan",
+                1: "Januari",
+                2: "Februari",
+                3: "Maret",
+                4: "April",
+                5: "Mei",
+                6: "Juni",
+                7: "Juli",
+                8: "Agustus",
+                9: "September",
+                10: "Oktober",
+                11: "November",
+                12: "Desember",
+            }
+
+            bulan_dipilih = st.selectbox(
+                f"🗓️ Bulan {TAHUN_TARGET}",
+                list(
+                    bulan_options.values()
+                ),
+                index=0,
+            )
+
+        with col3:
+
+            sort_order = st.selectbox(
+                "↕️ Urutan Artikel",
+                [
+                    "Terbaru → Terlama",
+                    "Terlama → Terbaru",
+                ],
+                index=0,
+            )
+
+        search_text = st.text_input(
+            "🔍 Pencarian",
+            placeholder=(
+                "Cari judul, indikator, satker, "
+                "sumber, atau isi artikel..."
+            ),
         )
 
-    with col2:
+    filtered: List[Dict[str, Any]] = []
 
-        selected_month = st.selectbox(
-            f"🗓️ Bulan {TAHUN_TARGET}",
-            list(MONTHS.values()),
-            index=0,
-        )
+    for article in articles:
 
-    with col3:
+        if (
+            filter_mode != "Semua data"
+            and not filter_date(
+                article,
+                filter_mode,
+            )
+        ):
+            continue
 
-        sort_order = st.selectbox(
-            "↕️ Urutan Artikel",
-            SORT_OPTIONS,
-            index=0,
-        )
+        if (
+            bulan_dipilih
+            != "Semua Bulan"
+        ):
 
-    search_text = st.text_input(
-        "🔍 Cari judul, indikator, satker, sumber, atau isi artikel",
-        "",
-        placeholder=(
-            "Contoh: Kejaksaan, tersangka, penyidikan..."
+            dt = get_article_date(article)
+
+            if dt is None:
+                continue
+
+            month_number = next(
+                (
+                    number
+                    for number, name
+                    in bulan_options.items()
+                    if name == bulan_dipilih
+                ),
+                0,
+            )
+
+            if (
+                dt.year != TAHUN_TARGET
+                or dt.month != month_number
+            ):
+                continue
+
+        if not article_matches_search(
+            article,
+            search_text,
+        ):
+            continue
+
+        filtered.append(article)
+
+    filtered.sort(
+        key=article_datetime,
+        reverse=(
+            sort_order
+            == "Terbaru → Terlama"
         ),
     )
 
-
-# ============================================================
-# APPLY FILTER
-# ============================================================
-
-filtered = apply_filters(
-    articles,
-    filter_mode,
-    selected_month,
-    search_text,
-)
+    return filtered
 
 
 # ============================================================
-# SORT
+# KATEGORI
 # ============================================================
 
-filtered.sort(
-    key=article_datetime,
-    reverse=(
-        sort_order == "Terbaru → Terlama"
-    ),
-)
+def split_categories(
+    articles: List[Dict[str, Any]],
+):
 
+    negative = [
+        article
+        for article in articles
+        if article.get("category")
+        == "Negatif Kuat"
+    ]
 
-# ============================================================
-# CATEGORY DATA
-# ============================================================
+    handling = [
+        article
+        for article in articles
+        if article.get("category")
+        == "Perlu Penanganan"
+    ]
 
-negative = [
-    item
-    for item in filtered
-    if item.get("category")
-    == CATEGORY_NEGATIVE
-]
+    neutral = [
+        article
+        for article in articles
+        if article.get("category")
+        == "Netral"
+    ]
 
-handling = [
-    item
-    for item in filtered
-    if item.get("category")
-    == CATEGORY_HANDLING
-]
+    positive = [
+        article
+        for article in articles
+        if article.get("category")
+        == "Positif"
+    ]
 
-neutral = [
-    item
-    for item in filtered
-    if item.get("category")
-    == CATEGORY_NEUTRAL
-]
+    priority = [
+        article
+        for article in articles
+        if article.get("category")
+        in {
+            "Negatif Kuat",
+            "Perlu Penanganan",
+        }
+    ]
 
-positive = [
-    item
-    for item in filtered
-    if item.get("category")
-    == CATEGORY_POSITIVE
-]
-
-priority = [
-    item
-    for item in filtered
-    if item.get("category")
-    in PRIORITY_CATEGORIES
-]
+    return (
+        negative,
+        handling,
+        neutral,
+        positive,
+        priority,
+    )
 
 
 # ============================================================
 # KPI
 # ============================================================
 
-st.markdown(
-    '<div class="section-title">📊 Ringkasan Monitoring</div>',
-    unsafe_allow_html=True,
-)
+def show_kpis(
+    filtered: List[Dict[str, Any]],
+) -> None:
 
-st.markdown(
-    f"""
-    <div class="section-description">
-        Menampilkan <b>{len(filtered)}</b> artikel
-        berdasarkan filter yang dipilih.
-        Urutan:
-        <b>{html.escape(sort_order)}</b>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-kpi_columns = st.columns(5)
-
-kpis = [
     (
-        "🔴",
-        CATEGORY_NEGATIVE,
-        len(negative),
-    ),
-    (
-        "🟠",
-        CATEGORY_HANDLING,
-        len(handling),
-    ),
-    (
-        "🟡",
-        CATEGORY_NEUTRAL,
-        len(neutral),
-    ),
-    (
-        "🟢",
-        CATEGORY_POSITIVE,
-        len(positive),
-    ),
-    (
-        "🚨",
-        "Prioritas",
-        len(priority),
-    ),
-]
+        negative,
+        handling,
+        neutral,
+        positive,
+        priority,
+    ) = split_categories(filtered)
 
-for column, (
-    icon,
-    label,
-    value,
-) in zip(kpi_columns, kpis):
-
-    with column:
-
-        st.markdown(
-            f"""
-            <div class="kpi-card">
-
-                <div class="kpi-icon">
-                    {icon}
-                </div>
-
-                <div class="kpi-label">
-                    {html.escape(label)}
-                </div>
-
-                <div class="kpi-value">
-                    {value}
-                </div>
-
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-st.markdown(
-    "<br>",
-    unsafe_allow_html=True,
-)
-
-
-# ============================================================
-# ARTICLE HELPERS
-# ============================================================
-
-def category_visual(
-    category: str,
-):
-    if category == CATEGORY_NEGATIVE:
-        return (
-            "🔴",
-            "badge-red",
-        )
-
-    if category == CATEGORY_HANDLING:
-        return (
-            "🟠",
-            "badge-orange",
-        )
-
-    if category == CATEGORY_POSITIVE:
-        return (
-            "🟢",
-            "badge-green",
-        )
-
-    return (
-        "🟡",
-        "badge-yellow",
+    st.header(
+        "📊 Ringkasan Monitoring"
     )
 
+    st.caption(
+        f"Menampilkan {len(filtered)} artikel "
+        "berdasarkan filter yang dipilih."
+    )
 
-def build_badges(
+    cols = st.columns(5)
+
+    with cols[0]:
+        st.metric(
+            "🔴 Negatif Kuat",
+            len(negative),
+        )
+
+    with cols[1]:
+        st.metric(
+            "🟠 Perlu Penanganan",
+            len(handling),
+        )
+
+    with cols[2]:
+        st.metric(
+            "🟡 Netral",
+            len(neutral),
+        )
+
+    with cols[3]:
+        st.metric(
+            "🟢 Positif",
+            len(positive),
+        )
+
+    with cols[4]:
+        st.metric(
+            "🚨 Prioritas",
+            len(priority),
+        )
+
+    st.divider()
+
+
+# ============================================================
+# ARTICLE RENDERER
+# ============================================================
+
+def render_article(
     item: Dict[str, Any],
-) -> str:
+) -> None:
 
     category = str(
         item.get(
             "category",
-            CATEGORY_NEUTRAL,
+            "Netral",
         )
     )
 
-    priority_value = str(
+    priority = str(
         item.get(
             "priority",
             "RENDAH",
@@ -1463,178 +911,25 @@ def build_badges(
         0,
     )
 
-    icon, category_class = category_visual(
-        category
-    )
-
-    return f"""
-        <span class="badge {category_class}">
-            {icon} {safe_text(category)}
-        </span>
-
-        <span class="badge badge-gray">
-            Prioritas: {safe_text(priority_value)}
-        </span>
-
-        <span class="badge badge-gray">
-            Negative: {safe_text(negative_score, "0")}
-        </span>
-
-        <span class="badge badge-gray">
-            Handling: {safe_text(handling_score, "0")}
-        </span>
-    """
-
-
-def build_keyword_html(
-    item: Dict[str, Any],
-) -> str:
-
-    keywords = safe_list(
-        item.get(
-            "detected_keywords"
-        )
-    )
-
-    if not keywords:
-        return ""
-
-    badges = []
-
-    for keyword in keywords[:15]:
-
-        badges.append(
-            f"""
-            <span class="badge badge-gray">
-                {safe_text(keyword)}
-            </span>
-            """
-        )
-
-    return (
-        '<div style="margin-top:12px;">'
-        '<span style="'
-        'font-size:11px;'
-        'font-weight:700;'
-        'color:#64748b;'
-        '">🔎 INDIKATOR</span>'
-        '<br>'
-        + "".join(badges)
-        + "</div>"
-    )
-
-
-def build_context_html(
-    item: Dict[str, Any],
-) -> str:
-
-    output = []
-
-    strong_context = safe_list(
-        item.get(
-            "strong_context"
-        )
-    )
-
-    handling_context = safe_list(
-        item.get(
-            "handling_context"
-        )
-    )
-
-    if strong_context:
-
-        values = ", ".join(
-            safe_text(value)
-            for value in strong_context
-        )
-
-        output.append(
-            f"""
-            <div class="info-box">
-                ⚠️ <b>Konteks Negatif Kuat:</b>
-                {values}
-            </div>
-            """
-        )
-
-    if handling_context:
-
-        values = ", ".join(
-            safe_text(value)
-            for value in handling_context
-        )
-
-        output.append(
-            f"""
-            <div class="info-box">
-                📌 <b>Konteks Penanganan:</b>
-                {values}
-            </div>
-            """
-        )
-
-    return "".join(output)
-
-
-def build_satker_html(
-    item: Dict[str, Any],
-) -> str:
-
-    satker = safe_list(
-        item.get(
-            "satker_matches"
-        )
-    )
-
-    if not satker:
-        return ""
-
-    values = ", ".join(
-        safe_text(value)
-        for value in satker
-    )
-
-    return f"""
-        <div style="
-            font-size:11px;
-            color:#64748b;
-            margin-top:10px;
-        ">
-            🏢 {values}
-        </div>
-    """
-
-
-# ============================================================
-# ARTICLE RENDERER
-# ============================================================
-
-def render_article(
-    item: Dict[str, Any],
-) -> None:
-
-    title = safe_text(
+    title = str(
         item.get(
             "title",
             "-",
-        ),
-        "-",
+        )
     )
 
-    snippet = safe_text(
+    snippet = str(
         item.get(
             "snippet",
             "",
         )
     )
 
-    published_date = safe_text(
+    published_date = str(
         item.get(
             "published_date",
             "-",
-        ),
-        "-",
+        )
     )
 
     link = str(
@@ -1642,336 +937,180 @@ def render_article(
             "link",
             "",
         )
-        or ""
     ).strip()
 
-    badges = build_badges(
-        item
-    )
+    if category == "Negatif Kuat":
 
-    keyword_html = build_keyword_html(
-        item
-    )
+        icon = "🔴"
 
-    context_html = build_context_html(
-        item
-    )
+    elif category == "Perlu Penanganan":
 
-    satker_html = build_satker_html(
-        item
-    )
+        icon = "🟠"
 
-    snippet_html = ""
+    elif category == "Positif":
 
-    if snippet:
+        icon = "🟢"
 
-        snippet_html = f"""
-            <div class="article-snippet">
-                {snippet}
-            </div>
-        """
+    else:
 
-    st.markdown(
-        f"""
-        <div class="article-card">
+        icon = "🟡"
 
-            <div class="article-title">
-                {title}
-            </div>
+    with st.container(border=True):
 
-            <div>
-                {badges}
-            </div>
+        st.subheader(
+            f"{icon} {title}"
+        )
 
-            <div class="article-date">
-                📅 {published_date}
-            </div>
+        col1, col2, col3, col4 = st.columns(4)
 
-            {snippet_html}
+        with col1:
+            st.write(
+                f"**Kategori:** {category}"
+            )
 
-            {keyword_html}
+        with col2:
+            st.write(
+                f"**Prioritas:** {priority}"
+            )
 
-            {context_html}
+        with col3:
+            st.write(
+                f"**Negative Score:** {negative_score}"
+            )
 
-            {satker_html}
+        with col4:
+            st.write(
+                f"**Handling Score:** {handling_score}"
+            )
 
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        st.caption(
+            f"📅 {published_date}"
+        )
 
-    if link:
+        if snippet:
+            st.write(snippet)
 
-        try:
+        keywords = safe_list(
+            item.get(
+                "detected_keywords"
+            )
+        )
+
+        if keywords:
+
+            st.write(
+                "**🔎 Indikator:**"
+            )
+
+            st.write(
+                ", ".join(
+                    keywords[:15]
+                )
+            )
+
+        strong_context = safe_list(
+            item.get(
+                "strong_context"
+            )
+        )
+
+        if strong_context:
+
+            st.warning(
+                "⚠️ **Konteks Negatif Kuat:** "
+                + ", ".join(
+                    strong_context
+                )
+            )
+
+        handling_context = safe_list(
+            item.get(
+                "handling_context"
+            )
+        )
+
+        if handling_context:
+
+            st.info(
+                "📌 **Konteks Penanganan:** "
+                + ", ".join(
+                    handling_context
+                )
+            )
+
+        satker = safe_list(
+            item.get(
+                "satker_matches"
+            )
+        )
+
+        if satker:
+
+            st.caption(
+                "🏢 Satker: "
+                + ", ".join(satker)
+            )
+
+        if link:
 
             st.link_button(
                 "🔗 Buka Artikel",
                 link,
             )
 
-        except Exception:
-
-            st.write(
-                f"🔗 {link}"
-            )
+    st.write("")
 
 
 # ============================================================
-# TABS
+# TAB ARTICLE LIST
 # ============================================================
 
-if IS_ADMIN:
+def show_article_list(
+    articles: List[Dict[str, Any]],
+    empty_message: str,
+) -> None:
 
-    (
-        tab_priority,
-        tab_negative,
-        tab_handling,
-        tab_neutral,
-        tab_positive,
-        tab_analytics,
-        tab_logs,
-    ) = st.tabs(
-        [
-            "🚨 PRIORITAS",
-            "🔴 NEGATIF KUAT",
-            "🟠 PENANGANAN",
-            "🟡 NETRAL",
-            "🟢 POSITIF",
-            "📊 ANALISIS",
-            "📜 LOG",
-        ]
-    )
+    if not articles:
 
-else:
+        st.info(empty_message)
+        return
 
-    (
-        tab_priority,
-        tab_negative,
-        tab_handling,
-        tab_neutral,
-        tab_positive,
-        tab_analytics,
-    ) = st.tabs(
-        [
-            "🚨 PRIORITAS",
-            "🔴 NEGATIF KUAT",
-            "🟠 PENANGANAN",
-            "🟡 NETRAL",
-            "🟢 POSITIF",
-            "📊 ANALISIS",
-        ]
-    )
-
-    tab_logs = None
-
-
-# ============================================================
-# TAB PRIORITAS
-# ============================================================
-
-with tab_priority:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🚨 Artikel Prioritas Review'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="section-description">
-            Artikel yang membutuhkan perhatian
-            dan verifikasi lebih lanjut.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if priority:
-
-        for item in priority:
-            render_article(item)
-
-    else:
-
-        st.success(
-            "Tidak ada artikel prioritas "
-            "pada periode yang dipilih."
-        )
-
-
-# ============================================================
-# TAB NEGATIF
-# ============================================================
-
-with tab_negative:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🔴 Negatif Kuat'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="section-description">
-            Pemberitaan yang terindikasi memiliki
-            dampak negatif kuat terhadap satker
-            dan perlu diverifikasi.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if negative:
-
-        for item in negative:
-            render_article(item)
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Negatif Kuat."
-        )
-
-
-# ============================================================
-# TAB HANDLING
-# ============================================================
-
-with tab_handling:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🟠 Perlu Penanganan'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="section-description">
-            Pemberitaan yang perlu dipantau
-            atau diverifikasi lebih lanjut.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if handling:
-
-        for item in handling:
-            render_article(item)
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Perlu Penanganan."
-        )
-
-
-# ============================================================
-# TAB NETRAL
-# ============================================================
-
-with tab_neutral:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🟡 Netral'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="section-description">
-            Pemberitaan yang tidak menunjukkan
-            indikasi negatif kuat atau penanganan khusus.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if neutral:
-
-        for item in neutral:
-            render_article(item)
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Netral."
-        )
-
-
-# ============================================================
-# TAB POSITIF
-# ============================================================
-
-with tab_positive:
-
-    st.markdown(
-        '<div class="section-title">'
-        '🟢 Positif'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="section-description">
-            Pemberitaan positif, keberhasilan penegakan
-            hukum, kegiatan resmi, dan aktivitas kelembagaan.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if positive:
-
-        for item in positive:
-            render_article(item)
-
-    else:
-
-        st.info(
-            "Tidak ada artikel Positif."
-        )
+    for article in articles:
+        render_article(article)
 
 
 # ============================================================
 # ANALYTICS
 # ============================================================
 
-with tab_analytics:
+def show_analytics(
+    filtered: List[Dict[str, Any]],
+) -> None:
 
-    st.markdown(
-        '<div class="section-title">'
-        '📊 Analisis Pemberitaan'
-        '</div>',
-        unsafe_allow_html=True,
+    st.header(
+        "📊 Analisis Pemberitaan"
     )
 
-    st.markdown(
-        """
-        <div class="section-description">
-            Visualisasi distribusi kategori
-            dan tingkat prioritas.
-        </div>
-        """,
-        unsafe_allow_html=True,
+    st.caption(
+        "Visualisasi distribusi kategori "
+        "dan tingkat prioritas."
     )
+
+    (
+        negative,
+        handling,
+        neutral,
+        positive,
+        priority,
+    ) = split_categories(filtered)
 
     chart_data = pd.DataFrame(
         {
             "Kategori": [
-                CATEGORY_NEGATIVE,
-                CATEGORY_HANDLING,
-                CATEGORY_NEUTRAL,
-                CATEGORY_POSITIVE,
+                "Negatif Kuat",
+                "Perlu Penanganan",
+                "Netral",
+                "Positif",
             ],
             "Jumlah": [
                 len(negative),
@@ -1982,9 +1121,13 @@ with tab_analytics:
         }
     )
 
-    col_chart1, col_chart2 = st.columns(2)
+    col1, col2 = st.columns(2)
 
-    with col_chart1:
+    with col1:
+
+        st.subheader(
+            "Distribusi Kategori"
+        )
 
         if chart_data["Jumlah"].sum() > 0:
 
@@ -1992,15 +1135,14 @@ with tab_analytics:
                 chart_data,
                 names="Kategori",
                 values="Jumlah",
-                hole=0.50,
-                title="Distribusi Kategori",
+                hole=0.5,
             )
 
             fig.update_layout(
                 margin=dict(
                     l=10,
                     r=10,
-                    t=50,
+                    t=20,
                     b=10,
                 ),
                 legend_title_text="",
@@ -2014,44 +1156,57 @@ with tab_analytics:
         else:
 
             st.info(
-                "Belum ada data untuk dianalisis."
+                "Belum ada data untuk ditampilkan."
             )
 
-    with col_chart2:
+    with col2:
 
-        priority_values = [
-            "KRITIS",
-            "TINGGI",
-            "SEDANG",
-            "RENDAH",
-        ]
-
-        priority_counts = []
-
-        for priority_name in priority_values:
-
-            count = len(
-                [
-                    item
-                    for item in filtered
-                    if str(
-                        item.get(
-                            "priority",
-                            "",
-                        )
-                    ).upper()
-                    == priority_name
-                ]
-            )
-
-            priority_counts.append(
-                count
-            )
+        st.subheader(
+            "Distribusi Prioritas"
+        )
 
         priority_df = pd.DataFrame(
             {
-                "Prioritas": priority_values,
-                "Jumlah": priority_counts,
+                "Prioritas": [
+                    "KRITIS",
+                    "TINGGI",
+                    "SEDANG",
+                    "RENDAH",
+                ],
+                "Jumlah": [
+                    len([
+                        x
+                        for x in filtered
+                        if str(
+                            x.get("priority", "")
+                        ).upper()
+                        == "KRITIS"
+                    ]),
+                    len([
+                        x
+                        for x in filtered
+                        if str(
+                            x.get("priority", "")
+                        ).upper()
+                        == "TINGGI"
+                    ]),
+                    len([
+                        x
+                        for x in filtered
+                        if str(
+                            x.get("priority", "")
+                        ).upper()
+                        == "SEDANG"
+                    ]),
+                    len([
+                        x
+                        for x in filtered
+                        if str(
+                            x.get("priority", "")
+                        ).upper()
+                        == "RENDAH"
+                    ]),
+                ],
             }
         )
 
@@ -2059,7 +1214,6 @@ with tab_analytics:
             priority_df,
             x="Prioritas",
             y="Jumlah",
-            title="Distribusi Prioritas",
             text="Jumlah",
         )
 
@@ -2067,7 +1221,7 @@ with tab_analytics:
             margin=dict(
                 l=10,
                 r=10,
-                t=50,
+                t=20,
                 b=10,
             )
         )
@@ -2077,17 +1231,17 @@ with tab_analytics:
             use_container_width=True,
         )
 
-    st.markdown(
-        "### 📋 Rekapitulasi"
+    st.subheader(
+        "📋 Rekapitulasi"
     )
 
     summary_df = pd.DataFrame(
         {
             "Kategori": [
-                f"🔴 {CATEGORY_NEGATIVE}",
-                f"🟠 {CATEGORY_HANDLING}",
-                f"🟡 {CATEGORY_NEUTRAL}",
-                f"🟢 {CATEGORY_POSITIVE}",
+                "🔴 Negatif Kuat",
+                "🟠 Perlu Penanganan",
+                "🟡 Netral",
+                "🟢 Positif",
             ],
             "Jumlah": [
                 len(negative),
@@ -2109,71 +1263,367 @@ with tab_analytics:
 # LOG ADMIN
 # ============================================================
 
-if IS_ADMIN and tab_logs is not None:
+def show_logs(
+    logs: List[Dict[str, Any]],
+) -> None:
 
-    with tab_logs:
+    st.header(
+        "📜 Log Patroli"
+    )
 
-        st.markdown(
-            '<div class="section-title">'
-            '📜 Log Patroli'
-            '</div>',
-            unsafe_allow_html=True,
+    st.caption(
+        "Riwayat proses patroli otomatis "
+        "dan klasifikasi artikel."
+    )
+
+    if not logs:
+
+        st.info(
+            "Belum ada log patroli."
+        )
+        return
+
+    try:
+
+        log_df = pd.DataFrame(logs)
+
+        st.dataframe(
+            log_df,
+            use_container_width=True,
+            hide_index=True,
         )
 
-        st.markdown(
-            """
-            <div class="section-description">
-                Riwayat proses patroli otomatis,
-                reklasifikasi, dan statistik proses.
-            </div>
-            """,
-            unsafe_allow_html=True,
+    except Exception as exc:
+
+        st.error(
+            f"Gagal menampilkan log: {exc}"
         )
-
-        if logs:
-
-            log_df = pd.DataFrame(
-                logs
-            )
-
-            st.dataframe(
-                log_df,
-                use_container_width=True,
-                hide_index=True,
-            )
-
-        else:
-
-            st.info(
-                "Belum ada log patroli."
-            )
 
 
 # ============================================================
 # FOOTER
 # ============================================================
 
-st.divider()
+def show_footer(
+    username: str,
+    role: str,
+) -> None:
 
-st.markdown(
-    f"""
-    <div class="footer">
+    st.divider()
 
-        🛡️ <b>Patroli Siber {TAHUN_TARGET}</b><br>
+    st.caption(
+        f"🛡️ Patroli Siber {TAHUN_TARGET}"
+    )
 
-        Sistem merupakan alat bantu monitoring
-        dan klasifikasi awal. Artikel
-        <b>Negatif Kuat</b> dan
-        <b>Perlu Penanganan</b> tetap perlu
-        diverifikasi terhadap isi, sumber,
-        dan fakta.<br><br>
+    st.caption(
+        "Sistem merupakan alat bantu monitoring "
+        "dan klasifikasi awal. Artikel Negatif Kuat "
+        "dan Perlu Penanganan tetap perlu diverifikasi "
+        "terhadap isi, sumber, dan fakta."
+    )
 
-        {html.escape(NAMA_SATKER)}
-        • Login:
-        {html.escape(CURRENT_USERNAME)}
-        ({html.escape(CURRENT_ROLE.upper())})
+    st.caption(
+        f"{NAMA_SATKER} • "
+        f"Login: {username} "
+        f"({role.upper()})"
+    )
 
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
+
+def main() -> None:
+
+    # --------------------------------------------------------
+    # LOGIN
+    # --------------------------------------------------------
+
+    if not st.session_state.logged_in:
+
+        show_login_page()
+        return
+
+    # --------------------------------------------------------
+    # USER
+    # --------------------------------------------------------
+
+    username = str(
+        st.session_state.username
+    )
+
+    role = str(
+        st.session_state.role
+    ).lower()
+
+    if role not in {
+        "admin",
+        "viewer",
+    }:
+
+        st.session_state.logged_in = False
+        st.session_state.username = ""
+        st.session_state.role = ""
+
+        st.error(
+            "Role pengguna tidak valid."
+        )
+
+        st.stop()
+
+    is_admin = role == "admin"
+
+    # --------------------------------------------------------
+    # SIDEBAR
+    # --------------------------------------------------------
+
+    show_sidebar(
+        username,
+        role,
+    )
+
+    # --------------------------------------------------------
+    # HEADER
+    # --------------------------------------------------------
+
+    show_header()
+
+    # --------------------------------------------------------
+    # DATA
+    # --------------------------------------------------------
+
+    articles = load_articles()
+
+    if is_admin:
+        logs = load_logs()
+    else:
+        logs = []
+
+    # --------------------------------------------------------
+    # STATUS DATABASE
+    # --------------------------------------------------------
+
+    st.caption(
+        f"📚 Total artikel dari database: {len(articles)}"
+    )
+
+    # --------------------------------------------------------
+    # FILTER
+    # --------------------------------------------------------
+
+    filtered = show_filters(
+        articles
+    )
+
+    # --------------------------------------------------------
+    # KPI
+    # --------------------------------------------------------
+
+    show_kpis(
+        filtered
+    )
+
+    # --------------------------------------------------------
+    # CATEGORY DATA
+    # --------------------------------------------------------
+
+    (
+        negative,
+        handling,
+        neutral,
+        positive,
+        priority,
+    ) = split_categories(
+        filtered
+    )
+
+    # --------------------------------------------------------
+    # TABS
+    # --------------------------------------------------------
+
+    if is_admin:
+
+        (
+            tab_priority,
+            tab_negative,
+            tab_handling,
+            tab_neutral,
+            tab_positive,
+            tab_analytics,
+            tab_logs,
+        ) = st.tabs(
+            [
+                "🚨 PRIORITAS",
+                "🔴 NEGATIF KUAT",
+                "🟠 PENANGANAN",
+                "🟡 NETRAL",
+                "🟢 POSITIF",
+                "📊 ANALISIS",
+                "📜 LOG",
+            ]
+        )
+
+    else:
+
+        (
+            tab_priority,
+            tab_negative,
+            tab_handling,
+            tab_neutral,
+            tab_positive,
+            tab_analytics,
+        ) = st.tabs(
+            [
+                "🚨 PRIORITAS",
+                "🔴 NEGATIF KUAT",
+                "🟠 PENANGANAN",
+                "🟡 NETRAL",
+                "🟢 POSITIF",
+                "📊 ANALISIS",
+            ]
+        )
+
+        tab_logs = None
+
+    # --------------------------------------------------------
+    # PRIORITAS
+    # --------------------------------------------------------
+
+    with tab_priority:
+
+        st.subheader(
+            "🚨 Artikel Prioritas Review"
+        )
+
+        st.caption(
+            "Artikel yang membutuhkan perhatian "
+            "lebih lanjut."
+        )
+
+        show_article_list(
+            priority,
+            "Tidak ada artikel prioritas "
+            "pada periode yang dipilih.",
+        )
+
+    # --------------------------------------------------------
+    # NEGATIF KUAT
+    # --------------------------------------------------------
+
+    with tab_negative:
+
+        st.subheader(
+            "🔴 Negatif Kuat"
+        )
+
+        st.caption(
+            "Pemberitaan yang terindikasi memiliki "
+            "dampak negatif kuat terhadap satker "
+            "dan perlu verifikasi."
+        )
+
+        show_article_list(
+            negative,
+            "Tidak ada artikel Negatif Kuat.",
+        )
+
+    # --------------------------------------------------------
+    # PENANGANAN
+    # --------------------------------------------------------
+
+    with tab_handling:
+
+        st.subheader(
+            "🟠 Perlu Penanganan"
+        )
+
+        st.caption(
+            "Pemberitaan yang perlu dipantau "
+            "atau diverifikasi lebih lanjut."
+        )
+
+        show_article_list(
+            handling,
+            "Tidak ada artikel Perlu Penanganan.",
+        )
+
+    # --------------------------------------------------------
+    # NETRAL
+    # --------------------------------------------------------
+
+    with tab_neutral:
+
+        st.subheader(
+            "🟡 Netral"
+        )
+
+        st.caption(
+            "Pemberitaan yang tidak menunjukkan "
+            "indikasi negatif kuat atau "
+            "penanganan khusus."
+        )
+
+        show_article_list(
+            neutral,
+            "Tidak ada artikel Netral.",
+        )
+
+    # --------------------------------------------------------
+    # POSITIF
+    # --------------------------------------------------------
+
+    with tab_positive:
+
+        st.subheader(
+            "🟢 Positif"
+        )
+
+        st.caption(
+            "Pemberitaan positif, keberhasilan "
+            "penegakan hukum, kegiatan resmi, "
+            "dan aktivitas kelembagaan."
+        )
+
+        show_article_list(
+            positive,
+            "Tidak ada artikel Positif.",
+        )
+
+    # --------------------------------------------------------
+    # ANALISIS
+    # --------------------------------------------------------
+
+    with tab_analytics:
+
+        show_analytics(
+            filtered
+        )
+
+    # --------------------------------------------------------
+    # LOG ADMIN
+    # --------------------------------------------------------
+
+    if is_admin and tab_logs is not None:
+
+        with tab_logs:
+
+            show_logs(
+                logs
+            )
+
+    # --------------------------------------------------------
+    # FOOTER
+    # --------------------------------------------------------
+
+    show_footer(
+        username,
+        role,
+    )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    main()
