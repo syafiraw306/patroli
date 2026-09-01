@@ -26,7 +26,7 @@ on:
           - dedupe-dry-run
           - dedupe
           - sanitize-database
-          - audit-negative-articles
+          - audit-negative
 
 jobs:
   patroli:
