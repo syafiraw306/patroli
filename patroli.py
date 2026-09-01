@@ -81,6 +81,7 @@ TARGET_KEJARI_KEYWORDS = [
     "kejari deliserdang",
     "kejaksaan deli serdang",
     "kajari deli serdang",
+    "kajari deliserdang",
     "kepala kejaksaan negeri deli serdang",
 
     "cabang kejaksaan negeri pancur batu",
@@ -1358,53 +1359,54 @@ def sentence_contains_satker(
     )
 
 
-def sentence_contains_internal_actor(
-    sentence: str,
-) -> bool:
+def sentence_contains_internal_actor(sentence: str) -> bool:
     """
-    Aktor internal hanya dianggap terkait apabila:
+    Mengembalikan True jika kalimat menyebut aktor
+    internal Kejari Deli Serdang.
 
-    1. Ada aktor kejaksaan, DAN
-    2. Kalimat secara eksplisit menyebut satker target.
+    Aktor dapat berupa:
+    - Person: Kajari / Jaksa
+    - Institution: Kejari / Kejaksaan Negeri
 
-    Contoh TRUE:
-    - Kajari Deli Serdang diperiksa Kejagung.
-    - Jaksa Kejari Deli Serdang diperiksa.
-
-    Contoh FALSE:
-    - Kajari Sergai diamankan.
-    - Jaksa Madina diperiksa.
-    - Kajari Palas dicopot.
+    Tetapi wajib terkait dengan satker target.
     """
 
-    text = normalize_text(
-        sentence
-    ).lower()
+    text = normalize_text(sentence).lower()
 
     if not text:
         return False
 
-    # Harus ada aktor kejaksaan
-    has_actor = any(
-        re.search(
-            pattern,
-            text,
-            re.I,
-        )
+    # ==========================================
+    # 1. WAJIB TERKAIT SATKER TARGET
+    # ==========================================
+
+    if not sentence_contains_satker(text):
+        return False
+
+    # ==========================================
+    # 2. PERSON ACTOR
+    # ==========================================
+
+    has_person_actor = any(
+        re.search(pattern, text, re.I)
         for pattern in INTERNAL_ACTOR_PATTERNS
         if pattern
     )
 
-    if not has_actor:
-        return False
+    # ==========================================
+    # 3. INSTITUTION ACTOR
+    # ==========================================
 
-    # WAJIB terkait satker target
-    has_target_satker = sentence_contains_satker(
-        text
+    has_institution_actor = any(
+        keyword.lower() in text
+        for keyword in [
+            "kejari",
+            "kejaksaan negeri",
+            "kejaksaan",
+        ]
     )
 
-    return has_target_satker
-
+    return has_person_actor or has_institution_actor
 
 def sentence_contains_satker(
     sentence: str,
