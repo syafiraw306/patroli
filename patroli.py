@@ -63,9 +63,18 @@ REQUEST_TIMEOUT = int(
 # RSS RETRY CONFIGURATION
 # ========================================================
 
-MAX_RSS_RETRIES = 3
 
-RSS_RETRY_BACKOFF = 2
+RSS_MAX_RETRIES = int(
+    os.getenv("RSS_MAX_RETRIES") or "4"
+)
+
+RSS_RETRY_BASE_DELAY = float(
+    os.getenv("RSS_RETRY_BASE_DELAY") or "2"
+)
+
+RSS_QUERY_DELAY = float(
+    os.getenv("RSS_QUERY_DELAY") or "1.5"
+)
 
 MAX_ARTICLES_PER_FEED = int(
     os.getenv("MAX_ARTICLES_PER_FEED") or "40"
@@ -2932,16 +2941,13 @@ def parse_google_news_feed(
         "&ceid=ID:id"
     )
 
-    response = None
-    last_error = None
-
     # ========================================================
-    # FETCH RSS DENGAN RETRY + EXPONENTIAL BACKOFF
+    # RETRY LOOP
     # ========================================================
 
     for attempt in range(
         1,
-        MAX_RSS_RETRIES + 1,
+        RSS_MAX_RETRIES + 1,
     ):
 
         try:
@@ -2952,258 +2958,262 @@ def parse_google_news_feed(
                 allow_redirects=True,
             )
 
-            # ------------------------------------------------
-            # SUCCESS
-            # ------------------------------------------------
+            status = response.status_code
 
-            if response.status_code == 200:
+            # ====================================================
+            # RETRY TRANSIENT HTTP ERROR
+            # ====================================================
 
-                break
-
-            # ------------------------------------------------
-            # RETRY UNTUK SERVER ERROR
-            # ------------------------------------------------
-
-            if (
-                response.status_code == 429
-                or response.status_code >= 500
+            if status in (
+                429,
+                500,
+                502,
+                503,
+                504,
             ):
 
-                raise requests.HTTPError(
-                    f"HTTP {response.status_code}",
-                    response=response,
-                )
+                if attempt < RSS_MAX_RETRIES:
 
-            # ------------------------------------------------
-            # ERROR NON-RETRY
-            # ------------------------------------------------
+                    # EXPONENTIAL BACKOFF
+
+                    delay = (
+                        RSS_RETRY_BASE_DELAY
+                        * (2 ** (attempt - 1))
+                    )
+
+                    # RETRY-AFTER HEADER
+
+                    retry_after = (
+                        response.headers.get(
+                            "Retry-After"
+                        )
+                    )
+
+                    if retry_after:
+
+                        try:
+
+                            delay = max(
+                                delay,
+                                float(retry_after),
+                            )
+
+                        except (
+                            TypeError,
+                            ValueError,
+                        ):
+
+                            pass
+
+                    print(
+                        f"[RSS RETRY] "
+                        f"{query} -> HTTP {status}. "
+                        f"Percobaan "
+                        f"{attempt}/{RSS_MAX_RETRIES}, "
+                        f"menunggu "
+                        f"{delay:.1f} detik..."
+                    )
+
+                    time.sleep(delay)
+
+                    continue
+
+                response.raise_for_status()
+
+            # HTTP ERROR LAIN
 
             response.raise_for_status()
 
-        except Exception as exc:
+            # ====================================================
+            # PARSE RSS
+            # ====================================================
 
-            last_error = exc
+            feed = feedparser.parse(
+                response.content
+            )
 
-            if attempt >= MAX_RSS_RETRIES:
+            print(
+                f"[RSS DEBUG] "
+                f"query={query} | "
+                f"status={response.status_code} | "
+                f"bytes={len(response.content)} | "
+                f"entries={len(feed.entries)} | "
+                f"bozo={getattr(feed, 'bozo', False)}"
+            )
+
+            if getattr(
+                feed,
+                "bozo",
+                False,
+            ):
+
+                bozo_exception = getattr(
+                    feed,
+                    "bozo_exception",
+                    None,
+                )
+
+                if bozo_exception:
+
+                    print(
+                        f"[RSS BOZO ERROR] "
+                        f"{query} -> "
+                        f"{type(bozo_exception).__name__}: "
+                        f"{bozo_exception}"
+                    )
+
+            if not feed.entries:
 
                 print(
-                    f"[RSS ERROR] "
-                    f"{query} -> "
-                    f"Gagal setelah "
-                    f"{MAX_RSS_RETRIES} percobaan: "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
+                    f"[RSS EMPTY] "
+                    f"Tidak ada entry untuk: "
+                    f"{query}"
                 )
 
                 return []
 
-            wait_seconds = (
-                RSS_RETRY_BACKOFF
-                ** (attempt - 1)
-            )
+            rows = []
+
+            # ====================================================
+            # PROCESS RSS ENTRY
+            # ====================================================
+
+            for entry in feed.entries[
+                :MAX_ARTICLES_PER_FEED
+            ]:
+
+                link = normalize_url(
+                    entry.get("link")
+                )
+
+                if not link:
+                    continue
+
+                published = extract_feed_date(
+                    entry
+                )
+
+                source_value = entry.get(
+                    "source"
+                )
+
+                if isinstance(
+                    source_value,
+                    dict,
+                ):
+
+                    source = source_value.get(
+                        "title",
+                        "",
+                    )
+
+                else:
+
+                    source = (
+                        source_value
+                        or ""
+                    )
+
+                rows.append(
+                    {
+                        "title": normalize_text(
+                            entry.get("title")
+                        ),
+
+                        "link": link,
+
+                        "published_date": (
+                            published.isoformat()
+                            if published
+                            else None
+                        ),
+
+                        "source": normalize_text(
+                            source
+                        ),
+
+                        "rss_description": (
+                            normalize_text(
+                                entry.get("summary")
+                            )
+                        ),
+                    }
+                )
 
             print(
-                f"[RSS RETRY] "
+                f"[RSS OK] "
                 f"{query} -> "
-                f"attempt "
-                f"{attempt}/"
-                f"{MAX_RSS_RETRIES} gagal: "
+                f"{len(rows)} kandidat"
+            )
+
+            return rows
+
+        # ========================================================
+        # NETWORK ERROR
+        # ========================================================
+
+        except requests.RequestException as exc:
+
+            if attempt < RSS_MAX_RETRIES:
+
+                delay = (
+                    RSS_RETRY_BASE_DELAY
+                    * (2 ** (attempt - 1))
+                )
+
+                print(
+                    f"[RSS RETRY] "
+                    f"{query} -> "
+                    f"{type(exc).__name__}: "
+                    f"{exc}. "
+                    f"Percobaan "
+                    f"{attempt}/{RSS_MAX_RETRIES}, "
+                    f"menunggu "
+                    f"{delay:.1f} detik..."
+                )
+
+                time.sleep(
+                    delay
+                )
+
+                continue
+
+            print(
+                f"[RSS ERROR] "
+                f"{query} -> "
                 f"{type(exc).__name__}: "
                 f"{exc}"
             )
 
-            print(
-                f"[RSS RETRY] "
-                f"Menunggu "
-                f"{wait_seconds} detik..."
-            )
+            return []
 
-            time.sleep(
-                wait_seconds
-            )
-
-    # ========================================================
-    # VALIDASI RESPONSE
-    # ========================================================
-
-    if response is None:
-
-        print(
-            f"[RSS ERROR] "
-            f"{query} -> "
-            f"Tidak mendapatkan response."
-        )
-
-        return []
-
-    # ========================================================
-    # PARSE RSS
-    # ========================================================
-
-    try:
-
-        feed = feedparser.parse(
-            response.content
-        )
-
-        print(
-            f"[RSS DEBUG] "
-            f"query={query} | "
-            f"status={response.status_code} | "
-            f"bytes={len(response.content)} | "
-            f"entries={len(feed.entries)} | "
-            f"bozo={getattr(feed, 'bozo', False)}"
-        )
-
-        # ----------------------------------------------------
-        # BOZO CHECK
-        # ----------------------------------------------------
-
-        if getattr(
-            feed,
-            "bozo",
-            False,
-        ):
-
-            bozo_exception = getattr(
-                feed,
-                "bozo_exception",
-                None,
-            )
-
-            if bozo_exception:
-
-                print(
-                    f"[RSS BOZO ERROR] "
-                    f"{query} -> "
-                    f"{type(bozo_exception).__name__}: "
-                    f"{bozo_exception}"
-                )
-
-        # ----------------------------------------------------
-        # EMPTY FEED
-        # ----------------------------------------------------
-
-        if not feed.entries:
+        except Exception as exc:
 
             print(
-                f"[RSS EMPTY] "
-                f"Tidak ada entry untuk: "
-                f"{query}"
+                f"[RSS ERROR] "
+                f"{query} -> "
+                f"{type(exc).__name__}: "
+                f"{exc}"
             )
 
             return []
 
-        rows = []
-
-        # ====================================================
-        # PROCESS ENTRIES
-        # ====================================================
-
-        for entry in feed.entries[
-            :MAX_ARTICLES_PER_FEED
-        ]:
-
-            link = normalize_url(
-                entry.get("link")
-            )
-
-            if not link:
-
-                continue
-
-            published = extract_feed_date(
-                entry
-            )
-
-            source_value = entry.get(
-                "source"
-            )
-
-            if isinstance(
-                source_value,
-                dict,
-            ):
-
-                source = source_value.get(
-                    "title",
-                    "",
-                )
-
-            else:
-
-                source = (
-                    source_value
-                    or ""
-                )
-
-            rows.append(
-                {
-                    "title": normalize_text(
-                        entry.get(
-                            "title"
-                        )
-                    ),
-
-                    "link": link,
-
-                    "published_date": (
-                        published.isoformat()
-                        if published
-                        else None
-                    ),
-
-                    "source": normalize_text(
-                        source
-                    ),
-
-                    "rss_description": (
-                        normalize_text(
-                            entry.get(
-                                "summary"
-                            )
-                        )
-                    ),
-                }
-            )
-
-        # ====================================================
-        # SUCCESS
-        # ====================================================
-
-        print(
-            f"[RSS OK] "
-            f"{query} -> "
-            f"{len(rows)} kandidat"
-        )
-
-        return rows
-
-    except Exception as exc:
-
-        print(
-            f"[RSS PARSE ERROR] "
-            f"{query} -> "
-            f"{type(exc).__name__}: "
-            f"{exc}"
-        )
-
-        return []
-
+    return []
+    
 # ============================================================
 # COLLECT
 # ============================================================
-
-
 def collect_candidates() -> List[Dict[str, Any]]:
     """
     Mengumpulkan kandidat artikel dari seluruh SEARCH_TARGETS.
 
-    Fungsi ini hanya bertugas:
+    Fungsi ini bertugas:
     - mengambil hasil RSS
+    - memberi jeda antar query RSS
     - normalisasi URL
     - dedupe kandidat berdasarkan URL RSS
-    - mempertahankan kandidat dengan metadata/deskripsi paling lengkap
+    - mempertahankan kandidat dengan metadata/deskripsi
+      paling lengkap
 
     Filter tahun, relevansi satker, konten, dan klasifikasi
     dilakukan di process_candidate().
@@ -3215,14 +3225,49 @@ def collect_candidates() -> List[Dict[str, Any]]:
     skipped_empty_link = 0
     replaced_with_better = 0
 
-    for query in SEARCH_TARGETS:
+    # ========================================================
+    # LOOP SELURUH SEARCH TARGETS
+    # ========================================================
+
+    for query_index, query in enumerate(
+        SEARCH_TARGETS
+    ):
+
+        # ====================================================
+        # DELAY ANTAR QUERY
+        #
+        # Query pertama langsung dijalankan.
+        # Query berikutnya menunggu RSS_QUERY_DELAY.
+        # ====================================================
+
+        if (
+            query_index > 0
+            and RSS_QUERY_DELAY > 0
+        ):
+
+            print(
+                f"[RSS] Menunggu "
+                f"{RSS_QUERY_DELAY:.1f} detik "
+                "sebelum query berikutnya..."
+            )
+
+            time.sleep(
+                RSS_QUERY_DELAY
+            )
+
+        # ====================================================
+        # REQUEST RSS
+        # ====================================================
 
         print(
             f"[RSS] Mencari: {query}"
         )
 
         try:
-            rows = parse_google_news_feed(query)
+
+            rows = parse_google_news_feed(
+                query
+            )
 
         except Exception as exc:
 
@@ -3235,21 +3280,34 @@ def collect_candidates() -> List[Dict[str, Any]]:
 
             continue
 
+        # ====================================================
+        # TIDAK ADA HASIL
+        # ====================================================
+
         if not rows:
             continue
 
         total_raw += len(rows)
 
+        # ====================================================
+        # PROCESS SETIAP ROW
+        # ====================================================
+
         for row in rows:
 
-            if not isinstance(row, dict):
+            if not isinstance(
+                row,
+                dict,
+            ):
                 continue
 
             # ------------------------------------------------
             # NORMALISASI LINK
             # ------------------------------------------------
 
-            raw_link = row.get("link")
+            raw_link = row.get(
+                "link"
+            )
 
             link = normalize_url(
                 raw_link
@@ -3261,7 +3319,6 @@ def collect_candidates() -> List[Dict[str, Any]]:
 
                 continue
 
-            # Simpan URL yang sudah dinormalisasi.
             row["link"] = link
 
             # ------------------------------------------------
@@ -3269,49 +3326,64 @@ def collect_candidates() -> List[Dict[str, Any]]:
             # ------------------------------------------------
 
             row["title"] = normalize_text(
-                row.get("title")
+                row.get(
+                    "title"
+                )
             )
 
-            row["rss_description"] = normalize_text(
-                row.get("rss_description")
+            row["rss_description"] = (
+                normalize_text(
+                    row.get(
+                        "rss_description"
+                    )
+                )
             )
 
             row["source"] = (
                 normalize_text(
-                    row.get("source")
+                    row.get(
+                        "source"
+                    )
                 )
                 or "Google News"
             )
 
             # ------------------------------------------------
-            # HITUNG KELENGKAPAN KANDIDAT
-            # ------------------------------------------------
-            #
-            # Kandidat yang mempunyai:
-            # - title
-            # - description
-            # - published_date
-            # - source
-            #
-            # dianggap lebih lengkap.
+            # HITUNG KELENGKAPAN DATA
             # ------------------------------------------------
 
             current_score = (
-                bool(row.get("title"))
-                + bool(row.get("rss_description"))
-                + bool(row.get("published_date"))
-                + bool(row.get("source"))
+                bool(
+                    row.get(
+                        "title"
+                    )
+                )
+                + bool(
+                    row.get(
+                        "rss_description"
+                    )
+                )
+                + bool(
+                    row.get(
+                        "published_date"
+                    )
+                )
+                + bool(
+                    row.get(
+                        "source"
+                    )
+                )
             )
 
             current_description_length = len(
                 row.get(
                     "rss_description",
-                    ""
+                    "",
                 )
             )
 
             # ------------------------------------------------
-            # DEDUPE DALAM HASIL RSS
+            # DEDUPE RSS BERDASARKAN URL
             # ------------------------------------------------
 
             if link not in all_rows:
@@ -3328,24 +3400,28 @@ def collect_candidates() -> List[Dict[str, Any]]:
 
                 continue
 
-            existing = all_rows[link]
+            # ------------------------------------------------
+            # AMBIL DATA EXISTING
+            # ------------------------------------------------
 
-            existing_score = (
-                existing.get(
-                    "_candidate_score",
-                    0
-                )
+            existing = all_rows[
+                link
+            ]
+
+            existing_score = existing.get(
+                "_candidate_score",
+                0,
             )
 
             existing_description_length = (
                 existing.get(
                     "_description_length",
-                    0
+                    0,
                 )
             )
 
             # ------------------------------------------------
-            # PILIH DATA YANG LEBIH LENGKAP
+            # PILIH DATA PALING LENGKAP
             # ------------------------------------------------
 
             replace = False
@@ -3355,7 +3431,8 @@ def collect_candidates() -> List[Dict[str, Any]]:
                 replace = True
 
             elif (
-                current_score == existing_score
+                current_score
+                == existing_score
                 and current_description_length
                 > existing_description_length
             ):
@@ -3372,13 +3449,15 @@ def collect_candidates() -> List[Dict[str, Any]]:
                     current_description_length
                 )
 
-                all_rows[link] = row
+                all_rows[
+                    link
+                ] = row
 
                 replaced_with_better += 1
 
-    # --------------------------------------------------------
+    # ========================================================
     # HAPUS FIELD INTERNAL
-    # --------------------------------------------------------
+    # ========================================================
 
     candidates = []
 
@@ -3386,21 +3465,21 @@ def collect_candidates() -> List[Dict[str, Any]]:
 
         row.pop(
             "_candidate_score",
-            None
+            None,
         )
 
         row.pop(
             "_description_length",
-            None
+            None,
         )
 
         candidates.append(
             row
         )
 
-    # --------------------------------------------------------
+    # ========================================================
     # SUMMARY
-    # --------------------------------------------------------
+    # ========================================================
 
     print(
         f"[RSS] Total hasil mentah     : "
@@ -3424,8 +3503,6 @@ def collect_candidates() -> List[Dict[str, Any]]:
     )
 
     return candidates
-
-
 
 # ============================================================
 # PROCESS CANDIDATE
