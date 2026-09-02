@@ -6927,10 +6927,7 @@ def calculate_event_quality(
 # EVENT DUPLICATE CLUSTERING ENGINE
 # ============================================================
 
-def cluster_event_duplicates(articles):
 
-    return cluster_events(articles)
-    
 def audit_event_quality(articles):
 
     print("=" * 70)
@@ -6940,90 +6937,275 @@ def audit_event_quality(articles):
     print()
     print(f"[AUDIT] Total artikel: {len(articles)}")
 
-    clusters = cluster_event_duplicates(articles)
+    # --------------------------------------------------------
+    # CLUSTER EVENTS
+    # --------------------------------------------------------
 
-    print()
-    print("=" * 70)
-    print("DEBUG CLUSTER STRUCTURE")
-    print("=" * 70)
+    clusters = cluster_events(articles)
 
-    print(type(clusters))
+    print(
+        f"[AUDIT] Total event cluster: {len(clusters)}"
+    )
 
-    if clusters:
-        print("TYPE clusters[0]:", type(clusters[0]))
-        print("CONTENT clusters[0]:")
-        print(clusters[0])
+    # --------------------------------------------------------
+    # COUNTER
+    # --------------------------------------------------------
 
-    # ==========================================================
-    # ANALISIS CLUSTER
-    # ==========================================================
+    high_quality = 0
+    medium_quality = 0
+    low_quality = 0
 
-    for index, cluster in enumerate(clusters, start=1):
+    # --------------------------------------------------------
+    # LOOP CLUSTERS
+    # --------------------------------------------------------
 
-        # Pastikan cluster tidak kosong
-        if not cluster:
-            continue
+    for cluster_index, cluster in enumerate(
+        clusters,
+        start=1
+    ):
 
         print()
         print("=" * 70)
-        print(f"EVENT CLUSTER #{index}")
+        print(
+            f"EVENT CLUSTER #{cluster_index}"
+        )
         print("=" * 70)
 
-        # ------------------------------------------------------
-        # ARTICLE PERTAMA
-        # ------------------------------------------------------
+        cluster_size = len(cluster)
 
-        first_article = cluster[0]
-
-        # Ambil nama event
-        event_name = (
-            first_article.get("event")
-            or first_article.get("event_name")
-            or first_article.get("title")
-            or "Unknown Event"
+        print()
+        print(
+            f"Jumlah artikel: {cluster_size}"
         )
 
-        print()
-        print(f"EVENT : {event_name}")
-        print(f"Jumlah artikel : {len(cluster)}")
+        # ----------------------------------------------------
+        # AMBIL DATA
+        # ----------------------------------------------------
 
-        print()
-        print("ARTIKEL:")
-        print()
+        titles = []
+        sources = []
 
-        # ------------------------------------------------------
-        # TAMPILKAN ARTIKEL
-        # ------------------------------------------------------
-
-        for article_index, article in enumerate(cluster, start=1):
-
-            article_id = article.get("id", "-")
+        for article in cluster:
 
             title = (
                 article.get("title")
                 or article.get("judul")
-                or "-"
+                or ""
             )
 
             source = (
                 article.get("source")
                 or article.get("source_name")
+                or article.get("media")
                 or ""
             )
 
-            print(f"[{article_index}] ID={article_id}")
+            if title:
+                titles.append(title)
 
             if source:
-                print(f"{title} - {source}")
-            else:
-                print(title)
+                sources.append(source)
+
+        # ----------------------------------------------------
+        # SOURCE DIVERSITY
+        # ----------------------------------------------------
+
+        unique_sources = set(
+            source.lower().strip()
+            for source in sources
+            if source
+        )
+
+        source_diversity = len(
+            unique_sources
+        )
+
+        # ----------------------------------------------------
+        # TITLE SIMILARITY
+        # ----------------------------------------------------
+
+        similarity_scores = []
+
+        for i, j in combinations(
+            range(len(titles)),
+            2
+        ):
+
+            similarity = calculate_title_similarity(
+                titles[i],
+                titles[j]
+            )
+
+            similarity_scores.append(
+                similarity
+            )
+
+        if similarity_scores:
+
+            average_similarity = (
+                sum(similarity_scores)
+                / len(similarity_scores)
+            )
+
+        else:
+
+            average_similarity = 0
+
+        # ----------------------------------------------------
+        # QUALITY SCORE
+        # ----------------------------------------------------
+
+        quality_score = 0
+
+        # Similarity score
+
+        if average_similarity >= 0.80:
+
+            quality_score += 50
+
+        elif average_similarity >= 0.60:
+
+            quality_score += 35
+
+        elif average_similarity >= 0.40:
+
+            quality_score += 20
+
+        else:
+
+            quality_score += 10
+
+        # Cluster size
+
+        if cluster_size >= 3:
+
+            quality_score += 25
+
+        elif cluster_size == 2:
+
+            quality_score += 15
+
+        # Source diversity
+
+        if source_diversity >= 3:
+
+            quality_score += 25
+
+        elif source_diversity == 2:
+
+            quality_score += 15
+
+        elif source_diversity == 1:
+
+            quality_score += 5
+
+        # ----------------------------------------------------
+        # QUALITY LEVEL
+        # ----------------------------------------------------
+
+        if quality_score >= 80:
+
+            quality_level = "HIGH"
+
+            high_quality += 1
+
+        elif quality_score >= 50:
+
+            quality_level = "MEDIUM"
+
+            medium_quality += 1
+
+        else:
+
+            quality_level = "LOW"
+
+            low_quality += 1
+
+        # ----------------------------------------------------
+        # REPORT
+        # ----------------------------------------------------
+
+        print()
+
+        print("QUALITY RESULT")
+
+        print(
+            f"Quality Score       : {quality_score}/100"
+        )
+
+        print(
+            f"Quality Level       : {quality_level}"
+        )
+
+        print(
+            f"Average Similarity  : "
+            f"{average_similarity:.2%}"
+        )
+
+        print(
+            f"Unique Sources      : "
+            f"{source_diversity}"
+        )
+
+        print()
+
+        print("ARTIKEL:")
+
+        print()
+
+        for index, article in enumerate(
+            cluster,
+            start=1
+        ):
+
+            article_id = article.get("id")
+
+            title = (
+                article.get("title")
+                or article.get("judul")
+                or "Tanpa Judul"
+            )
+
+            print(
+                f"[{index}] ID={article_id}"
+            )
+
+            print(title)
 
             print()
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 70)
+    print("RINGKASAN AUDIT EVENT QUALITY")
+    print("=" * 70)
+
+    print()
+
+    print(
+        f"Total Cluster : {len(clusters)}"
+    )
+
+    print(
+        f"HIGH Quality  : {high_quality}"
+    )
+
+    print(
+        f"MEDIUM Quality: {medium_quality}"
+    )
+
+    print(
+        f"LOW Quality   : {low_quality}"
+    )
+
+    print()
 
     print("=" * 70)
     print("AUDIT EVENT QUALITY SELESAI")
     print("=" * 70)
-    
 # ============================================================
 # MAIN
 # ============================================================
