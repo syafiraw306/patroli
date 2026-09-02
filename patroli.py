@@ -949,55 +949,6 @@ def is_duplicate_link(link, existing_link_index):
 
     return normalized in existing_link_index
 
-def is_duplicate_article(
-    article,
-    existing_link_index,
-    existing_title_index
-):
-    """
-    Mengecek apakah artikel kemungkinan sudah ada.
-
-    Priority:
-    1. Duplicate URL
-    2. Duplicate Title
-
-    Return:
-        True  -> duplicate
-        False -> artikel baru
-    """
-
-    link = article.get("link", "")
-
-    title = article.get("title", "")
-
-    # --------------------------------------------------
-    # CHECK DUPLICATE LINK
-    # --------------------------------------------------
-
-    if is_duplicate_link(
-        link,
-        existing_link_index
-    ):
-
-        return True
-
-    # --------------------------------------------------
-    # CHECK DUPLICATE TITLE
-    # --------------------------------------------------
-
-    normalized_title = normalize_title(
-        title
-    )
-
-    if (
-        normalized_title
-        and normalized_title
-        in existing_title_index
-    ):
-
-        return True
-
-    return False
 
 def register_new_link(link, existing_link_index):
     """
@@ -3980,24 +3931,6 @@ def run_once() -> Dict[str, Any]:
             "error": str(exc),
         }
 
-    existing_links = {
-        normalize_url(article.get("link"))
-        for article in existing_articles
-        if normalize_url(article.get("link"))
-    }
-
-    print(
-        f"[DATABASE] "
-        f"Total artikel sebelum run: "
-        f"{len(existing_articles)}"
-    )
-
-    print(
-        f"[DATABASE] "
-        f"Link unik sebelum run: "
-        f"{len(existing_links)}"
-    )
-
     # ========================================================
     # COLLECT CANDIDATES
     # ========================================================
@@ -4198,199 +4131,236 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
     # SAVE
     # ========================================================
+# ========================================================
+# SAVE
+#
+# Semua keputusan duplicate hanya melalui:
+#
+# should_save_article()
+#
+# Tidak ada lagi:
+#
+# - is_duplicate_article()
+# - existing_links tambahan
+# - was_existing
+# - get_article_by_link()
+#
+# ========================================================
 
-    saved_count = 0
-    save_failed = 0
-    new_articles = []
+saved_count = 0
+save_failed = 0
 
-    for article in valid_articles:
+new_articles = []
 
-        link = normalize_url(
-            article.get("link")
+
+for article in valid_articles:
+
+    # ====================================================
+    # VALIDATE LINK
+    # ====================================================
+
+    link = normalize_url(
+        article.get("link")
+    )
+
+    if not link:
+
+        print(
+            "[SKIP] INVALID_LINK"
         )
 
-        if not link:
-            continue
+        continue
 
-        was_existing = (
-            link in existing_links
+
+    # ====================================================
+    # CENTRAL DUPLICATE DECISION
+    #
+    # Hanya fungsi ini yang menentukan:
+    #
+    # - Duplicate URL
+    # - Duplicate Title + Media
+    # - Duplicate Content + Media
+    #
+    # Event sama dari media berbeda
+    # TETAP BOLEH DISIMPAN.
+    # ====================================================
+
+    (
+        should_save,
+        reason,
+        similarity,
+        matched_article,
+    ) = should_save_article(
+
+        article,
+
+        existing_link_index,
+
+        existing_title_index,
+
+        existing_content_index,
+    )
+
+
+    # ====================================================
+    # SKIP DUPLICATE
+    # ====================================================
+
+    if not should_save:
+
+        print()
+        print(
+            f"[SKIP] {reason}"
         )
 
         print(
-            f"[CHECK LINK] "
-            f"{'LAMA' if was_existing else 'BARU'} | "
-            f"{link}"
+            f"TITLE: "
+            f"{article.get('title', '')}"
         )
 
-        # ----------------------------------------------------
-        # CEK LANGSUNG KE DATABASE
-        # ----------------------------------------------------
-
-        if not was_existing:
-
-            try:
-
-                existing_by_link = (
-                    get_article_by_link(
-                        link
-                    )
-                )
-
-                if existing_by_link:
-
-                    was_existing = True
-
-            except Exception as exc:
-
-                print(
-                    f"[CHECK LINK WARNING] "
-                    f"{link} -> "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                )
-
-      
-        # ========================================================
-        # CENTRAL DUPLICATE DECISION
-        # ========================================================
-        link = normalize_url(
-            article.get("link")
+        print(
+            f"LINK: "
+            f"{article.get('link', '')}"
         )
-        (
-            should_save,
-            reason,
-            similarity,
-            matched_article,
-        ) = should_save_article(
-        
-            article,
-        
-            existing_link_index,
-        
-            existing_title_index,
-        
-            existing_content_index,
+
+        print(
+            f"MEDIA: "
+            f"{get_media_source(article)}"
         )
-        
-        
-        if not should_save:
-        
-            print()
-        
+
+        if matched_article:
+
             print(
-                f"[SKIP] {reason}"
+                f"MATCHED ID: "
+                f"{matched_article.get('id', 'Unknown')}"
             )
-        
+
             print(
-                f"TITLE: "
-                f"{article.get('title', '')}"
+                f"MATCHED TITLE: "
+                f"{matched_article.get('title', '')}"
             )
-        
+
             print(
-                f"LINK: "
-                f"{article.get('link', '')}"
-            )
-        
-            if matched_article:
-        
-                print(
-                    f"MATCHED ID: "
-                    f"{matched_article.get('id', 'Unknown')}"
-                )
-        
-                print(
-                    f"MATCHED TITLE: "
-                    f"{matched_article.get('title', '')}"
-                )
-        
-                print(
-                    f"SIMILARITY: "
-                    f"{similarity:.2%}"
-                )
-        
-            continue
-        # ----------------------------------------------------
-        # UPSERT
-        # ----------------------------------------------------
-
-        try:
-
-            saved = upsert_article(
-                article
+                f"MATCHED MEDIA: "
+                f"{get_media_source(matched_article)}"
             )
 
-            if saved is None:
-
-                save_failed += 1
-
-                print(
-                    f"[SAVE ERROR] "
-                    f"Gagal menyimpan: "
-                    f"{link}"
-                )
-
-                continue
-
-            saved_count += 1
-            
-            
-            # ========================================================
-            # UPDATE INDEX
-            #
-            # Sangat penting agar artikel berikutnya dalam
-            # satu GitHub Actions run juga tidak duplicate.
-            # ========================================================
-            
-            register_saved_article(
-            
-                article,
-            
-                existing_link_index,
-            
-                existing_title_index,
-            
-                existing_content_index,
-            )
-            
-            
-            # ========================================================
-            # NEW ARTICLE
-            # ========================================================
-            
-            new_articles.append(
-                article
+            print(
+                f"SIMILARITY: "
+                f"{similarity:.2%}"
             )
 
-        except Exception as exc:
+        continue
+
+
+    # ====================================================
+    # ARTICLE APPROVED
+    # ====================================================
+
+    print()
+
+    print(
+        "[SAVE] NEW_ARTICLE"
+    )
+
+    print(
+        f"TITLE: "
+        f"{article.get('title', '')}"
+    )
+
+    print(
+        f"MEDIA: "
+        f"{get_media_source(article)}"
+    )
+
+
+    # ====================================================
+    # UPSERT ARTICLE
+    # ====================================================
+
+    try:
+
+        saved = upsert_article(
+            article
+        )
+
+
+        # ====================================================
+        # SAVE FAILED
+        # ====================================================
+
+        if saved is None:
 
             save_failed += 1
 
             print(
                 f"[SAVE ERROR] "
-                f"{link}: "
-                f"{type(exc).__name__}: "
-                f"{exc}"
+                f"Gagal menyimpan: "
+                f"{link}"
             )
 
-    print()
-    print(
-        f"[DATABASE] "
-        f"Berhasil disimpan/update: "
-        f"{saved_count}"
-    )
+            continue
 
-    print(
-        f"[DATABASE] "
-        f"Gagal simpan: "
-        f"{save_failed}"
-    )
 
-    print(
-        f"[DATABASE] "
-        f"Artikel baru: "
-        f"{len(new_articles)}"
-    )
+        # ====================================================
+        # SAVE SUCCESS
+        # ====================================================
 
+        saved_count += 1
+
+
+        # ====================================================
+        # UPDATE DUPLICATE INDEX
+        #
+        # SANGAT PENTING.
+        #
+        # Artikel yang baru saja disimpan harus langsung
+        # dimasukkan ke index.
+        #
+        # Dengan demikian artikel berikutnya dalam satu
+        # GitHub Actions run juga bisa terdeteksi duplicate.
+        # ====================================================
+
+        register_saved_article(
+
+            article,
+
+            existing_link_index,
+
+            existing_title_index,
+
+            existing_content_index,
+        )
+
+
+        # ====================================================
+        # NEW ARTICLE
+        #
+        # Artikel hanya masuk Telegram jika benar-benar
+        # lolos duplicate prevention dan berhasil disimpan.
+        # ====================================================
+
+        new_articles.append(
+            article
+        )
+
+
+        print(
+            f"[SAVE SUCCESS] "
+            f"{article.get('title', '')[:100]}"
+        )
+
+
+    except Exception as exc:
+
+        save_failed += 1
+
+        print(
+            f"[SAVE ERROR] "
+            f"{link}: "
+            f"{type(exc).__name__}: "
+            f"{exc}"
+        )
     # ========================================================
     # TELEGRAM
     # ========================================================
@@ -7432,6 +7402,14 @@ def is_duplicate_content(
     """
     Mengecek apakah content artikel hampir sama.
 
+    PENTING:
+
+    Duplicate content hanya dianggap duplicate
+    jika berasal dari MEDIA YANG SAMA.
+
+    Artikel dari media berbeda yang membahas
+    event yang sama TETAP BOLEH disimpan.
+
     Return:
 
         (
@@ -7440,6 +7418,22 @@ def is_duplicate_content(
             matched_article
         )
     """
+
+    # ========================================================
+    # VALIDASI ARTICLE
+    # ========================================================
+
+    if not isinstance(article, dict):
+
+        return (
+            False,
+            0.0,
+            None,
+        )
+
+    # ========================================================
+    # CANDIDATE CONTENT
+    # ========================================================
 
     candidate_content = get_article_content(
         article
@@ -7459,23 +7453,70 @@ def is_duplicate_content(
             None,
         )
 
-    candidate_title = normalize_title(
-        article.get("title", "")
+    # ========================================================
+    # CANDIDATE MEDIA
+    # ========================================================
+
+    candidate_media = (
+        get_media_source(
+            article
+        )
+        .lower()
+        .strip()
     )
 
-    candidate_media = get_media_source(
-        article
-    ).lower()
+    # ========================================================
+    # BEST MATCH
+    # ========================================================
 
     best_similarity = 0.0
 
     best_article = None
 
+    # ========================================================
+    # CHECK EXISTING CONTENT
+    # ========================================================
+
     for item in existing_content_index:
+
+        if not isinstance(item, dict):
+            continue
 
         existing_article = item.get(
             "article"
         )
+
+        if not isinstance(
+            existing_article,
+            dict,
+        ):
+            continue
+
+        # ====================================================
+        # GET EXISTING MEDIA
+        # ====================================================
+
+        existing_media = (
+            get_media_source(
+                existing_article
+            )
+            .lower()
+            .strip()
+        )
+
+        # ====================================================
+        # PENTING
+        #
+        # HANYA BANDINGKAN CONTENT
+        # DARI MEDIA YANG SAMA
+        # ====================================================
+
+        if existing_media != candidate_media:
+            continue
+
+        # ====================================================
+        # EXISTING CONTENT
+        # ====================================================
 
         existing_content = item.get(
             "content",
@@ -7485,16 +7526,30 @@ def is_duplicate_content(
         if not existing_content:
             continue
 
-        similarity = calculate_content_similarity(
-            candidate_content,
-            existing_content,
+        # ====================================================
+        # CALCULATE SIMILARITY
+        # ====================================================
+
+        similarity = (
+            calculate_content_similarity(
+                candidate_content,
+                existing_content,
+            )
         )
+
+        # ====================================================
+        # BEST MATCH
+        # ====================================================
 
         if similarity > best_similarity:
 
             best_similarity = similarity
 
             best_article = existing_article
+
+    # ========================================================
+    # DUPLICATE DECISION
+    # ========================================================
 
     if best_similarity >= threshold:
 
@@ -7509,8 +7564,7 @@ def is_duplicate_content(
         best_similarity,
         best_article,
     )
-
-
+    
 def should_save_article(
     article,
     existing_link_index,
@@ -7518,7 +7572,7 @@ def should_save_article(
     existing_content_index,
 ):
     """
-    CENTRAL DECISION FUNCTION
+    CENTRAL DECISION FUNCTION.
 
     Menentukan apakah artikel boleh disimpan.
 
@@ -7530,10 +7584,10 @@ def should_save_article(
     2. Duplicate Title + Media
        -> JANGAN SIMPAN
 
-    3. Duplicate Content
-       -> JANGAN SIMPAN HANYA jika berasal dari media yang sama
+    3. Duplicate Content + Media Sama
+       -> JANGAN SIMPAN
 
-    4. Event sama dari media berbeda
+    4. Event sama + Media berbeda
        -> TETAP SIMPAN
 
     Return:
@@ -7547,7 +7601,7 @@ def should_save_article(
     """
 
     # ========================================================
-    # VALIDASI ARTICLE
+    # VALIDATE ARTICLE
     # ========================================================
 
     if not isinstance(article, dict):
@@ -7560,7 +7614,7 @@ def should_save_article(
         )
 
     # ========================================================
-    # VALIDASI LINK
+    # VALIDATE LINK
     # ========================================================
 
     link = normalize_url(
@@ -7590,7 +7644,7 @@ def should_save_article(
         )
 
     # ========================================================
-    # 2. DUPLICATE TITLE + MEDIA
+    # 2. DUPLICATE TITLE + SAME MEDIA
     # ========================================================
 
     title_key = build_title_key(
@@ -7611,6 +7665,9 @@ def should_save_article(
 
     # ========================================================
     # 3. DUPLICATE CONTENT
+    #
+    # Fungsi is_duplicate_content()
+    # sekarang hanya membandingkan media yang sama.
     # ========================================================
 
     (
@@ -7618,73 +7675,57 @@ def should_save_article(
         similarity,
         matched_article,
     ) = is_duplicate_content(
+
         article,
+
         existing_content_index,
+
     )
 
     if content_duplicate:
 
-        candidate_media = (
-            get_media_source(article)
-            .lower()
-            .strip()
+        matched_media = (
+            get_media_source(
+                matched_article
+            )
+            if matched_article
+            else "Unknown"
         )
 
-        matched_media = ""
-
-        if matched_article:
-
-            matched_media = (
-                get_media_source(
-                    matched_article
-                )
-                .lower()
-                .strip()
+        candidate_media = (
+            get_media_source(
+                article
             )
-
-        # ====================================================
-        # CONTENT SAMA + MEDIA SAMA
-        #
-        # -> DUPLICATE
-        # ====================================================
-
-        if (
-            candidate_media
-            and matched_media
-            and candidate_media == matched_media
-        ):
-
-            return (
-                False,
-                (
-                    "DUPLICATE_CONTENT_SAME_MEDIA "
-                    f"({similarity:.2%})"
-                ),
-                similarity,
-                matched_article,
-            )
-
-        # ====================================================
-        # CONTENT MIRIP + MEDIA BERBEDA
-        #
-        # -> EVENT SAMA
-        # -> TETAP DISIMPAN
-        #
-        # Event clustering akan menangani hubungan artikel.
-        # ====================================================
+        )
 
         return (
-            True,
+            False,
+
             (
-                "SAME_EVENT_DIFFERENT_MEDIA "
-                f"({similarity:.2%})"
+                "DUPLICATE_CONTENT_SAME_MEDIA "
+                f"({similarity:.2%}) "
+                f"| media={candidate_media} "
+                f"| matched={matched_media}"
             ),
+
             similarity,
+
             matched_article,
         )
 
     # ========================================================
-    # 4. NEW ARTICLE
+    # 4. ARTICLE IS NEW
+    #
+    # Event sama dari media berbeda
+    # TETAP BOLEH MASUK DATABASE.
+    #
+    # Event clustering hanya digunakan untuk:
+    #
+    # - audit
+    # - intelligence
+    # - analytics
+    #
+    # BUKAN untuk memblokir artikel.
     # ========================================================
 
     return (
