@@ -4356,9 +4356,9 @@ def run_once() -> Dict[str, Any]:
     
     
         except Exception as exc:
-    
+
             save_failed += 1
-    
+
             print(
                 f"[SAVE ERROR] "
                 f"{link}: "
@@ -4366,37 +4366,41 @@ def run_once() -> Dict[str, Any]:
                 f"{exc}"
             )
 
-# ========================================================
-# TELEGRAM
-# PENTING: DI LUAR LOOP
-# ========================================================
 
-telegram_count = 0
+    # ========================================================
+    # TELEGRAM
+    # PENTING: DI LUAR LOOP PENYIMPANAN
+    # ========================================================
 
-if new_articles:
+    telegram_count = 0
 
-    print()
-    print("=" * 70)
-    print("MENGIRIM NOTIFIKASI TELEGRAM")
-    print("=" * 70)
+    if new_articles:
 
-    telegram_count = send_telegram_notifications(
-        new_articles
-    )
+        print()
+        print("=" * 70)
+        print("MENGIRIM NOTIFIKASI TELEGRAM")
+        print("=" * 70)
 
-else:
+        telegram_count = send_telegram_notifications(
+            new_articles
+        )
 
-    print()
-    print(
-        "[TELEGRAM] Tidak ada artikel baru "
-        "untuk dikirim."
-    )
+    else:
+
+        print()
+        print(
+            "[TELEGRAM] Tidak ada artikel baru "
+            "untuk dikirim."
+        )
+
 
     # ========================================================
     # RECLASSIFICATION
+    # PENTING: DI LUAR IF/ELSE TELEGRAM
     # ========================================================
 
     counts = reclassify_all()
+
 
     # ========================================================
     # FINAL DATABASE
@@ -4416,11 +4420,13 @@ else:
 
         final_articles = []
 
+
     duration = round(
         time.perf_counter()
         - started,
         2,
     )
+
 
     # ========================================================
     # RUN LOG
@@ -4479,7 +4485,9 @@ else:
         "status": "Selesai",
     }
 
+
     save_run_log(log)
+
 
     # ========================================================
     # SUMMARY
@@ -4506,7 +4514,7 @@ else:
     )
 
     print(
-        f"Tidak lolos filter    : "
+        f"Tidak lolos filter     : "
         f"{filtered_count}"
     )
 
@@ -4562,8 +4570,8 @@ else:
 
     print("=" * 70)
 
-    return log
 
+    return log
 
 
 # ============================================================
