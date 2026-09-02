@@ -6915,7 +6915,40 @@ def calculate_event_quality(
         "duplicate_score": duplicate_score
     }
 
+# ============================================================
+# EVENT DUPLICATE CLUSTERING ENGINE
+# ============================================================
 
+def cluster_event_duplicates(articles):
+
+    """
+    Mengelompokkan artikel yang membahas event/peristiwa yang sama.
+
+    Return:
+        list cluster
+
+    Contoh:
+
+        [
+            {
+                "event": "...",
+                "articles": [...]
+            }
+        ]
+    """
+
+    clusters = []
+
+    # ========================================================
+    # LOGIKA CLUSTERING
+    # ========================================================
+
+    # PENTING:
+    # Pindahkan logika clustering yang sebelumnya ada di
+    # audit_event_duplicates() ke sini.
+    
+    return clusters
+    
 def audit_event_quality(articles):
     """
     Audit kualitas event cluster.
