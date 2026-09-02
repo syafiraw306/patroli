@@ -4299,7 +4299,12 @@ def run_once() -> Dict[str, Any]:
         # Event sama dari media berbeda
         # TETAP BOLEH DISIMPAN.
         # ====================================================
-        should_save, reason = should_save_article(
+        (
+            should_save,
+            reason,
+            similarity,
+            matched_article,
+        ) = should_save_article(
         
             article,
         
