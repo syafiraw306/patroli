@@ -6579,6 +6579,715 @@ def audit_title_duplicates() -> None:
     )
 
     print("=" * 70)
+
+# ==============================================================
+# AUDIT EVENT QUALITY
+# ==============================================================
+
+
+def normalize_event_text(text):
+    """
+    Normalisasi teks untuk perbandingan judul/event.
+    """
+
+    if not text:
+        return ""
+
+    text = text.lower()
+
+    # Hilangkan nama media umum di akhir judul
+    text = re.sub(
+        r'\s*[-|:]\s*(detikcom|kompas\.com|inews\.id|tribunnews\.com|'
+        r'tribun-medan\.com|antara news.*|tvonenews|waspada\.id|'
+        r'harian mistar|harian sib\.com|google news|google berita).*',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    return text
+
+
+def title_similarity(title1, title2):
+    """
+    Menghitung similarity dua judul.
+    """
+
+    t1 = normalize_event_text(title1)
+    t2 = normalize_event_text(title2)
+
+    if not t1 or not t2:
+        return 0
+
+    return SequenceMatcher(None, t1, t2).ratio()
+
+
+def detect_exact_duplicates(articles):
+    """
+    Mendeteksi artikel yang memiliki judul identik
+    atau hampir identik.
+    """
+
+    duplicates = []
+
+    for i in range(len(articles)):
+
+        for j in range(i + 1, len(articles)):
+
+            title1 = articles[i].get("title", "")
+            title2 = articles[j].get("title", "")
+
+            similarity = title_similarity(title1, title2)
+
+            if similarity >= 0.97:
+
+                duplicates.append({
+                    "article_1": articles[i],
+                    "article_2": articles[j],
+                    "similarity": similarity
+                })
+
+    return duplicates
+
+
+def detect_satker_from_articles(articles):
+    """
+    Mengambil SATKER dari artikel.
+    """
+
+    satkers = []
+
+    for article in articles:
+
+        article_satkers = (
+            article.get("satker")
+            or article.get("satkers")
+            or []
+        )
+
+        if isinstance(article_satkers, str):
+            article_satkers = [article_satkers]
+
+        for satker in article_satkers:
+
+            if satker:
+                satkers.append(
+                    str(satker).lower().strip()
+                )
+
+    if not satkers:
+        return []
+
+    counter = Counter(satkers)
+
+    return [
+        satker
+        for satker, count in counter.most_common()
+    ]
+
+
+def evaluate_event_name(event_name):
+    """
+    Menilai apakah nama event cukup natural.
+    """
+
+    if not event_name:
+        return {
+            "score": 0,
+            "status": "BURUK",
+            "reason": "Nama event kosong"
+        }
+
+    words = event_name.split()
+
+    score = 100
+    problems = []
+
+    # Nama terlalu pendek
+    if len(words) < 3:
+        score -= 40
+        problems.append("Nama event terlalu pendek")
+
+    # Nama terlalu panjang
+    if len(words) > 12:
+        score -= 15
+        problems.append("Nama event terlalu panjang")
+
+    generic_words = [
+        "sumut",
+        "news",
+        "com",
+        "online",
+        "artikel",
+        "berita"
+    ]
+
+    generic_count = sum(
+        1 for word in words
+        if word.lower() in generic_words
+    )
+
+    if generic_count >= 2:
+        score -= 25
+        problems.append(
+            "Terlalu banyak kata generic"
+        )
+
+    if score >= 80:
+        status = "BAIK"
+    elif score >= 60:
+        status = "CUKUP"
+    else:
+        status = "BURUK"
+
+    return {
+        "score": max(score, 0),
+        "status": status,
+        "reason": (
+            ", ".join(problems)
+            if problems
+            else "Nama event cukup baik"
+        )
+    }
+
+
+def evaluate_cluster_cohesion(articles):
+    """
+    Mengukur apakah artikel dalam cluster
+    benar-benar membahas event yang sama.
+    """
+
+    if len(articles) <= 1:
+
+        return {
+            "average_similarity": 1.0,
+            "score": 100,
+            "status": "SINGLE"
+        }
+
+    similarities = []
+
+    for i in range(len(articles)):
+
+        for j in range(i + 1, len(articles)):
+
+            title1 = articles[i].get("title", "")
+            title2 = articles[j].get("title", "")
+
+            similarity = title_similarity(
+                title1,
+                title2
+            )
+
+            similarities.append(similarity)
+
+    if not similarities:
+        avg_similarity = 0
+    else:
+        avg_similarity = (
+            sum(similarities)
+            / len(similarities)
+        )
+
+    score = int(avg_similarity * 100)
+
+    if score >= 75:
+        status = "SANGAT BAIK"
+    elif score >= 60:
+        status = "BAIK"
+    elif score >= 45:
+        status = "CUKUP"
+    else:
+        status = "LEMAH"
+
+    return {
+        "average_similarity": avg_similarity,
+        "score": score,
+        "status": status
+    }
+
+
+def calculate_event_quality(
+    event_name,
+    articles
+):
+    """
+    Menghitung total quality score event.
+    """
+
+    name_result = evaluate_event_name(
+        event_name
+    )
+
+    cohesion_result = (
+        evaluate_cluster_cohesion(
+            articles
+        )
+    )
+
+    satkers = detect_satker_from_articles(
+        articles
+    )
+
+    duplicates = detect_exact_duplicates(
+        articles
+    )
+
+    # ==========================================================
+    # SATKER SCORE
+    # ==========================================================
+
+    if satkers:
+        satker_score = 100
+    else:
+        satker_score = 40
+
+    # ==========================================================
+    # DUPLICATE SCORE
+    # ==========================================================
+
+    article_count = len(articles)
+
+    if article_count <= 1:
+
+        duplicate_score = 100
+
+    else:
+
+        duplicate_ratio = (
+            len(duplicates)
+            / article_count
+        )
+
+        duplicate_score = int(
+            max(
+                0,
+                100 - duplicate_ratio * 100
+            )
+        )
+
+    # ==========================================================
+    # TOTAL SCORE
+    # ==========================================================
+
+    total_score = int(
+
+        name_result["score"] * 0.20
+
+        + cohesion_result["score"] * 0.45
+
+        + satker_score * 0.20
+
+        + duplicate_score * 0.15
+    )
+
+    if total_score >= 85:
+        quality = "EXCELLENT"
+
+    elif total_score >= 70:
+        quality = "GOOD"
+
+    elif total_score >= 50:
+        quality = "NEEDS REVIEW"
+
+    else:
+        quality = "POOR"
+
+    return {
+
+        "score": total_score,
+
+        "quality": quality,
+
+        "event_name": name_result,
+
+        "cohesion": cohesion_result,
+
+        "satkers": satkers,
+
+        "duplicates": duplicates,
+
+        "satker_score": satker_score,
+
+        "duplicate_score": duplicate_score
+    }
+
+
+def audit_event_quality(articles):
+    """
+    Audit kualitas event cluster.
+    """
+
+    print("=" * 70)
+    print("AUDIT EVENT QUALITY")
+    print("=" * 70)
+
+    if not articles:
+
+        print("[AUDIT] Tidak ada artikel.")
+
+        return
+
+    print()
+    print(f"[AUDIT] Total artikel: {len(articles)}")
+
+    # ==========================================================
+    # GUNAKAN CLUSTERING EVENT YANG SUDAH ADA
+    # ==========================================================
+
+    clusters = cluster_event_duplicates(
+        articles
+    )
+
+    if not clusters:
+
+        print()
+        print("[AUDIT] Tidak ada event cluster.")
+
+        return
+
+    print(
+        f"[AUDIT] Total event cluster: "
+        f"{len(clusters)}"
+    )
+
+    results = []
+
+    # ==========================================================
+    # AUDIT SETIAP EVENT
+    # ==========================================================
+
+    for index, cluster in enumerate(
+        clusters,
+        start=1
+    ):
+
+        event_name = (
+            cluster.get("event")
+            or cluster.get("event_name")
+            or "unknown event"
+        )
+
+        cluster_articles = (
+            cluster.get("articles")
+            or []
+        )
+
+        result = calculate_event_quality(
+            event_name,
+            cluster_articles
+        )
+
+        results.append({
+            "cluster_number": index,
+            "event_name": event_name,
+            "article_count": len(
+                cluster_articles
+            ),
+            "result": result
+        })
+
+    # ==========================================================
+    # SORT DARI KUALITAS TERBURUK
+    # ==========================================================
+
+    results.sort(
+        key=lambda x: x["result"]["score"]
+    )
+
+    # ==========================================================
+    # OUTPUT DETAIL
+    # ==========================================================
+
+    for item in results:
+
+        result = item["result"]
+
+        print()
+        print("=" * 70)
+
+        print(
+            f"EVENT QUALITY #{item['cluster_number']}"
+        )
+
+        print("=" * 70)
+
+        print()
+
+        print(
+            f"EVENT : {item['event_name']}"
+        )
+
+        print(
+            f"Jumlah artikel : "
+            f"{item['article_count']}"
+        )
+
+        print()
+
+        print(
+            f"QUALITY SCORE : "
+            f"{result['score']}/100"
+        )
+
+        print(
+            f"STATUS        : "
+            f"{result['quality']}"
+        )
+
+        print()
+
+        # ------------------------------------------------------
+
+        print("EVENT NAME:")
+
+        print(
+            f"- Score  : "
+            f"{result['event_name']['score']}"
+        )
+
+        print(
+            f"- Status : "
+            f"{result['event_name']['status']}"
+        )
+
+        print(
+            f"- Info   : "
+            f"{result['event_name']['reason']}"
+        )
+
+        print()
+
+        # ------------------------------------------------------
+
+        print("CLUSTER COHESION:")
+
+        print(
+            f"- Score      : "
+            f"{result['cohesion']['score']}"
+        )
+
+        print(
+            f"- Similarity : "
+            f"{result['cohesion']['average_similarity']:.2f}"
+        )
+
+        print(
+            f"- Status     : "
+            f"{result['cohesion']['status']}"
+        )
+
+        print()
+
+        # ------------------------------------------------------
+
+        print("SATKER:")
+
+        if result["satkers"]:
+
+            for satker in result["satkers"]:
+
+                print(
+                    f"- {satker}"
+                )
+
+        else:
+
+            print(
+                "- Tidak terdeteksi"
+            )
+
+        print()
+
+        # ------------------------------------------------------
+
+        print(
+            f"EXACT / NEAR DUPLICATES : "
+            f"{len(result['duplicates'])}"
+        )
+
+        for duplicate in result[
+            "duplicates"
+        ][:5]:
+
+            article_1 = duplicate[
+                "article_1"
+            ]
+
+            article_2 = duplicate[
+                "article_2"
+            ]
+
+            print()
+
+            print(
+                f"Similarity: "
+                f"{duplicate['similarity']:.2f}"
+            )
+
+            print(
+                f"- ID "
+                f"{article_1.get('id')}: "
+                f"{article_1.get('title')}"
+            )
+
+            print(
+                f"- ID "
+                f"{article_2.get('id')}: "
+                f"{article_2.get('title')}"
+            )
+
+        # ------------------------------------------------------
+
+        print()
+
+        print("REKOMENDASI:")
+
+        recommendations = []
+
+        if (
+            result["event_name"]["score"]
+            < 70
+        ):
+
+            recommendations.append(
+                "Perbaiki nama event agar "
+                "lebih natural dan deskriptif."
+            )
+
+        if (
+            result["cohesion"]["score"]
+            < 60
+        ):
+
+            recommendations.append(
+                "Cluster terlalu heterogen. "
+                "Pertimbangkan memecah event."
+            )
+
+        if not result["satkers"]:
+
+            recommendations.append(
+                "Perbaiki SATKER normalization "
+                "dan entity detection."
+            )
+
+        if len(result["duplicates"]) > 0:
+
+            recommendations.append(
+                "Terdapat kemungkinan duplicate "
+                "data ingestion."
+            )
+
+        if not recommendations:
+
+            recommendations.append(
+                "Event cluster memiliki "
+                "kualitas yang baik."
+            )
+
+        for recommendation in recommendations:
+
+            print(
+                f"- {recommendation}"
+            )
+
+    # ==========================================================
+    # SUMMARY
+    # ==========================================================
+
+    print()
+    print("=" * 70)
+
+    print("RINGKASAN EVENT QUALITY")
+
+    print("=" * 70)
+
+    total_events = len(results)
+
+    excellent = sum(
+        1
+        for x in results
+        if x["result"]["quality"]
+        == "EXCELLENT"
+    )
+
+    good = sum(
+        1
+        for x in results
+        if x["result"]["quality"]
+        == "GOOD"
+    )
+
+    review = sum(
+        1
+        for x in results
+        if x["result"]["quality"]
+        == "NEEDS REVIEW"
+    )
+
+    poor = sum(
+        1
+        for x in results
+        if x["result"]["quality"]
+        == "POOR"
+    )
+
+    avg_score = (
+
+        sum(
+            x["result"]["score"]
+            for x in results
+        )
+
+        / total_events
+
+        if total_events
+
+        else 0
+    )
+
+    print()
+
+    print(
+        f"Total event       : {total_events}"
+    )
+
+    print(
+        f"Excellent         : {excellent}"
+    )
+
+    print(
+        f"Good              : {good}"
+    )
+
+    print(
+        f"Needs Review      : {review}"
+    )
+
+    print(
+        f"Poor              : {poor}"
+    )
+
+    print()
+
+    print(
+        f"Average Score     : "
+        f"{avg_score:.2f}/100"
+    )
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        "AUDIT EVENT QUALITY SELESAI"
+    )
+
+    print("=" * 70)
     
 # ============================================================
 # MAIN
