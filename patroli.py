@@ -4299,23 +4299,17 @@ def run_once() -> Dict[str, Any]:
         # Event sama dari media berbeda
         # TETAP BOLEH DISIMPAN.
         # ====================================================
-    
-        (
-            should_save,
-            reason,
-            similarity,
-            matched_article,
-        ) = should_save_article(
-    
+        should_save, reason = should_save_article(
+        
             article,
-    
+        
             existing_link_index,
-    
+        
             existing_title_index,
-    
+        
             existing_content_index,
+        
         )
-    
     
         # ====================================================
         # SKIP DUPLICATE
@@ -8004,8 +7998,12 @@ def should_save_article(
         existing_link_index,
     ):
 
-        return False, "duplicate_url"
-
+        return (
+            False,
+            "duplicate_url",
+            0.0,
+            None,
+        )
 
     # ========================================================
     # 2. DUPLICATE TITLE + SAME MEDIA
@@ -8016,15 +8014,19 @@ def should_save_article(
         existing_title_index,
     ):
 
-        return False, "duplicate_title_same_media"
-
+        return (
+            False,
+            "duplicate_title_same_media",
+            0.0,
+            None,
+        )
 
     # ========================================================
     # 3. DUPLICATE CONTENT
     # ========================================================
 
     (
-        content_duplicate,
+        is_duplicate,
         similarity,
         matched_article,
     ) = is_duplicate_content(
@@ -8032,21 +8034,28 @@ def should_save_article(
         article,
 
         existing_content_index,
+
     )
 
-    if content_duplicate:
+    if is_duplicate:
 
         return (
             False,
-            f"duplicate_content_{similarity:.2%}",
+            "duplicate_content",
+            similarity,
+            matched_article,
         )
-
 
     # ========================================================
     # 4. VALID ARTICLE
     # ========================================================
 
-    return True, "valid"
+    return (
+        True,
+        "valid",
+        similarity,
+        matched_article,
+    )
     
 def register_saved_article(
     article,
