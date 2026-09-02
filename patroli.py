@@ -6,6 +6,9 @@ import os
 import re
 import time
 import urllib.parse
+from itertools import combinations
+from difflib import SequenceMatcher
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -6923,6 +6926,21 @@ def calculate_event_quality(
         "duplicate_score": duplicate_score
     }
 
+
+def calculate_title_similarity(title_a, title_b):
+
+    if not title_a or not title_b:
+        return 0.0
+
+    title_a = title_a.lower().strip()
+    title_b = title_b.lower().strip()
+
+    return SequenceMatcher(
+        None,
+        title_a,
+        title_b
+    ).ratio()
+    
 # ============================================================
 # EVENT DUPLICATE CLUSTERING ENGINE
 # ============================================================
