@@ -8,7 +8,7 @@ import time
 import urllib.parse
 from itertools import combinations
 from difflib import SequenceMatcher
-from collections import defaultdict
+from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -1448,28 +1448,6 @@ def split_sentences(
 # ============================================================
 # SATKER CONTEXT
 # ============================================================
-
-def sentence_contains_satker(
-    sentence: str,
-) -> bool:
-    """
-    Mengecek apakah kalimat secara eksplisit menyebut
-    Kejari/satker target.
-    """
-
-    text = normalize_text(
-        sentence
-    ).lower()
-
-    if not text:
-        return False
-
-    return any(
-        keyword.lower() in text
-        for keyword in TARGET_KEJARI_KEYWORDS
-        if keyword
-    )
-
 
 def sentence_contains_internal_actor(sentence: str) -> bool:
     """
@@ -7009,483 +6987,245 @@ def calculate_title_similarity(title_a, title_b):
         title_b
     ).ratio()
 
-def get_article_source(article):
+def get_publisher_from_title(title):
+    """Mengambil nama media dari bagian akhir judul, misalnya 'Judul - Kompas.com'."""
+    if not title:
+        return ""
 
-    possible_fields = [
+    title = str(title).strip()
 
-        "source",
+    for separator in (" - ", " | "):
+        if separator in title:
+            publisher = title.rsplit(separator, 1)[-1].strip()
+            if publisher:
+                return publisher
 
-        "source_name",
+    return ""
 
-        "media",
 
-        "media_name",
+def get_media_source(article):
+    """Mengembalikan publisher/media, bukan sekadar channel ingestion seperti Google News RSS."""
+    if not isinstance(article, dict):
+        return "Unknown"
 
+    for field in (
         "publisher",
-
-        "nama_media"
-
-    ]
-
-    for field in possible_fields:
-
+        "media_name",
+        "media",
+        "source_name",
+        "nama_media",
+    ):
         value = article.get(field)
-
         if value:
-
             return str(value).strip()
+
+    publisher = get_publisher_from_title(article.get("title", ""))
+    if publisher:
+        return publisher
+
+    link = article.get("link") or article.get("url") or ""
+    if link:
+        try:
+            domain = urllib.parse.urlparse(str(link)).netloc.lower()
+            domain = domain.replace("www.", "")
+            if domain and domain != "news.google.com":
+                return domain
+        except Exception:
+            pass
+
+    source = article.get("source")
+    if source:
+        return str(source).strip()
 
     return "Unknown"
 
 
-def normalize_title(title):
+# Backward-compatible alias.
+def get_article_source(article):
+    return get_media_source(article)
 
+
+def normalize_title(title):
     if not title:
         return ""
 
-    title = title.lower()
+    title = str(title).lower()
+    title = re.sub(r"\s+", " ", title)
+    return title.strip()
 
-    # Hilangkan whitespace berlebihan
-    title = re.sub(
-        r"\s+",
-        " ",
-        title
-    )
-
-    # Hilangkan spasi awal/akhir
-    title = title.strip()
-
-    return title
 
 def count_duplicate_titles(titles):
+    normalized_titles = [normalize_title(title) for title in titles if title]
+    return len(normalized_titles) - len(set(normalized_titles))
 
-    normalized_titles = [
-
-        normalize_title(title)
-
-        for title in titles
-
-        if title
-
-    ]
-
-    total_titles = len(
-        normalized_titles
-    )
-
-    unique_titles = len(
-        set(normalized_titles)
-    )
-
-    duplicate_count = (
-        total_titles
-        - unique_titles
-    )
-
-    return duplicate_count
 
 def detect_duplicate_sources(cluster):
-
-    title_sources = {}
+    title_sources = defaultdict(set)
 
     for article in cluster:
+        title = normalize_title(article.get("title", ""))
+        if title:
+            title_sources[title].add(get_media_source(article))
 
-        title = article.get(
-            "title",
-            ""
-        ).strip().lower()
+    return [
+        {"title": title, "sources": sorted(sources)}
+        for title, sources in title_sources.items()
+        if len(sources) > 1
+    ]
 
-        source = article.get(
-            "source",
-            "Unknown"
-        )
 
-        if not title:
-            continue
+def _cluster_average_similarity(cluster):
+    """Similarity judul antar semua pasangan artikel dalam skala 0..100."""
+    similarities = []
 
-        if title not in title_sources:
+    for article_a, article_b in combinations(cluster, 2):
+        title_a = article_a.get("title", "")
+        title_b = article_b.get("title", "")
+        similarity = calculate_title_similarity(title_a, title_b)
+        similarities.append(similarity * 100)
 
-            title_sources[title] = []
+    return sum(similarities) / len(similarities) if similarities else 0.0
 
-        title_sources[title].append(
-            source
-        )
-
-    duplicate_source_events = []
-
-    for title, sources in title_sources.items():
-
-        unique_sources = set(sources)
-
-        if len(unique_sources) > 1:
-
-            duplicate_source_events.append({
-
-                "title": title,
-
-                "sources": list(
-                    unique_sources
-                )
-
-            })
-
-    return duplicate_source_events
-    
-# ============================================================
-# EVENT DUPLICATE CLUSTERING ENGINE
-# ============================================================
 
 def audit_event_quality(articles):
-
     print("=" * 70)
     print("AUDIT EVENT QUALITY")
     print("=" * 70)
-
     print()
     print(f"[AUDIT] Total artikel: {len(articles)}")
-
-    # --------------------------------------------------------
-    # CLUSTER EVENTS
-    # --------------------------------------------------------
 
     clusters = cluster_events(articles)
 
     print()
     print(f"[AUDIT] Total event cluster: {len(clusters)}")
 
-    # --------------------------------------------------------
-    # SUMMARY COUNTERS
-    # --------------------------------------------------------
-
     high_events = 0
     medium_events = 0
     low_events = 0
-
     clusters_with_duplicates = 0
     total_duplicate_titles = 0
 
-    # --------------------------------------------------------
-    # LOOP CLUSTERS
-    # --------------------------------------------------------
-
     for cluster_index, cluster in enumerate(clusters, start=1):
-
         print()
         print("=" * 70)
         print(f"EVENT CLUSTER #{cluster_index}")
         print("=" * 70)
-
         print()
         print(f"Jumlah artikel: {len(cluster)}")
 
-        # ----------------------------------------------------
-        # CALCULATE SIMILARITY
-        # ----------------------------------------------------
+        event_name = generate_event_name(cluster)
+        if event_name:
+            print(f"EVENT: {event_name}")
 
-        similarities = []
+        average_similarity = _cluster_average_similarity(cluster)
 
-        for article_a, article_b in combinations(
-            cluster,
-            2
-        ):
-
-            same_event, similarity = is_same_event(
-                article_a,
-                article_b
-            )
-
-            if similarity is not None:
-
-                similarities.append(similarity)
-
-        if similarities:
-
-            average_similarity = (
-                sum(similarities)
-                / len(similarities)
-            )
-
-        else:
-
-            average_similarity = 0
-
-        # ----------------------------------------------------
-        # UNIQUE SOURCES
-        # ----------------------------------------------------
-
-        sources = set()
-
-        for article in cluster:
-
-            source = article.get(
-                "source",
-                "Unknown"
-            )
-
-            if source:
-
-                sources.add(
-                    source
-                )
-
+        sources = {
+            get_media_source(article)
+            for article in cluster
+            if get_media_source(article)
+        }
         unique_sources = len(sources)
 
-        # ----------------------------------------------------
-        # EVENT SCORE
-        # ----------------------------------------------------
-
         event_score = 0
-
-        # Similarity Score
-
         if average_similarity >= 85:
-
             event_score += 50
-
         elif average_similarity >= 70:
-
             event_score += 40
-
         elif average_similarity >= 50:
-
             event_score += 30
-
         else:
-
             event_score += 15
 
-        # Source Diversity Score
-
-        if unique_sources >= 3:
-
+        if unique_sources >= 4:
             event_score += 30
-
-        elif unique_sources == 2:
-
+        elif unique_sources >= 2:
             event_score += 25
-
         else:
-
             event_score += 15
-
-        # Cluster Size Score
 
         if len(cluster) >= 5:
-
             event_score += 20
-
         elif len(cluster) >= 3:
-
             event_score += 15
-
         else:
-
             event_score += 10
 
-        # ----------------------------------------------------
-        # EVENT LEVEL
-        # ----------------------------------------------------
+        event_score = min(event_score, 100)
 
         if event_score >= 80:
-
             event_level = "HIGH"
             high_events += 1
-
         elif event_score >= 60:
-
             event_level = "MEDIUM"
             medium_events += 1
-
         else:
-
             event_level = "LOW"
             low_events += 1
 
-        # ----------------------------------------------------
-        # DUPLICATE TITLE DETECTION
-        # ----------------------------------------------------
+        # PENTING: counter ini di-reset untuk SETIAP cluster.
+        title_counter = Counter(
+            normalize_title(article.get("title", ""))
+            for article in cluster
+            if normalize_title(article.get("title", ""))
+        )
 
-        title_counter = {}
+        cluster_duplicate_titles = sum(
+            count - 1
+            for count in title_counter.values()
+            if count > 1
+        )
 
-        for article in cluster:
-
-            title = article.get(
-                "title",
-                ""
-            ).strip().lower()
-
-            if title:
-
-                title_counter[title] = (
-                    title_counter.get(
-                        title,
-                        0
-                    )
-                    + 1
-                )
-
-        duplicate_sources = detect_duplicate_sources(cluster)
-
-        if duplicate_sources:
-
-            print()
-        
-            print("DUPLICATE SOURCE DETECTED:")
-        
-            for item in duplicate_sources:
-        
-                print()
-        
-                print(
-                    f"Title: {item['title']}"
-                )
-        
-                print(
-                    "Sources:"
-                )
-        
-                for source in item["sources"]:
-        
-                    print(
-                        f"- {source}"
-                    )
-
-        for title, count in title_counter.items():
-
-            if count > 1:
-
-                duplicate_titles += (
-                    count - 1
-                )
-
-        # ----------------------------------------------------
-        # DATABASE STATUS
-        # ----------------------------------------------------
-
-        if duplicate_titles > 0:
-
-            database_status = (
-                "DUPLICATES DETECTED"
-            )
-
+        if cluster_duplicate_titles > 0:
+            database_status = "DUPLICATES DETECTED"
             clusters_with_duplicates += 1
-
-            total_duplicate_titles += (
-                duplicate_titles
-            )
-
         else:
-
             database_status = "CLEAN"
 
-        # ----------------------------------------------------
-        # PRINT EVENT QUALITY
-        # ----------------------------------------------------
+        total_duplicate_titles += cluster_duplicate_titles
 
         print()
         print("EVENT QUALITY")
-
-        print(
-            f"Event Score         : "
-            f"{event_score}/100"
-        )
-
-        print(
-            f"Event Level         : "
-            f"{event_level}"
-        )
-
-        print(
-            f"Average Similarity  : "
-            f"{average_similarity:.2f}%"
-        )
-
-        print(
-            f"Unique Sources      : "
-            f"{unique_sources}"
-        )
-
-        # ----------------------------------------------------
-        # PRINT DATA QUALITY
-        # ----------------------------------------------------
+        print(f"Event Score         : {event_score}/100")
+        print(f"Event Level         : {event_level}")
+        print(f"Average Similarity  : {average_similarity:.2f}%")
+        print(f"Unique Media Sources: {unique_sources}")
 
         print()
         print("DATA QUALITY")
+        print(f"Duplicate Titles    : {cluster_duplicate_titles}")
+        print(f"Database Status     : {database_status}")
 
-        print(
-            f"Duplicate Titles    : "
-            f"{duplicate_titles}"
-        )
-
-        print(
-            f"Database Status     : "
-            f"{database_status}"
-        )
-
-        # ----------------------------------------------------
-        # PRINT ARTICLES
-        # ----------------------------------------------------
+        print()
+        print("MEDIA:")
+        for source in sorted(sources) or ["Unknown"]:
+            print(f"- {source}")
 
         print()
         print("ARTIKEL:")
-
-        for index, article in enumerate(
-            cluster,
-            start=1
-        ):
-
-            article_id = article.get(
-                "id",
-                "Unknown"
-            )
-
-            title = article.get(
-                "title",
-                "No Title"
-            )
-
-            source = article.get(
-                "source",
-                "Unknown"
-            )
-
+        for index, article in enumerate(cluster, start=1):
+            article_id = article.get("id", "Unknown")
+            title = article.get("title", "No Title")
+            media = get_media_source(article)
             print()
-            print(
-                f"[{index}] ID={article_id}"
-            )
-
+            print(f"[{index}] ID={article_id}")
             print(title)
-
-            print(
-                f"Source: {source}"
-            )
-
-        print()
-
-    # --------------------------------------------------------
-    # FINAL SUMMARY
-    # --------------------------------------------------------
+            print(f"Media: {media}")
 
     print_event_quality_summary(
-
         total_articles=len(articles),
-
         total_clusters=len(clusters),
-
         high_events=high_events,
-
         medium_events=medium_events,
-
         low_events=low_events,
-
         clusters_with_duplicates=clusters_with_duplicates,
-
-        total_duplicate_titles=total_duplicate_titles
+        total_duplicate_titles=total_duplicate_titles,
     )
 
+    print()
     print("=" * 70)
     print("AUDIT EVENT QUALITY SELESAI")
     print("=" * 70)
+
 
 def print_event_quality_summary(
     total_articles,
