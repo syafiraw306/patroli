@@ -82,6 +82,17 @@ TELEGRAM_CHAT_ID = os.getenv(
     "",
 ).strip()
 
+# ============================================================
+# DUPLICATE & EVENT SIMILARITY CONFIGURATION
+# ============================================================
+
+# Artikel dianggap duplicate content jika similarity sangat tinggi
+CONTENT_DUPLICATE_THRESHOLD = 0.95
+
+# Artikel kemungkinan membahas event yang sama
+# tetapi tetap boleh disimpan jika medianya berbeda
+EVENT_CONTENT_SIMILARITY_THRESHOLD = 0.75
+
 
 # ============================================================
 # TARGET SATKER
@@ -7507,7 +7518,7 @@ def should_save_article(
     existing_content_index,
 ):
     """
-    CENTRAL DECISION FUNCTION.
+    CENTRAL DECISION FUNCTION
 
     Menentukan apakah artikel boleh disimpan.
 
@@ -7519,10 +7530,10 @@ def should_save_article(
     2. Duplicate Title + Media
        -> JANGAN SIMPAN
 
-    3. Duplicate / Near Duplicate Content
-       -> JANGAN SIMPAN
+    3. Duplicate Content
+       -> JANGAN SIMPAN HANYA jika berasal dari media yang sama
 
-    4. Artikel event sama tetapi media berbeda
+    4. Event sama dari media berbeda
        -> TETAP SIMPAN
 
     Return:
@@ -7535,6 +7546,10 @@ def should_save_article(
         )
     """
 
+    # ========================================================
+    # VALIDASI ARTICLE
+    # ========================================================
+
     if not isinstance(article, dict):
 
         return (
@@ -7545,7 +7560,7 @@ def should_save_article(
         )
 
     # ========================================================
-    # VALIDATE LINK
+    # VALIDASI LINK
     # ========================================================
 
     link = normalize_url(
@@ -7609,33 +7624,67 @@ def should_save_article(
 
     if content_duplicate:
 
-        matched_media = get_media_source(
-            matched_article
+        candidate_media = (
+            get_media_source(article)
+            .lower()
+            .strip()
         )
 
-        candidate_media = get_media_source(
-            article
-        )
+        matched_media = ""
+
+        if matched_article:
+
+            matched_media = (
+                get_media_source(
+                    matched_article
+                )
+                .lower()
+                .strip()
+            )
+
+        # ====================================================
+        # CONTENT SAMA + MEDIA SAMA
+        #
+        # -> DUPLICATE
+        # ====================================================
+
+        if (
+            candidate_media
+            and matched_media
+            and candidate_media == matched_media
+        ):
+
+            return (
+                False,
+                (
+                    "DUPLICATE_CONTENT_SAME_MEDIA "
+                    f"({similarity:.2%})"
+                ),
+                similarity,
+                matched_article,
+            )
+
+        # ====================================================
+        # CONTENT MIRIP + MEDIA BERBEDA
+        #
+        # -> EVENT SAMA
+        # -> TETAP DISIMPAN
+        #
+        # Event clustering akan menangani hubungan artikel.
+        # ====================================================
 
         return (
-            False,
+            True,
             (
-                "DUPLICATE_CONTENT "
-                f"({similarity:.2%}) "
-                f"| candidate={candidate_media} "
-                f"| matched={matched_media}"
+                "SAME_EVENT_DIFFERENT_MEDIA "
+                f"({similarity:.2%})"
             ),
             similarity,
             matched_article,
         )
 
     # ========================================================
-    # 4. ARTICLE IS NEW
-    #
-    # Event yang sama dari media berbeda TETAP BOLEH masuk.
-    #
-    # Event clustering hanya untuk intelligence/audit,
-    # bukan untuk mencegah penyimpanan.
+    # 4. NEW ARTICLE
     # ========================================================
 
     return (
@@ -7644,7 +7693,6 @@ def should_save_article(
         similarity,
         None,
     )
-
 
 def register_saved_article(
     article,
