@@ -82,6 +82,17 @@ TELEGRAM_CHAT_ID = os.getenv(
     "",
 ).strip()
 
+# ============================================================
+# DUPLICATE & EVENT SIMILARITY CONFIGURATION
+# ============================================================
+
+# Artikel dianggap duplicate content jika similarity sangat tinggi
+CONTENT_DUPLICATE_THRESHOLD = 0.95
+
+# Artikel kemungkinan membahas event yang sama
+# tetapi tetap boleh disimpan jika medianya berbeda
+EVENT_CONTENT_SIMILARITY_THRESHOLD = 0.75
+
 
 # ============================================================
 # TARGET SATKER
@@ -938,55 +949,6 @@ def is_duplicate_link(link, existing_link_index):
 
     return normalized in existing_link_index
 
-def is_duplicate_article(
-    article,
-    existing_link_index,
-    existing_title_index
-):
-    """
-    Mengecek apakah artikel kemungkinan sudah ada.
-
-    Priority:
-    1. Duplicate URL
-    2. Duplicate Title
-
-    Return:
-        True  -> duplicate
-        False -> artikel baru
-    """
-
-    link = article.get("link", "")
-
-    title = article.get("title", "")
-
-    # --------------------------------------------------
-    # CHECK DUPLICATE LINK
-    # --------------------------------------------------
-
-    if is_duplicate_link(
-        link,
-        existing_link_index
-    ):
-
-        return True
-
-    # --------------------------------------------------
-    # CHECK DUPLICATE TITLE
-    # --------------------------------------------------
-
-    normalized_title = normalize_title(
-        title
-    )
-
-    if (
-        normalized_title
-        and normalized_title
-        in existing_title_index
-    ):
-
-        return True
-
-    return False
 
 def register_new_link(link, existing_link_index):
     """
@@ -3585,6 +3547,12 @@ candidate: Dict[str, Any],
             )
             or "Google News"
         ),
+
+        "publisher": (
+            get_publisher_from_title(title)
+            or (urllib.parse.urlparse(final_url).netloc.lower().replace("www.", "")
+                if final_url and "news.google.com" not in str(final_url) else "")
+        ),
     
         "category": (
             classification.get(
@@ -3900,6 +3868,62 @@ def run_once() -> Dict[str, Any]:
     try:
         existing_articles = get_all_articles()
 
+        # ========================================================
+        # BUILD DUPLICATE INDEXES
+        # ========================================================
+        
+        existing_link_index = {
+        
+            normalize_url(
+                article.get("link")
+            )
+        
+            for article in existing_articles
+        
+            if normalize_url(
+                article.get("link")
+            )
+        }
+        
+        
+        existing_title_index = (
+            build_existing_title_index(
+                existing_articles
+            )
+        )
+        
+        
+        existing_content_index = (
+            build_existing_content_index(
+                existing_articles
+            )
+        )
+        
+        
+        print(
+            f"[DATABASE] "
+            f"Total artikel sebelum run: "
+            f"{len(existing_articles)}"
+        )
+        
+        print(
+            f"[DEDUPE] "
+            f"Unique URL index: "
+            f"{len(existing_link_index)}"
+        )
+        
+        print(
+            f"[DEDUPE] "
+            f"Title + media index: "
+            f"{len(existing_title_index)}"
+        )
+        
+        print(
+            f"[DEDUPE] "
+            f"Content index: "
+            f"{len(existing_content_index)}"
+        )
+
     except Exception as exc:
 
         print(
@@ -3912,24 +3936,6 @@ def run_once() -> Dict[str, Any]:
             "status": "Gagal",
             "error": str(exc),
         }
-
-    existing_links = {
-        normalize_url(article.get("link"))
-        for article in existing_articles
-        if normalize_url(article.get("link"))
-    }
-
-    print(
-        f"[DATABASE] "
-        f"Total artikel sebelum run: "
-        f"{len(existing_articles)}"
-    )
-
-    print(
-        f"[DATABASE] "
-        f"Link unik sebelum run: "
-        f"{len(existing_links)}"
-    )
 
     # ========================================================
     # COLLECT CANDIDATES
@@ -4131,109 +4137,228 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
     # SAVE
     # ========================================================
-
+   
+    # Semua keputusan duplicate hanya melalui:
+    #
+    # should_save_article()
+    #
+    # Tidak ada lagi:
+    #
+    # - is_duplicate_article()
+    # - existing_links tambahan
+    # - was_existing
+    # - get_article_by_link()
+    #
+    # ========================================================
+    
     saved_count = 0
     save_failed = 0
+    
     new_articles = []
-
+    
+    
     for article in valid_articles:
-
+    
+        # ====================================================
+        # VALIDATE LINK
+        # ====================================================
+    
         link = normalize_url(
             article.get("link")
         )
-
+    
         if not link:
-            continue
-
-        was_existing = (
-            link in existing_links
-        )
-
-        print(
-            f"[CHECK LINK] "
-            f"{'LAMA' if was_existing else 'BARU'} | "
-            f"{link}"
-        )
-
-        # ----------------------------------------------------
-        # CEK LANGSUNG KE DATABASE
-        # ----------------------------------------------------
-
-        if not was_existing:
-
-            try:
-
-                existing_by_link = (
-                    get_article_by_link(
-                        link
-                    )
-                )
-
-                if existing_by_link:
-
-                    was_existing = True
-
-            except Exception as exc:
-
-                print(
-                    f"[CHECK LINK WARNING] "
-                    f"{link} -> "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                )
-
-        # ============================================================
-        # DUPLICATE CHECK
-        # ============================================================
-            
-        is_duplicate = is_duplicate_article(
-            article,
-            existing_link_index,
-            existing_title_index
-        )
-            
-        if is_duplicate:
-            
+    
             print(
-                f"[DUPLICATE] SKIP: "
+                "[SKIP] INVALID_LINK"
+            )
+    
+            continue
+    
+    
+        # ====================================================
+        # CENTRAL DUPLICATE DECISION
+        #
+        # Hanya fungsi ini yang menentukan:
+        #
+        # - Duplicate URL
+        # - Duplicate Title + Media
+        # - Duplicate Content + Media
+        #
+        # Event sama dari media berbeda
+        # TETAP BOLEH DISIMPAN.
+        # ====================================================
+    
+        (
+            should_save,
+            reason,
+            similarity,
+            matched_article,
+        ) = should_save_article(
+    
+            article,
+    
+            existing_link_index,
+    
+            existing_title_index,
+    
+            existing_content_index,
+        )
+    
+    
+        # ====================================================
+        # SKIP DUPLICATE
+        # ====================================================
+    
+        if not should_save:
+    
+            print()
+            print(
+                f"[SKIP] {reason}"
+            )
+    
+            print(
+                f"TITLE: "
                 f"{article.get('title', '')}"
             )
-            
+    
+            print(
+                f"LINK: "
+                f"{article.get('link', '')}"
+            )
+    
+            print(
+                f"MEDIA: "
+                f"{get_media_source(article)}"
+            )
+    
+            if matched_article:
+    
+                print(
+                    f"MATCHED ID: "
+                    f"{matched_article.get('id', 'Unknown')}"
+                )
+    
+                print(
+                    f"MATCHED TITLE: "
+                    f"{matched_article.get('title', '')}"
+                )
+    
+                print(
+                    f"MATCHED MEDIA: "
+                    f"{get_media_source(matched_article)}"
+                )
+    
+                print(
+                    f"SIMILARITY: "
+                    f"{similarity:.2%}"
+                )
+    
             continue
-        # ----------------------------------------------------
-        # UPSERT
-        # ----------------------------------------------------
-
+    
+    
+        # ====================================================
+        # ARTICLE APPROVED
+        # ====================================================
+    
+        print()
+    
+        print(
+            "[SAVE] NEW_ARTICLE"
+        )
+    
+        print(
+            f"TITLE: "
+            f"{article.get('title', '')}"
+        )
+    
+        print(
+            f"MEDIA: "
+            f"{get_media_source(article)}"
+        )
+    
+    
+        # ====================================================
+        # UPSERT ARTICLE
+        # ====================================================
+    
         try:
-
+    
             saved = upsert_article(
                 article
             )
-
+    
+    
+            # ====================================================
+            # SAVE FAILED
+            # ====================================================
+    
             if saved is None:
-
+    
                 save_failed += 1
-
+    
                 print(
                     f"[SAVE ERROR] "
                     f"Gagal menyimpan: "
                     f"{link}"
                 )
-
+    
                 continue
-
+    
+    
+            # ====================================================
+            # SAVE SUCCESS
+            # ====================================================
+    
             saved_count += 1
-
-            if not was_existing:
-
-                new_articles.append(
-                    article
-                )
-
+    
+    
+            # ====================================================
+            # UPDATE DUPLICATE INDEX
+            #
+            # SANGAT PENTING.
+            #
+            # Artikel yang baru saja disimpan harus langsung
+            # dimasukkan ke index.
+            #
+            # Dengan demikian artikel berikutnya dalam satu
+            # GitHub Actions run juga bisa terdeteksi duplicate.
+            # ====================================================
+    
+            register_saved_article(
+    
+                article,
+    
+                existing_link_index,
+    
+                existing_title_index,
+    
+                existing_content_index,
+            )
+    
+    
+            # ====================================================
+            # NEW ARTICLE
+            #
+            # Artikel hanya masuk Telegram jika benar-benar
+            # lolos duplicate prevention dan berhasil disimpan.
+            # ====================================================
+    
+            new_articles.append(
+                article
+            )
+    
+    
+            print(
+                f"[SAVE SUCCESS] "
+                f"{article.get('title', '')[:100]}"
+            )
+    
+    
         except Exception as exc:
-
+    
             save_failed += 1
-
+    
             print(
                 f"[SAVE ERROR] "
                 f"{link}: "
@@ -4241,70 +4366,31 @@ def run_once() -> Dict[str, Any]:
                 f"{exc}"
             )
 
+# ========================================================
+# TELEGRAM
+# PENTING: DI LUAR LOOP
+# ========================================================
+
+telegram_count = 0
+
+if new_articles:
+
+    print()
+    print("=" * 70)
+    print("MENGIRIM NOTIFIKASI TELEGRAM")
+    print("=" * 70)
+
+    telegram_count = send_telegram_notifications(
+        new_articles
+    )
+
+else:
+
     print()
     print(
-        f"[DATABASE] "
-        f"Berhasil disimpan/update: "
-        f"{saved_count}"
+        "[TELEGRAM] Tidak ada artikel baru "
+        "untuk dikirim."
     )
-
-    print(
-        f"[DATABASE] "
-        f"Gagal simpan: "
-        f"{save_failed}"
-    )
-
-    print(
-        f"[DATABASE] "
-        f"Artikel baru: "
-        f"{len(new_articles)}"
-    )
-
-    # ========================================================
-    # TELEGRAM
-    # ========================================================
-
-    telegram_count = 0
-
-    if telegram_enabled():
-
-        print(
-            f"[TELEGRAM] "
-            f"Kandidat artikel baru: "
-            f"{len(new_articles)}"
-        )
-
-        for article in new_articles:
-
-            try:
-
-                if not send_alert_if_needed(
-                    article
-                ):
-                    continue
-
-                telegram_count += 1
-
-                print(
-                    "[TELEGRAM] Terkirim: "
-                    f"{article.get('title', '')[:100]}"
-                )
-
-            except Exception as exc:
-
-                print(
-                    f"[TELEGRAM ERROR] "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                )
-
-    else:
-
-        print(
-            "[TELEGRAM] Tidak aktif. "
-            "Periksa TELEGRAM_BOT_TOKEN "
-            "dan TELEGRAM_CHAT_ID."
-        )
 
     # ========================================================
     # RECLASSIFICATION
@@ -7003,43 +7089,6 @@ def get_publisher_from_title(title):
     return ""
 
 
-def get_media_source(article):
-    """Mengembalikan publisher/media, bukan sekadar channel ingestion seperti Google News RSS."""
-    if not isinstance(article, dict):
-        return "Unknown"
-
-    for field in (
-        "publisher",
-        "media_name",
-        "media",
-        "source_name",
-        "nama_media",
-    ):
-        value = article.get(field)
-        if value:
-            return str(value).strip()
-
-    publisher = get_publisher_from_title(article.get("title", ""))
-    if publisher:
-        return publisher
-
-    link = article.get("link") or article.get("url") or ""
-    if link:
-        try:
-            domain = urllib.parse.urlparse(str(link)).netloc.lower()
-            domain = domain.replace("www.", "")
-            if domain and domain != "news.google.com":
-                return domain
-        except Exception:
-            pass
-
-    source = article.get("source")
-    if source:
-        return str(source).strip()
-
-    return "Unknown"
-
-
 # Backward-compatible alias.
 def get_article_source(article):
     return get_media_source(article)
@@ -7053,6 +7102,500 @@ def normalize_title(title):
     title = re.sub(r"\s+", " ", title)
     return title.strip()
 
+# ============================================================
+# DUPLICATE PREVENTION
+# ============================================================
+
+def normalize_content_for_duplicate(value):
+    """
+    Normalisasi content untuk perbandingan duplicate.
+    """
+
+    if not value:
+        return ""
+
+    text = normalize_text(value).lower()
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    ).strip()
+
+    return text
+
+
+def get_article_content(article):
+    """
+    Mengambil content terbaik dari artikel.
+    """
+
+    if not isinstance(article, dict):
+        return ""
+
+    return (
+        article.get("content")
+        or article.get("summary")
+        or article.get("snippet")
+        or ""
+    )
+
+
+def calculate_content_similarity(
+    content_a,
+    content_b,
+):
+    """
+    Menghitung similarity content.
+
+    Return:
+        0.0 - 1.0
+    """
+
+    text_a = normalize_content_for_duplicate(
+        content_a
+    )
+
+    text_b = normalize_content_for_duplicate(
+        content_b
+    )
+
+    if not text_a or not text_b:
+        return 0.0
+
+    return SequenceMatcher(
+        None,
+        text_a,
+        text_b,
+    ).ratio()
+
+
+def get_media_source(article):
+    """Mengembalikan identitas publisher yang stabil untuk dedupe."""
+    if not isinstance(article, dict):
+        return "unknown"
+
+    for field in ("publisher", "media_name", "media", "source_name", "nama_media"):
+        value = normalize_text(article.get(field))
+        if value and value.lower() not in {"google news", "google news rss", "unknown"}:
+            return value.strip()
+
+    publisher = get_publisher_from_title(article.get("title", ""))
+    if publisher:
+        return publisher.strip()
+
+    link = article.get("link") or article.get("url") or ""
+    try:
+        domain = urllib.parse.urlparse(str(link)).netloc.lower().replace("www.", "")
+        if domain and domain != "news.google.com":
+            return domain
+    except Exception:
+        pass
+
+    source = normalize_text(article.get("source"))
+    if source and source.lower() not in {"google news", "google news rss"}:
+        return source.strip()
+
+    return "unknown"
+
+def build_title_key(article):
+    """
+    Duplicate title hanya dianggap duplicate
+    jika berasal dari media yang sama.
+
+    Format:
+        normalized_title|media
+    """
+
+    if not isinstance(article, dict):
+        return ""
+
+    title = normalize_title(
+        article.get("title", "")
+    )
+
+    media = get_media_source(
+        article
+    ).lower().strip()
+
+    if not title:
+        return ""
+
+    return f"{title}|{media}"
+
+
+def build_existing_title_index(
+    articles,
+):
+    """
+    Membuat index duplicate title.
+
+    Duplicate title dicek berdasarkan:
+
+        TITLE + MEDIA
+
+    Jadi:
+
+    Media A:
+        "Kejari Deli Serdang Raih Penghargaan"
+
+    Media B:
+        "Kejari Deli Serdang Raih Penghargaan"
+
+    Tetap boleh disimpan.
+
+    Tetapi jika judul identik dari media yang sama,
+    artikel dianggap duplicate.
+    """
+
+    title_index = set()
+
+    for article in articles:
+
+        key = build_title_key(
+            article
+        )
+
+        if key:
+
+            title_index.add(
+                key
+            )
+
+    return title_index
+
+
+def build_existing_content_index(
+    articles,
+):
+    """
+    Membuat list artikel existing untuk
+    pengecekan duplicate content.
+
+    Content tidak menggunakan dictionary/set karena
+    perlu perhitungan similarity.
+    """
+
+    content_index = []
+
+    for article in articles:
+
+        content = get_article_content(
+            article
+        )
+
+        normalized = normalize_content_for_duplicate(
+            content
+        )
+
+        if not normalized:
+            continue
+
+        content_index.append(
+            {
+                "article": article,
+                "content": normalized,
+            }
+        )
+
+    return content_index
+
+
+def is_duplicate_content(
+    article,
+    existing_content_index,
+    threshold=CONTENT_DUPLICATE_THRESHOLD,
+):
+    """
+    Mengecek apakah content artikel hampir sama.
+
+    PENTING:
+
+    Duplicate content hanya dianggap duplicate
+    jika berasal dari MEDIA YANG SAMA.
+
+    Artikel dari media berbeda yang membahas
+    event yang sama TETAP BOLEH disimpan.
+
+    Return:
+
+        (
+            is_duplicate,
+            similarity,
+            matched_article
+        )
+    """
+
+    # ========================================================
+    # VALIDASI ARTICLE
+    # ========================================================
+
+    if not isinstance(article, dict):
+
+        return (
+            False,
+            0.0,
+            None,
+        )
+
+    # ========================================================
+    # CANDIDATE CONTENT
+    # ========================================================
+
+    candidate_content = get_article_content(
+        article
+    )
+
+    candidate_content = (
+        normalize_content_for_duplicate(
+            candidate_content
+        )
+    )
+
+    if not candidate_content:
+
+        return (
+            False,
+            0.0,
+            None,
+        )
+
+    # ========================================================
+    # CANDIDATE MEDIA
+    # ========================================================
+
+    candidate_media = (
+        get_media_source(
+            article
+        )
+        .lower()
+        .strip()
+    )
+
+    # ========================================================
+    # BEST MATCH
+    # ========================================================
+
+    best_similarity = 0.0
+
+    best_article = None
+
+    # ========================================================
+    # CHECK EXISTING CONTENT
+    # ========================================================
+
+    for item in existing_content_index:
+
+        if not isinstance(item, dict):
+            continue
+
+        existing_article = item.get(
+            "article"
+        )
+
+        if not isinstance(
+            existing_article,
+            dict,
+        ):
+            continue
+
+        # ====================================================
+        # GET EXISTING MEDIA
+        # ====================================================
+
+        existing_media = (
+            get_media_source(
+                existing_article
+            )
+            .lower()
+            .strip()
+        )
+
+        # ====================================================
+        # PENTING
+        #
+        # HANYA BANDINGKAN CONTENT
+        # DARI MEDIA YANG SAMA
+        # ====================================================
+
+        if existing_media != candidate_media:
+            continue
+
+        # ====================================================
+        # EXISTING CONTENT
+        # ====================================================
+
+        existing_content = item.get(
+            "content",
+            "",
+        )
+
+        if not existing_content:
+            continue
+
+        # ====================================================
+        # CALCULATE SIMILARITY
+        # ====================================================
+
+        similarity = (
+            calculate_content_similarity(
+                candidate_content,
+                existing_content,
+            )
+        )
+
+        # ====================================================
+        # BEST MATCH
+        # ====================================================
+
+        if similarity > best_similarity:
+
+            best_similarity = similarity
+
+            best_article = existing_article
+
+    # ========================================================
+    # DUPLICATE DECISION
+    # ========================================================
+
+    if best_similarity >= threshold:
+
+        return (
+            True,
+            best_similarity,
+            best_article,
+        )
+
+    return (
+        False,
+        best_similarity,
+        best_article,
+    )
+    
+def should_save_article(
+    article,
+    existing_link_index,
+    existing_title_index,
+    existing_content_index,
+):
+
+    # ========================================================
+    # 1. DUPLICATE URL
+    # ========================================================
+
+    link = article.get("link")
+
+    if is_duplicate_link(
+        link,
+        existing_link_index,
+    ):
+
+        return False, "duplicate_url"
+
+
+    # ========================================================
+    # 2. DUPLICATE TITLE + SAME MEDIA
+    # ========================================================
+
+    if is_duplicate_title(
+        article,
+        existing_title_index,
+    ):
+
+        return False, "duplicate_title_same_media"
+
+
+    # ========================================================
+    # 3. DUPLICATE CONTENT
+    # ========================================================
+
+    if is_duplicate_content(
+        article,
+        existing_content_index,
+    ):
+
+        return False, "duplicate_content"
+
+
+    # ========================================================
+    # 4. VALID ARTICLE
+    # ========================================================
+
+    return True, "valid"
+    
+def register_saved_article(
+    article,
+    existing_link_index,
+    existing_title_index,
+    existing_content_index,
+):
+    """
+    Update seluruh index setelah artikel
+    berhasil disimpan ke database.
+
+    PENTING:
+    Fungsi ini hanya dipanggil SETELAH
+    upsert_article berhasil.
+    """
+
+    if not isinstance(article, dict):
+        return
+
+    # ========================================================
+    # REGISTER URL
+    # ========================================================
+
+    link = normalize_url(
+        article.get("link")
+    )
+
+    if link:
+
+        existing_link_index.add(
+            link
+        )
+
+    # ========================================================
+    # REGISTER TITLE + MEDIA
+    # ========================================================
+    title_key = (
+        normalize_text(
+            article.get("source", "")
+        ).lower(),
+
+        normalize_text(
+            article.get("title", "")
+        ).lower()
+    )
+
+    if title_key:
+
+        existing_title_index.add(
+            title_key
+        )
+
+    # ========================================================
+    # REGISTER CONTENT
+    # ========================================================
+
+    content = get_article_content(
+        article
+    )
+
+    normalized_content = (
+        normalize_content_for_duplicate(
+            content
+        )
+    )
+
+    if normalized_content:
+
+        existing_content_index.append(
+            {
+                "article": article,
+                "content": normalized_content,
+            }
+        )
 
 def count_duplicate_titles(titles):
     normalized_titles = [normalize_title(title) for title in titles if title]
@@ -7164,9 +7707,9 @@ def audit_event_quality(articles):
 
         # PENTING: counter ini di-reset untuk SETIAP cluster.
         title_counter = Counter(
-            normalize_title(article.get("title", ""))
+            build_title_key(article)
             for article in cluster
-            if normalize_title(article.get("title", ""))
+            if build_title_key(article)
         )
 
         cluster_duplicate_titles = sum(
