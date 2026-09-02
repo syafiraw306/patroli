@@ -5904,10 +5904,14 @@ def audit_negative_articles() -> Dict[str, Any]:
 
 def audit_content_duplicates() -> None:
     """
-    Audit artikel dengan judul atau konten identik.
+    Audit duplicate content.
 
-    Tidak menghapus data.
-    Hanya menampilkan kandidat duplikat.
+    Mendeteksi:
+
+    1. Exact content duplicates
+    2. Near content duplicates
+
+    Tidak mengubah database.
     """
 
     print("=" * 70)
@@ -5915,13 +5919,16 @@ def audit_content_duplicates() -> None:
     print("=" * 70)
 
     try:
+
         articles = get_all_articles()
 
     except Exception as exc:
+
         print(
             f"[AUDIT ERROR] "
             f"Gagal mengambil artikel: {exc}"
         )
+
         return
 
     print(
@@ -5930,94 +5937,10 @@ def audit_content_duplicates() -> None:
     )
 
     # ========================================================
-    # KELOMPOK DUPLIKAT BERDASARKAN TITLE
+    # PREPARE CONTENT
     # ========================================================
 
-    title_groups = {}
-
-    for article in articles:
-
-        title = normalize_text(
-            article.get("title") or ""
-        )
-
-        normalized_title = title.lower().strip()
-
-        if not normalized_title:
-            continue
-
-        if normalized_title not in title_groups:
-
-            title_groups[
-                normalized_title
-            ] = []
-
-        title_groups[
-            normalized_title
-        ].append(article)
-
-    duplicate_titles = {
-
-        title: items
-
-        for title, items
-        in title_groups.items()
-
-        if len(items) > 1
-    }
-
-    # ========================================================
-    # TAMPILKAN DUPLIKAT TITLE
-    # ========================================================
-
-    print()
-    print("=" * 70)
-    print(
-        f"DUPLIKAT JUDUL: "
-        f"{len(duplicate_titles)} KELOMPOK"
-    )
-    print("=" * 70)
-
-    for title, items in duplicate_titles.items():
-
-        print()
-        print("-" * 70)
-
-        print("TITLE:")
-        print(title)
-
-        print()
-        print(
-            f"JUMLAH ARTIKEL: "
-            f"{len(items)}"
-        )
-
-        print()
-
-        for item in items:
-
-            print(
-                f"ID    : "
-                f"{item.get('id')}"
-            )
-
-            print(
-                f"LINK  : "
-                f"{item.get('link')}"
-            )
-
-            print(
-                f"DATE  : "
-                f"{item.get('published_at')}"
-            )
-
-            print()
-
-    # ========================================================
-    # KELOMPOK DUPLIKAT BERDASARKAN CONTENT
-    # ========================================================
-
-    content_groups = {}
+    valid_articles = []
 
     for article in articles:
 
@@ -6027,27 +5950,53 @@ def audit_content_duplicates() -> None:
             or ""
         )
 
-        normalized_content = content.lower().strip()
+        content = content.lower().strip()
 
-        # Abaikan konten kosong
-        if not normalized_content:
+        # Abaikan content kosong
+
+        if not content:
             continue
 
-        # Abaikan snippet terlalu pendek
-        if len(normalized_content) < 100:
+        # Abaikan content terlalu pendek
+
+        if len(content) < 100:
             continue
 
-        if normalized_content not in content_groups:
+        valid_articles.append(
+            {
+                "article": article,
+                "content": content,
+            }
+        )
+
+    print(
+        f"[AUDIT] Artikel dengan content valid: "
+        f"{len(valid_articles)}"
+    )
+
+    # ========================================================
+    # EXACT CONTENT DUPLICATES
+    # ========================================================
+
+    content_groups = {}
+
+    for item in valid_articles:
+
+        content = item["content"]
+
+        if content not in content_groups:
 
             content_groups[
-                normalized_content
+                content
             ] = []
 
         content_groups[
-            normalized_content
-        ].append(article)
+            content
+        ].append(
+            item["article"]
+        )
 
-    duplicate_contents = {
+    exact_duplicates = {
 
         content: items
 
@@ -6057,36 +6006,45 @@ def audit_content_duplicates() -> None:
         if len(items) > 1
     }
 
-    # ========================================================
-    # TAMPILKAN DUPLIKAT CONTENT
-    # ========================================================
-
     print()
     print("=" * 70)
     print(
-        f"DUPLIKAT CONTENT: "
-        f"{len(duplicate_contents)} KELOMPOK"
+        f"EXACT CONTENT DUPLICATES: "
+        f"{len(exact_duplicates)} KELOMPOK"
     )
     print("=" * 70)
 
-    for content, items in duplicate_contents.items():
+    for number, (
+        content,
+        items
+    ) in enumerate(
+        exact_duplicates.items(),
+        start=1,
+    ):
 
         print()
+
+        print(
+            f"EXACT DUPLICATE #{number}"
+        )
+
         print("-" * 70)
 
         print(
-            f"CONTENT LENGTH: "
+            f"Content Length : "
             f"{len(content)}"
         )
 
         print(
-            f"JUMLAH ARTIKEL: "
+            f"Jumlah Artikel : "
             f"{len(items)}"
         )
 
         print()
 
-        print("CONTENT PREVIEW:")
+        print(
+            "CONTENT PREVIEW:"
+        )
 
         print(
             content[:300]
@@ -6094,51 +6052,234 @@ def audit_content_duplicates() -> None:
 
         print()
 
-        for item in items:
+        for article in items:
 
             print(
-                f"ID    : "
-                f"{item.get('id')}"
+                f"ID      : "
+                f"{article.get('id')}"
             )
 
             print(
-                f"TITLE : "
-                f"{item.get('title')}"
+                f"TITLE   : "
+                f"{article.get('title')}"
             )
 
             print(
-                f"LINK  : "
-                f"{item.get('link')}"
+                f"MEDIA   : "
+                f"{extract_media_name(article)}"
+            )
+
+            print(
+                f"LINK    : "
+                f"{article.get('link')}"
             )
 
             print()
+
+    # ========================================================
+    # NEAR CONTENT DUPLICATES
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print(
+        "MENCARI NEAR CONTENT DUPLICATES..."
+    )
+    print("=" * 70)
+
+    near_duplicates = []
+
+    NEAR_DUPLICATE_THRESHOLD = 90.0
+
+    # --------------------------------------------------------
+    # COMPARE EACH ARTICLE
+    # --------------------------------------------------------
+
+    for item_a, item_b in combinations(
+        valid_articles,
+        2,
+    ):
+
+        article_a = item_a["article"]
+        article_b = item_b["article"]
+
+        content_a = item_a["content"]
+        content_b = item_b["content"]
+
+        # ----------------------------------------------------
+        # Skip exact duplicate
+        #
+        # Exact duplicate sudah ditampilkan sebelumnya
+        # ----------------------------------------------------
+
+        if content_a == content_b:
+            continue
+
+        similarity = calculate_content_similarity(
+            content_a,
+            content_b,
+        )
+
+        if similarity >= NEAR_DUPLICATE_THRESHOLD:
+
+            near_duplicates.append(
+                {
+                    "article_a": article_a,
+                    "article_b": article_b,
+                    "similarity": similarity,
+                }
+            )
+
+    # --------------------------------------------------------
+    # SORT
+    # --------------------------------------------------------
+
+    near_duplicates.sort(
+        key=lambda item: item[
+            "similarity"
+        ],
+        reverse=True,
+    )
+
+    # ========================================================
+    # DISPLAY NEAR DUPLICATES
+    # ========================================================
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        f"NEAR CONTENT DUPLICATES: "
+        f"{len(near_duplicates)} PASANGAN"
+    )
+
+    print("=" * 70)
+
+    for number, item in enumerate(
+        near_duplicates,
+        start=1,
+    ):
+
+        article_a = item[
+            "article_a"
+        ]
+
+        article_b = item[
+            "article_b"
+        ]
+
+        similarity = item[
+            "similarity"
+        ]
+
+        print()
+
+        print(
+            f"NEAR DUPLICATE #{number}"
+        )
+
+        print("-" * 70)
+
+        print(
+            f"Similarity: "
+            f"{similarity:.2f}%"
+        )
+
+        print()
+
+        print(
+            "ARTICLE A"
+        )
+
+        print(
+            f"ID      : "
+            f"{article_a.get('id')}"
+        )
+
+        print(
+            f"TITLE   : "
+            f"{article_a.get('title')}"
+        )
+
+        print(
+            f"MEDIA   : "
+            f"{extract_media_name(article_a)}"
+        )
+
+        print(
+            f"LINK    : "
+            f"{article_a.get('link')}"
+        )
+
+        print()
+
+        print(
+            "ARTICLE B"
+        )
+
+        print(
+            f"ID      : "
+            f"{article_b.get('id')}"
+        )
+
+        print(
+            f"TITLE   : "
+            f"{article_b.get('title')}"
+        )
+
+        print(
+            f"MEDIA   : "
+            f"{extract_media_name(article_b)}"
+        )
+
+        print(
+            f"LINK    : "
+            f"{article_b.get('link')}"
+        )
+
+        print()
 
     # ========================================================
     # SUMMARY
     # ========================================================
 
     print()
-    print("=" * 70)
-    print("AUDIT CONTENT DUPLICATES SELESAI")
+
     print("=" * 70)
 
     print(
-        f"Total artikel              : "
+        "AUDIT CONTENT DUPLICATES SELESAI"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"Total artikel                  : "
         f"{len(articles)}"
     )
 
     print(
-        f"Kelompok duplicate title   : "
-        f"{len(duplicate_titles)}"
+        f"Artikel dengan content valid   : "
+        f"{len(valid_articles)}"
     )
 
     print(
-        f"Kelompok duplicate content : "
-        f"{len(duplicate_contents)}"
+        f"Exact duplicate groups         : "
+        f"{len(exact_duplicates)}"
+    )
+
+    print(
+        f"Near duplicate pairs           : "
+        f"{len(near_duplicates)}"
+    )
+
+    print(
+        f"Near duplicate threshold       : "
+        f"{NEAR_DUPLICATE_THRESHOLD}%"
     )
 
     print("=" * 70)
-
 def audit_exact_duplicates() -> None:
     """
     Audit artikel yang merupakan duplicate kuat.
@@ -7522,7 +7663,7 @@ def should_save_article(
     # ========================================================
 
     return True, "valid"
-    
+
 def register_saved_article(
     article,
     existing_link_index,
@@ -7558,6 +7699,7 @@ def register_saved_article(
     # ========================================================
     # REGISTER TITLE + MEDIA
     # ========================================================
+
     title_key = (
         normalize_text(
             article.get("source", "")
@@ -8053,3 +8195,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
