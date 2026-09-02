@@ -3525,42 +3525,60 @@ candidate: Dict[str, Any],
     # ========================================================
     # ARTICLE
     # ========================================================
-    
     article = {
+    
+        # ========================================================
+        # IDENTITAS ARTIKEL
+        # ========================================================
     
         "title": title,
     
+        # URL artikel asli / final setelah redirect
         "link": final_url,
     
-        "content": content[
-            :15000
-        ],
+        # URL asli dari Google News RSS
+        # Penting untuk debugging dan audit
+        "google_news_url": rss_link,
     
-        "published_date": (
-            published.isoformat()
-        ),
+    
+        # ========================================================
+        # CONTENT
+        # ========================================================
+    
+        "content": content[:15000],
+    
+    
+        # ========================================================
+        # DATE
+        # ========================================================
+    
+        "published_date": published.isoformat(),
+    
+    
+        # ========================================================
+        # SOURCE
+        # ========================================================
     
         "source": (
             normalize_text(
-                candidate.get(
-                    "source"
-                )
+                candidate.get("source")
             )
             or "Google News"
         ),
     
-        "category": (
-            classification.get(
-                "category",
-                "Netral",
-            )
+    
+        # ========================================================
+        # CLASSIFICATION
+        # ========================================================
+    
+        "category": classification.get(
+            "category",
+            "Netral",
         ),
     
-        "priority": (
-            classification.get(
-                "priority",
-                "Rendah",
-            )
+        "priority": classification.get(
+            "priority",
+            "Rendah",
         ),
     
         "negative_score": int(
@@ -3584,48 +3602,52 @@ candidate: Dict[str, Any],
             )
         ),
     
-        "detected_keywords": (
-            classification.get(
-                "keywords",
-                [],
-            )
+    
+        # ========================================================
+        # KEYWORDS
+        # ========================================================
+    
+        "detected_keywords": classification.get(
+            "keywords",
+            [],
         ),
     
-        "satker_matches": (
-            classification.get(
-                "satker_matches",
-                [],
-            )
+    
+        # ========================================================
+        # SATKER
+        # ========================================================
+    
+        "satker_matches": classification.get(
+            "satker_matches",
+            [],
         ),
     
-        "satker_match_location": (
-            classification.get(
-                "satker_match_location",
-                "",
-            )
+        "satker_match_location": classification.get(
+            "satker_match_location",
+            "",
         ),
     
-        "strong_context": (
-            classification.get(
-                "strong_context",
-                [],
-            )
+    
+        # ========================================================
+        # CONTEXT
+        # ========================================================
+    
+        "strong_context": classification.get(
+            "strong_context",
+            [],
         ),
     
-        "positive_context": (
-            classification.get(
-                "positive_context",
-                [],
-            )
+        "positive_context": classification.get(
+            "positive_context",
+            [],
         ),
     
-        "handling_context": (
-            classification.get(
-                "handling_context",
-                [],
-            )
+        "handling_context": classification.get(
+            "handling_context",
+            [],
         ),
     }
+    
     
     # ========================================================
     # SUCCESS
@@ -3638,8 +3660,7 @@ candidate: Dict[str, Any],
     result["reason"] = "valid"
     
     return result
-   
-
+    
 
 
 # ============================================================
@@ -5920,10 +5941,16 @@ def audit_negative_articles() -> Dict[str, Any]:
 
 def audit_content_duplicates() -> None:
     """
-    Audit artikel dengan judul atau konten identik.
+    Audit duplicate database.
+
+    Mendeteksi:
+
+    1. Duplicate URL
+    2. Duplicate title dari media yang sama
+    3. Exact duplicate content
+    4. Similar content candidates
 
     Tidak menghapus data.
-    Hanya menampilkan kandidat duplikat.
     """
 
     print("=" * 70)
@@ -5931,22 +5958,82 @@ def audit_content_duplicates() -> None:
     print("=" * 70)
 
     try:
+
         articles = get_all_articles()
 
     except Exception as exc:
+
         print(
             f"[AUDIT ERROR] "
             f"Gagal mengambil artikel: {exc}"
         )
+
         return
+
 
     print(
         f"[AUDIT] Total artikel: "
         f"{len(articles)}"
     )
 
+
     # ========================================================
-    # KELOMPOK DUPLIKAT BERDASARKAN TITLE
+    # HELPER: NORMALIZE MEDIA
+    # ========================================================
+
+    def get_media(article):
+
+        media = (
+            article.get("media")
+            or article.get("source")
+            or ""
+        )
+
+        return normalize_text(
+            str(media)
+        ).lower().strip()
+
+
+    # ========================================================
+    # 1. DUPLICATE URL
+    # ========================================================
+
+    url_groups = {}
+
+    for article in articles:
+
+        link = article.get("link") or ""
+
+        normalized_link = normalize_url(link)
+
+        if not normalized_link:
+
+            continue
+
+        if normalized_link not in url_groups:
+
+            url_groups[
+                normalized_link
+            ] = []
+
+        url_groups[
+            normalized_link
+        ].append(article)
+
+
+    duplicate_urls = {
+
+        link: items
+
+        for link, items
+        in url_groups.items()
+
+        if len(items) > 1
+    }
+
+
+    # ========================================================
+    # 2. DUPLICATE TITLE + SAME MEDIA
     # ========================================================
 
     title_groups = {}
@@ -5957,58 +6044,265 @@ def audit_content_duplicates() -> None:
             article.get("title") or ""
         )
 
-        normalized_title = title.lower().strip()
+        title = title.lower().strip()
 
-        if not normalized_title:
+        media = get_media(article)
+
+        if not title:
+
             continue
 
-        if normalized_title not in title_groups:
+        # Kombinasi title + media
+        key = (
+            title,
+            media,
+        )
 
-            title_groups[
-                normalized_title
-            ] = []
+        if key not in title_groups:
 
-        title_groups[
-            normalized_title
-        ].append(article)
+            title_groups[key] = []
+
+        title_groups[key].append(
+            article
+        )
+
 
     duplicate_titles = {
 
-        title: items
+        key: items
 
-        for title, items
+        for key, items
         in title_groups.items()
 
         if len(items) > 1
     }
 
+
     # ========================================================
-    # TAMPILKAN DUPLIKAT TITLE
+    # 3. EXACT DUPLICATE CONTENT
+    # ========================================================
+
+    content_groups = {}
+
+    for article in articles:
+
+        content = normalize_text(
+
+            article.get("content")
+            or article.get("summary")
+            or ""
+
+        )
+
+        normalized_content = (
+            content.lower()
+            .strip()
+        )
+
+        if not normalized_content:
+
+            continue
+
+        # Hindari snippet terlalu pendek
+        if len(normalized_content) < 200:
+
+            continue
+
+
+        if normalized_content not in content_groups:
+
+            content_groups[
+                normalized_content
+            ] = []
+
+
+        content_groups[
+            normalized_content
+        ].append(article)
+
+
+    duplicate_contents = {
+
+        content: items
+
+        for content, items
+        in content_groups.items()
+
+        if len(items) > 1
+    }
+
+
+    # ========================================================
+    # 4. SIMILAR CONTENT
+    #
+    # Deteksi artikel yang hampir sama.
+    # ========================================================
+
+    from difflib import SequenceMatcher
+
+
+    similar_candidates = []
+
+    total_articles = len(articles)
+
+
+    for i in range(total_articles):
+
+        article_a = articles[i]
+
+        content_a = normalize_text(
+
+            article_a.get("content")
+            or article_a.get("summary")
+            or ""
+
+        ).lower().strip()
+
+
+        if len(content_a) < 300:
+
+            continue
+
+
+        for j in range(
+
+            i + 1,
+            total_articles
+
+        ):
+
+            article_b = articles[j]
+
+            content_b = normalize_text(
+
+                article_b.get("content")
+                or article_b.get("summary")
+                or ""
+
+            ).lower().strip()
+
+
+            if len(content_b) < 300:
+
+                continue
+
+
+            # Skip exact duplicate
+            if content_a == content_b:
+
+                continue
+
+
+            similarity = SequenceMatcher(
+
+                None,
+                content_a[:5000],
+                content_b[:5000]
+
+            ).ratio()
+
+
+            # Threshold 85%
+            if similarity >= 0.85:
+
+                similar_candidates.append({
+
+                    "article_a": article_a,
+
+                    "article_b": article_b,
+
+                    "similarity": similarity,
+
+                })
+
+
+    # ========================================================
+    # TAMPILKAN DUPLICATE URL
     # ========================================================
 
     print()
-    print("=" * 70)
-    print(
-        f"DUPLIKAT JUDUL: "
-        f"{len(duplicate_titles)} KELOMPOK"
-    )
+
     print("=" * 70)
 
-    for title, items in duplicate_titles.items():
+    print(
+        f"DUPLICATE URL: "
+        f"{len(duplicate_urls)} KELOMPOK"
+    )
+
+    print("=" * 70)
+
+
+    for link, items in duplicate_urls.items():
 
         print()
+
+        print("-" * 70)
+
+        print("URL:")
+
+        print(link)
+
+        print()
+
+        for item in items:
+
+            print(
+                f"ID    : "
+                f"{item.get('id')}"
+            )
+
+            print(
+                f"TITLE : "
+                f"{item.get('title')}"
+            )
+
+            print()
+
+
+    # ========================================================
+    # TAMPILKAN DUPLICATE TITLE
+    # ========================================================
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        f"DUPLICATE TITLE + SAME MEDIA: "
+        f"{len(duplicate_titles)} KELOMPOK"
+    )
+
+    print("=" * 70)
+
+
+    for key, items in duplicate_titles.items():
+
+        title, media = key
+
+        print()
+
         print("-" * 70)
 
         print("TITLE:")
+
         print(title)
 
         print()
+
+        print(
+            f"MEDIA: "
+            f"{media}"
+        )
+
+        print()
+
         print(
             f"JUMLAH ARTIKEL: "
             f"{len(items)}"
         )
 
         print()
+
 
         for item in items:
 
@@ -6022,78 +6316,37 @@ def audit_content_duplicates() -> None:
                 f"{item.get('link')}"
             )
 
-            print(
-                f"DATE  : "
-                f"{item.get('published_at')}"
-            )
-
             print()
 
-    # ========================================================
-    # KELOMPOK DUPLIKAT BERDASARKAN CONTENT
-    # ========================================================
-
-    content_groups = {}
-
-    for article in articles:
-
-        content = normalize_text(
-            article.get("content")
-            or article.get("summary")
-            or ""
-        )
-
-        normalized_content = content.lower().strip()
-
-        # Abaikan konten kosong
-        if not normalized_content:
-            continue
-
-        # Abaikan snippet terlalu pendek
-        if len(normalized_content) < 100:
-            continue
-
-        if normalized_content not in content_groups:
-
-            content_groups[
-                normalized_content
-            ] = []
-
-        content_groups[
-            normalized_content
-        ].append(article)
-
-    duplicate_contents = {
-
-        content: items
-
-        for content, items
-        in content_groups.items()
-
-        if len(items) > 1
-    }
 
     # ========================================================
-    # TAMPILKAN DUPLIKAT CONTENT
+    # TAMPILKAN EXACT DUPLICATE CONTENT
     # ========================================================
 
     print()
+
     print("=" * 70)
+
     print(
-        f"DUPLIKAT CONTENT: "
+        f"EXACT DUPLICATE CONTENT: "
         f"{len(duplicate_contents)} KELOMPOK"
     )
+
     print("=" * 70)
+
 
     for content, items in duplicate_contents.items():
 
         print()
+
         print("-" * 70)
 
         print(
             f"CONTENT LENGTH: "
             f"{len(content)}"
         )
+
+        print()
 
         print(
             f"JUMLAH ARTIKEL: "
@@ -6110,6 +6363,7 @@ def audit_content_duplicates() -> None:
 
         print()
 
+
         for item in items:
 
             print(
@@ -6123,34 +6377,137 @@ def audit_content_duplicates() -> None:
             )
 
             print(
+                f"MEDIA : "
+                f"{get_media(item)}"
+            )
+
+            print(
                 f"LINK  : "
                 f"{item.get('link')}"
             )
 
             print()
 
+
+    # ========================================================
+    # TAMPILKAN SIMILAR CONTENT
+    # ========================================================
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        f"SIMILAR CONTENT >= 85%: "
+        f"{len(similar_candidates)} PASANGAN"
+    )
+
+    print("=" * 70)
+
+
+    for candidate in similar_candidates:
+
+        article_a = candidate[
+            "article_a"
+        ]
+
+        article_b = candidate[
+            "article_b"
+        ]
+
+        similarity = candidate[
+            "similarity"
+        ]
+
+
+        print()
+
+        print("-" * 70)
+
+        print(
+            f"SIMILARITY: "
+            f"{similarity * 100:.2f}%"
+        )
+
+        print()
+
+
+        print("ARTICLE A")
+
+        print(
+            f"ID    : "
+            f"{article_a.get('id')}"
+        )
+
+        print(
+            f"TITLE : "
+            f"{article_a.get('title')}"
+        )
+
+        print(
+            f"MEDIA : "
+            f"{get_media(article_a)}"
+        )
+
+        print()
+
+
+        print("ARTICLE B")
+
+        print(
+            f"ID    : "
+            f"{article_b.get('id')}"
+        )
+
+        print(
+            f"TITLE : "
+            f"{article_b.get('title')}"
+        )
+
+        print(
+            f"MEDIA : "
+            f"{get_media(article_b)}"
+        )
+
+
     # ========================================================
     # SUMMARY
     # ========================================================
 
     print()
-    print("=" * 70)
-    print("AUDIT CONTENT DUPLICATES SELESAI")
+
     print("=" * 70)
 
     print(
-        f"Total artikel              : "
+        "AUDIT CONTENT DUPLICATES SELESAI"
+    )
+
+    print("=" * 70)
+
+
+    print(
+        f"Total artikel                    : "
         f"{len(articles)}"
     )
 
     print(
-        f"Kelompok duplicate title   : "
+        f"Duplicate URL groups             : "
+        f"{len(duplicate_urls)}"
+    )
+
+    print(
+        f"Duplicate title + same media     : "
         f"{len(duplicate_titles)}"
     )
 
     print(
-        f"Kelompok duplicate content : "
+        f"Exact duplicate content groups   : "
         f"{len(duplicate_contents)}"
+    )
+
+    print(
+        f"Similar content pairs >= 85%     : "
+        f"{len(similar_candidates)}"
     )
 
     print("=" * 70)
