@@ -7450,7 +7450,7 @@ def main() -> None:
 
         return
 
-     if args.audit_event_quality:
+    if args.audit_event_quality:
 
         articles = get_all_articles()
         
