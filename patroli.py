@@ -6932,376 +6932,96 @@ def cluster_event_duplicates(articles):
     return cluster_events(articles)
     
 def audit_event_quality(articles):
-    """
-    Audit kualitas event cluster.
-    """
 
     print("=" * 70)
     print("AUDIT EVENT QUALITY")
     print("=" * 70)
 
-    if not articles:
-
-        print("[AUDIT] Tidak ada artikel.")
-
-        return
-
     print()
     print(f"[AUDIT] Total artikel: {len(articles)}")
 
+    clusters = cluster_event_duplicates(articles)
+
+    print()
+    print("=" * 70)
+    print("DEBUG CLUSTER STRUCTURE")
+    print("=" * 70)
+
+    print(type(clusters))
+
+    if clusters:
+        print("TYPE clusters[0]:", type(clusters[0]))
+        print("CONTENT clusters[0]:")
+        print(clusters[0])
+
     # ==========================================================
-    # GUNAKAN CLUSTERING EVENT YANG SUDAH ADA
+    # ANALISIS CLUSTER
     # ==========================================================
 
-    clusters = cluster_events(
-        articles
-    )
+    for index, cluster in enumerate(clusters, start=1):
 
-    if not clusters:
+        # Pastikan cluster tidak kosong
+        if not cluster:
+            continue
 
         print()
-        print("[AUDIT] Tidak ada event cluster.")
+        print("=" * 70)
+        print(f"EVENT CLUSTER #{index}")
+        print("=" * 70)
 
-        return
+        # ------------------------------------------------------
+        # ARTICLE PERTAMA
+        # ------------------------------------------------------
 
-    print(
-        f"[AUDIT] Total event cluster: "
-        f"{len(clusters)}"
-    )
+        first_article = cluster[0]
 
-    results = []
-
-    # ==========================================================
-    # AUDIT SETIAP EVENT
-    # ==========================================================
-
-    for index, cluster in enumerate(
-        clusters,
-        start=1
-    ):
-
+        # Ambil nama event
         event_name = (
-            cluster.get("event")
-            or cluster.get("event_name")
-            or "unknown event"
-        )
-
-        cluster_articles = (
-            cluster.get("articles")
-            or []
-        )
-
-        result = calculate_event_quality(
-            event_name,
-            cluster_articles
-        )
-
-        results.append({
-            "cluster_number": index,
-            "event_name": event_name,
-            "article_count": len(
-                cluster_articles
-            ),
-            "result": result
-        })
-
-    # ==========================================================
-    # SORT DARI KUALITAS TERBURUK
-    # ==========================================================
-
-    results.sort(
-        key=lambda x: x["result"]["score"]
-    )
-
-    # ==========================================================
-    # OUTPUT DETAIL
-    # ==========================================================
-
-    for item in results:
-
-        result = item["result"]
-
-        print()
-        print("=" * 70)
-
-        print(
-            f"EVENT QUALITY #{item['cluster_number']}"
-        )
-
-        print("=" * 70)
-
-        print()
-
-        print(
-            f"EVENT : {item['event_name']}"
-        )
-
-        print(
-            f"Jumlah artikel : "
-            f"{item['article_count']}"
+            first_article.get("event")
+            or first_article.get("event_name")
+            or first_article.get("title")
+            or "Unknown Event"
         )
 
         print()
+        print(f"EVENT : {event_name}")
+        print(f"Jumlah artikel : {len(cluster)}")
 
-        print(
-            f"QUALITY SCORE : "
-            f"{result['score']}/100"
-        )
-
-        print(
-            f"STATUS        : "
-            f"{result['quality']}"
-        )
-
+        print()
+        print("ARTIKEL:")
         print()
 
         # ------------------------------------------------------
-
-        print("EVENT NAME:")
-
-        print(
-            f"- Score  : "
-            f"{result['event_name']['score']}"
-        )
-
-        print(
-            f"- Status : "
-            f"{result['event_name']['status']}"
-        )
-
-        print(
-            f"- Info   : "
-            f"{result['event_name']['reason']}"
-        )
-
-        print()
-
+        # TAMPILKAN ARTIKEL
         # ------------------------------------------------------
 
-        print("CLUSTER COHESION:")
+        for article_index, article in enumerate(cluster, start=1):
 
-        print(
-            f"- Score      : "
-            f"{result['cohesion']['score']}"
-        )
+            article_id = article.get("id", "-")
 
-        print(
-            f"- Similarity : "
-            f"{result['cohesion']['average_similarity']:.2f}"
-        )
-
-        print(
-            f"- Status     : "
-            f"{result['cohesion']['status']}"
-        )
-
-        print()
-
-        # ------------------------------------------------------
-
-        print("SATKER:")
-
-        if result["satkers"]:
-
-            for satker in result["satkers"]:
-
-                print(
-                    f"- {satker}"
-                )
-
-        else:
-
-            print(
-                "- Tidak terdeteksi"
+            title = (
+                article.get("title")
+                or article.get("judul")
+                or "-"
             )
 
-        print()
+            source = (
+                article.get("source")
+                or article.get("source_name")
+                or ""
+            )
 
-        # ------------------------------------------------------
+            print(f"[{article_index}] ID={article_id}")
 
-        print(
-            f"EXACT / NEAR DUPLICATES : "
-            f"{len(result['duplicates'])}"
-        )
-
-        for duplicate in result[
-            "duplicates"
-        ][:5]:
-
-            article_1 = duplicate[
-                "article_1"
-            ]
-
-            article_2 = duplicate[
-                "article_2"
-            ]
+            if source:
+                print(f"{title} - {source}")
+            else:
+                print(title)
 
             print()
 
-            print(
-                f"Similarity: "
-                f"{duplicate['similarity']:.2f}"
-            )
-
-            print(
-                f"- ID "
-                f"{article_1.get('id')}: "
-                f"{article_1.get('title')}"
-            )
-
-            print(
-                f"- ID "
-                f"{article_2.get('id')}: "
-                f"{article_2.get('title')}"
-            )
-
-        # ------------------------------------------------------
-
-        print()
-
-        print("REKOMENDASI:")
-
-        recommendations = []
-
-        if (
-            result["event_name"]["score"]
-            < 70
-        ):
-
-            recommendations.append(
-                "Perbaiki nama event agar "
-                "lebih natural dan deskriptif."
-            )
-
-        if (
-            result["cohesion"]["score"]
-            < 60
-        ):
-
-            recommendations.append(
-                "Cluster terlalu heterogen. "
-                "Pertimbangkan memecah event."
-            )
-
-        if not result["satkers"]:
-
-            recommendations.append(
-                "Perbaiki SATKER normalization "
-                "dan entity detection."
-            )
-
-        if len(result["duplicates"]) > 0:
-
-            recommendations.append(
-                "Terdapat kemungkinan duplicate "
-                "data ingestion."
-            )
-
-        if not recommendations:
-
-            recommendations.append(
-                "Event cluster memiliki "
-                "kualitas yang baik."
-            )
-
-        for recommendation in recommendations:
-
-            print(
-                f"- {recommendation}"
-            )
-
-    # ==========================================================
-    # SUMMARY
-    # ==========================================================
-
-    print()
     print("=" * 70)
-
-    print("RINGKASAN EVENT QUALITY")
-
-    print("=" * 70)
-
-    total_events = len(results)
-
-    excellent = sum(
-        1
-        for x in results
-        if x["result"]["quality"]
-        == "EXCELLENT"
-    )
-
-    good = sum(
-        1
-        for x in results
-        if x["result"]["quality"]
-        == "GOOD"
-    )
-
-    review = sum(
-        1
-        for x in results
-        if x["result"]["quality"]
-        == "NEEDS REVIEW"
-    )
-
-    poor = sum(
-        1
-        for x in results
-        if x["result"]["quality"]
-        == "POOR"
-    )
-
-    avg_score = (
-
-        sum(
-            x["result"]["score"]
-            for x in results
-        )
-
-        / total_events
-
-        if total_events
-
-        else 0
-    )
-
-    print()
-
-    print(
-        f"Total event       : {total_events}"
-    )
-
-    print(
-        f"Excellent         : {excellent}"
-    )
-
-    print(
-        f"Good              : {good}"
-    )
-
-    print(
-        f"Needs Review      : {review}"
-    )
-
-    print(
-        f"Poor              : {poor}"
-    )
-
-    print()
-
-    print(
-        f"Average Score     : "
-        f"{avg_score:.2f}/100"
-    )
-
-    print()
-
-    print("=" * 70)
-
-    print(
-        "AUDIT EVENT QUALITY SELESAI"
-    )
-
+    print("AUDIT EVENT QUALITY SELESAI")
     print("=" * 70)
     
 # ============================================================
