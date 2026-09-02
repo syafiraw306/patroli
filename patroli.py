@@ -7386,6 +7386,14 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--audit-event-quality",
+        action="store_true",
+        help=(
+            "audit kualitas event yg sama"
+        ),
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -7435,8 +7443,18 @@ def main() -> None:
         return
 
     if args.audit_event_duplicates:
+
         articles = get_all_articles()
+        
         audit_event_duplicates(articles)
+
+        return
+
+     if args.audit_event_quality:
+
+        articles = get_all_articles()
+        
+        audit_event_quality(articles)
 
         return
 
