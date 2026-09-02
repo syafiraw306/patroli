@@ -4131,456 +4131,456 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
     # SAVE
     # ========================================================
-# ========================================================
-# SAVE
-#
-# Semua keputusan duplicate hanya melalui:
-#
-# should_save_article()
-#
-# Tidak ada lagi:
-#
-# - is_duplicate_article()
-# - existing_links tambahan
-# - was_existing
-# - get_article_by_link()
-#
-# ========================================================
-
-saved_count = 0
-save_failed = 0
-
-new_articles = []
-
-
-for article in valid_articles:
-
-    # ====================================================
-    # VALIDATE LINK
-    # ====================================================
-
-    link = normalize_url(
-        article.get("link")
-    )
-
-    if not link:
-
-        print(
-            "[SKIP] INVALID_LINK"
+    # ========================================================
+    # SAVE
+    #
+    # Semua keputusan duplicate hanya melalui:
+    #
+    # should_save_article()
+    #
+    # Tidak ada lagi:
+    #
+    # - is_duplicate_article()
+    # - existing_links tambahan
+    # - was_existing
+    # - get_article_by_link()
+    #
+    # ========================================================
+    
+    saved_count = 0
+    save_failed = 0
+    
+    new_articles = []
+    
+    
+    for article in valid_articles:
+    
+        # ====================================================
+        # VALIDATE LINK
+        # ====================================================
+    
+        link = normalize_url(
+            article.get("link")
         )
-
-        continue
-
-
-    # ====================================================
-    # CENTRAL DUPLICATE DECISION
-    #
-    # Hanya fungsi ini yang menentukan:
-    #
-    # - Duplicate URL
-    # - Duplicate Title + Media
-    # - Duplicate Content + Media
-    #
-    # Event sama dari media berbeda
-    # TETAP BOLEH DISIMPAN.
-    # ====================================================
-
-    (
-        should_save,
-        reason,
-        similarity,
-        matched_article,
-    ) = should_save_article(
-
-        article,
-
-        existing_link_index,
-
-        existing_title_index,
-
-        existing_content_index,
-    )
-
-
-    # ====================================================
-    # SKIP DUPLICATE
-    # ====================================================
-
-    if not should_save:
-
+    
+        if not link:
+    
+            print(
+                "[SKIP] INVALID_LINK"
+            )
+    
+            continue
+    
+    
+        # ====================================================
+        # CENTRAL DUPLICATE DECISION
+        #
+        # Hanya fungsi ini yang menentukan:
+        #
+        # - Duplicate URL
+        # - Duplicate Title + Media
+        # - Duplicate Content + Media
+        #
+        # Event sama dari media berbeda
+        # TETAP BOLEH DISIMPAN.
+        # ====================================================
+    
+        (
+            should_save,
+            reason,
+            similarity,
+            matched_article,
+        ) = should_save_article(
+    
+            article,
+    
+            existing_link_index,
+    
+            existing_title_index,
+    
+            existing_content_index,
+        )
+    
+    
+        # ====================================================
+        # SKIP DUPLICATE
+        # ====================================================
+    
+        if not should_save:
+    
+            print()
+            print(
+                f"[SKIP] {reason}"
+            )
+    
+            print(
+                f"TITLE: "
+                f"{article.get('title', '')}"
+            )
+    
+            print(
+                f"LINK: "
+                f"{article.get('link', '')}"
+            )
+    
+            print(
+                f"MEDIA: "
+                f"{get_media_source(article)}"
+            )
+    
+            if matched_article:
+    
+                print(
+                    f"MATCHED ID: "
+                    f"{matched_article.get('id', 'Unknown')}"
+                )
+    
+                print(
+                    f"MATCHED TITLE: "
+                    f"{matched_article.get('title', '')}"
+                )
+    
+                print(
+                    f"MATCHED MEDIA: "
+                    f"{get_media_source(matched_article)}"
+                )
+    
+                print(
+                    f"SIMILARITY: "
+                    f"{similarity:.2%}"
+                )
+    
+            continue
+    
+    
+        # ====================================================
+        # ARTICLE APPROVED
+        # ====================================================
+    
         print()
+    
         print(
-            f"[SKIP] {reason}"
+            "[SAVE] NEW_ARTICLE"
         )
-
+    
         print(
             f"TITLE: "
             f"{article.get('title', '')}"
         )
-
-        print(
-            f"LINK: "
-            f"{article.get('link', '')}"
-        )
-
+    
         print(
             f"MEDIA: "
             f"{get_media_source(article)}"
         )
-
-        if matched_article:
-
-            print(
-                f"MATCHED ID: "
-                f"{matched_article.get('id', 'Unknown')}"
-            )
-
-            print(
-                f"MATCHED TITLE: "
-                f"{matched_article.get('title', '')}"
-            )
-
-            print(
-                f"MATCHED MEDIA: "
-                f"{get_media_source(matched_article)}"
-            )
-
-            print(
-                f"SIMILARITY: "
-                f"{similarity:.2%}"
-            )
-
-        continue
-
-
-    # ====================================================
-    # ARTICLE APPROVED
-    # ====================================================
-
-    print()
-
-    print(
-        "[SAVE] NEW_ARTICLE"
-    )
-
-    print(
-        f"TITLE: "
-        f"{article.get('title', '')}"
-    )
-
-    print(
-        f"MEDIA: "
-        f"{get_media_source(article)}"
-    )
-
-
-    # ====================================================
-    # UPSERT ARTICLE
-    # ====================================================
-
-    try:
-
-        saved = upsert_article(
-            article
-        )
-
-
+    
+    
         # ====================================================
-        # SAVE FAILED
+        # UPSERT ARTICLE
         # ====================================================
-
-        if saved is None:
-
+    
+        try:
+    
+            saved = upsert_article(
+                article
+            )
+    
+    
+            # ====================================================
+            # SAVE FAILED
+            # ====================================================
+    
+            if saved is None:
+    
+                save_failed += 1
+    
+                print(
+                    f"[SAVE ERROR] "
+                    f"Gagal menyimpan: "
+                    f"{link}"
+                )
+    
+                continue
+    
+    
+            # ====================================================
+            # SAVE SUCCESS
+            # ====================================================
+    
+            saved_count += 1
+    
+    
+            # ====================================================
+            # UPDATE DUPLICATE INDEX
+            #
+            # SANGAT PENTING.
+            #
+            # Artikel yang baru saja disimpan harus langsung
+            # dimasukkan ke index.
+            #
+            # Dengan demikian artikel berikutnya dalam satu
+            # GitHub Actions run juga bisa terdeteksi duplicate.
+            # ====================================================
+    
+            register_saved_article(
+    
+                article,
+    
+                existing_link_index,
+    
+                existing_title_index,
+    
+                existing_content_index,
+            )
+    
+    
+            # ====================================================
+            # NEW ARTICLE
+            #
+            # Artikel hanya masuk Telegram jika benar-benar
+            # lolos duplicate prevention dan berhasil disimpan.
+            # ====================================================
+    
+            new_articles.append(
+                article
+            )
+    
+    
+            print(
+                f"[SAVE SUCCESS] "
+                f"{article.get('title', '')[:100]}"
+            )
+    
+    
+        except Exception as exc:
+    
             save_failed += 1
-
+    
             print(
                 f"[SAVE ERROR] "
-                f"Gagal menyimpan: "
-                f"{link}"
+                f"{link}: "
+                f"{type(exc).__name__}: "
+                f"{exc}"
             )
-
-            continue
-
-
-        # ====================================================
-        # SAVE SUCCESS
-        # ====================================================
-
-        saved_count += 1
-
-
-        # ====================================================
-        # UPDATE DUPLICATE INDEX
-        #
-        # SANGAT PENTING.
-        #
-        # Artikel yang baru saja disimpan harus langsung
-        # dimasukkan ke index.
-        #
-        # Dengan demikian artikel berikutnya dalam satu
-        # GitHub Actions run juga bisa terdeteksi duplicate.
-        # ====================================================
-
-        register_saved_article(
-
-            article,
-
-            existing_link_index,
-
-            existing_title_index,
-
-            existing_content_index,
+        # ========================================================
+        # TELEGRAM
+        # ========================================================
+    
+        telegram_count = 0
+    
+        if telegram_enabled():
+    
+            print(
+                f"[TELEGRAM] "
+                f"Kandidat artikel baru: "
+                f"{len(new_articles)}"
+            )
+    
+            for article in new_articles:
+    
+                try:
+    
+                    if not send_alert_if_needed(
+                        article
+                    ):
+                        continue
+    
+                    telegram_count += 1
+    
+                    print(
+                        "[TELEGRAM] Terkirim: "
+                        f"{article.get('title', '')[:100]}"
+                    )
+    
+                except Exception as exc:
+    
+                    print(
+                        f"[TELEGRAM ERROR] "
+                        f"{type(exc).__name__}: "
+                        f"{exc}"
+                    )
+    
+        else:
+    
+            print(
+                "[TELEGRAM] Tidak aktif. "
+                "Periksa TELEGRAM_BOT_TOKEN "
+                "dan TELEGRAM_CHAT_ID."
+            )
+    
+        # ========================================================
+        # RECLASSIFICATION
+        # ========================================================
+    
+        counts = reclassify_all()
+    
+        # ========================================================
+        # FINAL DATABASE
+        # ========================================================
+    
+        try:
+    
+            final_articles = get_all_articles()
+    
+        except Exception as exc:
+    
+            print(
+                f"[DATABASE ERROR] "
+                f"Gagal mengambil database akhir: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    
+            final_articles = []
+    
+        duration = round(
+            time.perf_counter()
+            - started,
+            2,
         )
-
-
-        # ====================================================
-        # NEW ARTICLE
-        #
-        # Artikel hanya masuk Telegram jika benar-benar
-        # lolos duplicate prevention dan berhasil disimpan.
-        # ====================================================
-
-        new_articles.append(
-            article
-        )
-
-
+    
+        # ========================================================
+        # RUN LOG
+        # ========================================================
+    
+        log = {
+    
+            "duration_seconds": duration,
+    
+            "candidate_count": len(
+                candidates
+            ),
+    
+            "valid_count": len(
+                valid_articles
+            ),
+    
+            "filtered_count": filtered_count,
+    
+            "worker_error_count": worker_errors,
+    
+            "saved_count": saved_count,
+    
+            "save_failed_count": save_failed,
+    
+            "new_article_count": len(
+                new_articles
+            ),
+    
+            "reclassified_count": len(
+                final_articles
+            ),
+    
+            "negative_count": counts.get(
+                "Negatif Kuat",
+                0,
+            ),
+    
+            "handling_count": counts.get(
+                "Perlu Penanganan",
+                0,
+            ),
+    
+            "neutral_count": counts.get(
+                "Netral",
+                0,
+            ),
+    
+            "positive_count": counts.get(
+                "Positif",
+                0,
+            ),
+    
+            "telegram_count": telegram_count,
+    
+            "status": "Selesai",
+        }
+    
+        save_run_log(log)
+    
+        # ========================================================
+        # SUMMARY
+        # ========================================================
+    
+        print()
+        print("=" * 70)
+        print("PATROLI SELESAI")
+        print("=" * 70)
+    
         print(
-            f"[SAVE SUCCESS] "
-            f"{article.get('title', '')[:100]}"
+            f"Durasi                 : "
+            f"{duration} detik"
         )
-
-
-    except Exception as exc:
-
-        save_failed += 1
-
+    
         print(
-            f"[SAVE ERROR] "
-            f"{link}: "
-            f"{type(exc).__name__}: "
-            f"{exc}"
+            f"Kandidat               : "
+            f"{len(candidates)}"
         )
-    # ========================================================
-    # TELEGRAM
-    # ========================================================
-
-    telegram_count = 0
-
-    if telegram_enabled():
-
+    
         print(
-            f"[TELEGRAM] "
-            f"Kandidat artikel baru: "
+            f"Artikel valid          : "
+            f"{len(valid_articles)}"
+        )
+    
+        print(
+            f"Tidak lolos filter    : "
+            f"{filtered_count}"
+        )
+    
+        print(
+            f"Worker error           : "
+            f"{worker_errors}"
+        )
+    
+        print(
+            f"Berhasil disimpan      : "
+            f"{saved_count}"
+        )
+    
+        print(
+            f"Gagal simpan           : "
+            f"{save_failed}"
+        )
+    
+        print(
+            f"Artikel baru           : "
             f"{len(new_articles)}"
         )
-
-        for article in new_articles:
-
-            try:
-
-                if not send_alert_if_needed(
-                    article
-                ):
-                    continue
-
-                telegram_count += 1
-
-                print(
-                    "[TELEGRAM] Terkirim: "
-                    f"{article.get('title', '')[:100]}"
-                )
-
-            except Exception as exc:
-
-                print(
-                    f"[TELEGRAM ERROR] "
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                )
-
-    else:
-
+    
         print(
-            "[TELEGRAM] Tidak aktif. "
-            "Periksa TELEGRAM_BOT_TOKEN "
-            "dan TELEGRAM_CHAT_ID."
+            f"Database               : "
+            f"{len(final_articles)}"
         )
-
-    # ========================================================
-    # RECLASSIFICATION
-    # ========================================================
-
-    counts = reclassify_all()
-
-    # ========================================================
-    # FINAL DATABASE
-    # ========================================================
-
-    try:
-
-        final_articles = get_all_articles()
-
-    except Exception as exc:
-
+    
         print(
-            f"[DATABASE ERROR] "
-            f"Gagal mengambil database akhir: "
-            f"{type(exc).__name__}: {exc}"
+            f"Negatif Kuat           : "
+            f"{counts.get('Negatif Kuat', 0)}"
         )
-
-        final_articles = []
-
-    duration = round(
-        time.perf_counter()
-        - started,
-        2,
-    )
-
-    # ========================================================
-    # RUN LOG
-    # ========================================================
-
-    log = {
-
-        "duration_seconds": duration,
-
-        "candidate_count": len(
-            candidates
-        ),
-
-        "valid_count": len(
-            valid_articles
-        ),
-
-        "filtered_count": filtered_count,
-
-        "worker_error_count": worker_errors,
-
-        "saved_count": saved_count,
-
-        "save_failed_count": save_failed,
-
-        "new_article_count": len(
-            new_articles
-        ),
-
-        "reclassified_count": len(
-            final_articles
-        ),
-
-        "negative_count": counts.get(
-            "Negatif Kuat",
-            0,
-        ),
-
-        "handling_count": counts.get(
-            "Perlu Penanganan",
-            0,
-        ),
-
-        "neutral_count": counts.get(
-            "Netral",
-            0,
-        ),
-
-        "positive_count": counts.get(
-            "Positif",
-            0,
-        ),
-
-        "telegram_count": telegram_count,
-
-        "status": "Selesai",
-    }
-
-    save_run_log(log)
-
-    # ========================================================
-    # SUMMARY
-    # ========================================================
-
-    print()
-    print("=" * 70)
-    print("PATROLI SELESAI")
-    print("=" * 70)
-
-    print(
-        f"Durasi                 : "
-        f"{duration} detik"
-    )
-
-    print(
-        f"Kandidat               : "
-        f"{len(candidates)}"
-    )
-
-    print(
-        f"Artikel valid          : "
-        f"{len(valid_articles)}"
-    )
-
-    print(
-        f"Tidak lolos filter    : "
-        f"{filtered_count}"
-    )
-
-    print(
-        f"Worker error           : "
-        f"{worker_errors}"
-    )
-
-    print(
-        f"Berhasil disimpan      : "
-        f"{saved_count}"
-    )
-
-    print(
-        f"Gagal simpan           : "
-        f"{save_failed}"
-    )
-
-    print(
-        f"Artikel baru           : "
-        f"{len(new_articles)}"
-    )
-
-    print(
-        f"Database               : "
-        f"{len(final_articles)}"
-    )
-
-    print(
-        f"Negatif Kuat           : "
-        f"{counts.get('Negatif Kuat', 0)}"
-    )
-
-    print(
-        f"Perlu Penanganan       : "
-        f"{counts.get('Perlu Penanganan', 0)}"
-    )
-
-    print(
-        f"Netral                 : "
-        f"{counts.get('Netral', 0)}"
-    )
-
-    print(
-        f"Positif                : "
-        f"{counts.get('Positif', 0)}"
-    )
-
-    print(
-        f"Telegram terkirim      : "
-        f"{telegram_count}"
-    )
-
-    print("=" * 70)
-
-    return log
-
-
-
+    
+        print(
+            f"Perlu Penanganan       : "
+            f"{counts.get('Perlu Penanganan', 0)}"
+        )
+    
+        print(
+            f"Netral                 : "
+            f"{counts.get('Netral', 0)}"
+        )
+    
+        print(
+            f"Positif                : "
+            f"{counts.get('Positif', 0)}"
+        )
+    
+        print(
+            f"Telegram terkirim      : "
+            f"{telegram_count}"
+        )
+    
+        print("=" * 70)
+    
+        return log
+    
+    
+    
 # ============================================================
 # DEDUPE DRY RUN
 # ============================================================
