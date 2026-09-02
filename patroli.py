@@ -59,6 +59,14 @@ REQUEST_TIMEOUT = int(
     os.getenv("REQUEST_TIMEOUT") or "15"
 )
 
+# ========================================================
+# RSS RETRY CONFIGURATION
+# ========================================================
+
+MAX_RSS_RETRIES = 3
+
+RSS_RETRY_BACKOFF = 2
+
 MAX_ARTICLES_PER_FEED = int(
     os.getenv("MAX_ARTICLES_PER_FEED") or "40"
 )
@@ -2912,10 +2920,8 @@ def parse_google_news_feed(
     query: str,
 ) -> List[Dict[str, Any]]:
 
-    encoded = (
-        urllib.parse.quote_plus(
-            query
-        )
+    encoded = urllib.parse.quote_plus(
+        query
     )
 
     url = (
@@ -2926,15 +2932,115 @@ def parse_google_news_feed(
         "&ceid=ID:id"
     )
 
-    try:
+    response = None
+    last_error = None
 
-        response = SESSION.get(
-            url,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
+    # ========================================================
+    # FETCH RSS DENGAN RETRY + EXPONENTIAL BACKOFF
+    # ========================================================
+
+    for attempt in range(
+        1,
+        MAX_RSS_RETRIES + 1,
+    ):
+
+        try:
+
+            response = SESSION.get(
+                url,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=True,
+            )
+
+            # ------------------------------------------------
+            # SUCCESS
+            # ------------------------------------------------
+
+            if response.status_code == 200:
+
+                break
+
+            # ------------------------------------------------
+            # RETRY UNTUK SERVER ERROR
+            # ------------------------------------------------
+
+            if (
+                response.status_code == 429
+                or response.status_code >= 500
+            ):
+
+                raise requests.HTTPError(
+                    f"HTTP {response.status_code}",
+                    response=response,
+                )
+
+            # ------------------------------------------------
+            # ERROR NON-RETRY
+            # ------------------------------------------------
+
+            response.raise_for_status()
+
+        except Exception as exc:
+
+            last_error = exc
+
+            if attempt >= MAX_RSS_RETRIES:
+
+                print(
+                    f"[RSS ERROR] "
+                    f"{query} -> "
+                    f"Gagal setelah "
+                    f"{MAX_RSS_RETRIES} percobaan: "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
+
+                return []
+
+            wait_seconds = (
+                RSS_RETRY_BACKOFF
+                ** (attempt - 1)
+            )
+
+            print(
+                f"[RSS RETRY] "
+                f"{query} -> "
+                f"attempt "
+                f"{attempt}/"
+                f"{MAX_RSS_RETRIES} gagal: "
+                f"{type(exc).__name__}: "
+                f"{exc}"
+            )
+
+            print(
+                f"[RSS RETRY] "
+                f"Menunggu "
+                f"{wait_seconds} detik..."
+            )
+
+            time.sleep(
+                wait_seconds
+            )
+
+    # ========================================================
+    # VALIDASI RESPONSE
+    # ========================================================
+
+    if response is None:
+
+        print(
+            f"[RSS ERROR] "
+            f"{query} -> "
+            f"Tidak mendapatkan response."
         )
 
-        response.raise_for_status()
+        return []
+
+    # ========================================================
+    # PARSE RSS
+    # ========================================================
+
+    try:
 
         feed = feedparser.parse(
             response.content
@@ -2949,18 +3055,20 @@ def parse_google_news_feed(
             f"bozo={getattr(feed, 'bozo', False)}"
         )
 
+        # ----------------------------------------------------
+        # BOZO CHECK
+        # ----------------------------------------------------
+
         if getattr(
             feed,
             "bozo",
             False,
         ):
 
-            bozo_exception = (
-                getattr(
-                    feed,
-                    "bozo_exception",
-                    None,
-                )
+            bozo_exception = getattr(
+                feed,
+                "bozo_exception",
+                None,
             )
 
             if bozo_exception:
@@ -2971,6 +3079,10 @@ def parse_google_news_feed(
                     f"{type(bozo_exception).__name__}: "
                     f"{bozo_exception}"
                 )
+
+        # ----------------------------------------------------
+        # EMPTY FEED
+        # ----------------------------------------------------
 
         if not feed.entries:
 
@@ -2984,6 +3096,10 @@ def parse_google_news_feed(
 
         rows = []
 
+        # ====================================================
+        # PROCESS ENTRIES
+        # ====================================================
+
         for entry in feed.entries[
             :MAX_ARTICLES_PER_FEED
         ]:
@@ -2993,16 +3109,15 @@ def parse_google_news_feed(
             )
 
             if not link:
+
                 continue
 
-            published = (
-                extract_feed_date(
-                    entry
-                )
+            published = extract_feed_date(
+                entry
             )
 
-            source_value = (
-                entry.get("source")
+            source_value = entry.get(
+                "source"
             )
 
             if isinstance(
@@ -3010,11 +3125,9 @@ def parse_google_news_feed(
                 dict,
             ):
 
-                source = (
-                    source_value.get(
-                        "title",
-                        "",
-                    )
+                source = source_value.get(
+                    "title",
+                    "",
                 )
 
             else:
@@ -3054,6 +3167,10 @@ def parse_google_news_feed(
                 }
             )
 
+        # ====================================================
+        # SUCCESS
+        # ====================================================
+
         print(
             f"[RSS OK] "
             f"{query} -> "
@@ -3065,13 +3182,13 @@ def parse_google_news_feed(
     except Exception as exc:
 
         print(
-            f"[RSS ERROR] "
+            f"[RSS PARSE ERROR] "
             f"{query} -> "
-            f"{type(exc).__name__}: {exc}"
+            f"{type(exc).__name__}: "
+            f"{exc}"
         )
 
         return []
-
 
 # ============================================================
 # COLLECT
