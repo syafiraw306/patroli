@@ -6349,7 +6349,7 @@ def audit_content_duplicates() -> None:
 
             print(
                 f"MEDIA   : "
-                f"{extract_media_name(article)}"
+                f"{get_media_source(article)}"
             )
 
             print(
