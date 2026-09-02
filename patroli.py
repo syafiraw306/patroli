@@ -6940,6 +6940,84 @@ def calculate_title_similarity(title_a, title_b):
         title_a,
         title_b
     ).ratio()
+
+def get_article_source(article):
+
+    possible_fields = [
+
+        "source",
+
+        "source_name",
+
+        "media",
+
+        "media_name",
+
+        "publisher",
+
+        "nama_media"
+
+    ]
+
+    for field in possible_fields:
+
+        value = article.get(field)
+
+        if value:
+
+            return str(value).strip()
+
+    return "Unknown"
+
+
+def normalize_title(title):
+
+    if not title:
+
+        return ""
+
+    title = title.lower()
+
+    title = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        title
+    )
+
+    title = re.sub(
+        r"\s+",
+        " ",
+        title
+    ).strip()
+
+    return title
+
+def count_duplicate_titles(titles):
+
+    normalized_titles = [
+
+        normalize_title(title)
+
+        for title in titles
+
+        if title
+
+    ]
+
+    total_titles = len(
+        normalized_titles
+    )
+
+    unique_titles = len(
+        set(normalized_titles)
+    )
+
+    duplicate_count = (
+        total_titles
+        - unique_titles
+    )
+
+    return duplicate_count
     
 # ============================================================
 # EVENT DUPLICATE CLUSTERING ENGINE
@@ -6953,11 +7031,9 @@ def audit_event_quality(articles):
     print("=" * 70)
 
     print()
-    print(f"[AUDIT] Total artikel: {len(articles)}")
-
-    # --------------------------------------------------------
-    # CLUSTER EVENTS
-    # --------------------------------------------------------
+    print(
+        f"[AUDIT] Total artikel: {len(articles)}"
+    )
 
     clusters = cluster_events(articles)
 
@@ -6965,17 +7041,15 @@ def audit_event_quality(articles):
         f"[AUDIT] Total event cluster: {len(clusters)}"
     )
 
-    # --------------------------------------------------------
-    # COUNTER
-    # --------------------------------------------------------
+    high_event = 0
+    medium_event = 0
+    low_event = 0
 
-    high_quality = 0
-    medium_quality = 0
-    low_quality = 0
+    total_duplicate_titles = 0
 
-    # --------------------------------------------------------
+    # ========================================================
     # LOOP CLUSTERS
-    # --------------------------------------------------------
+    # ========================================================
 
     for cluster_index, cluster in enumerate(
         clusters,
@@ -6984,9 +7058,11 @@ def audit_event_quality(articles):
 
         print()
         print("=" * 70)
+
         print(
             f"EVENT CLUSTER #{cluster_index}"
         )
+
         print("=" * 70)
 
         cluster_size = len(cluster)
@@ -6997,10 +7073,11 @@ def audit_event_quality(articles):
         )
 
         # ----------------------------------------------------
-        # AMBIL DATA
+        # COLLECT DATA
         # ----------------------------------------------------
 
         titles = []
+
         sources = []
 
         for article in cluster:
@@ -7011,31 +7088,38 @@ def audit_event_quality(articles):
                 or ""
             )
 
-            source = (
-                article.get("source")
-                or article.get("source_name")
-                or article.get("media")
-                or ""
+            source = get_article_source(
+                article
             )
 
             if title:
+
                 titles.append(title)
 
-            if source:
-                sources.append(source)
+            if source != "Unknown":
+
+                sources.append(
+                    source.lower()
+                )
 
         # ----------------------------------------------------
         # SOURCE DIVERSITY
         # ----------------------------------------------------
 
-        unique_sources = set(
-            source.lower().strip()
-            for source in sources
-            if source
+        unique_sources = len(
+            set(sources)
         )
 
-        source_diversity = len(
-            unique_sources
+        # ----------------------------------------------------
+        # TITLE DUPLICATES
+        # ----------------------------------------------------
+
+        duplicate_titles = (
+            count_duplicate_titles(titles)
+        )
+
+        total_duplicate_titles += (
+            duplicate_titles
         )
 
         # ----------------------------------------------------
@@ -7049,9 +7133,11 @@ def audit_event_quality(articles):
             2
         ):
 
-            similarity = calculate_title_similarity(
-                titles[i],
-                titles[j]
+            similarity = (
+                calculate_title_similarity(
+                    titles[i],
+                    titles[j]
+                )
             )
 
             similarity_scores.append(
@@ -7067,77 +7153,94 @@ def audit_event_quality(articles):
 
         else:
 
-            average_similarity = 0
+            average_similarity = 0.0
 
         # ----------------------------------------------------
-        # QUALITY SCORE
+        # EVENT QUALITY SCORE
         # ----------------------------------------------------
 
-        quality_score = 0
+        event_score = 0
 
-        # Similarity score
-
+        # Similarity
         if average_similarity >= 0.80:
 
-            quality_score += 50
+            event_score += 60
 
         elif average_similarity >= 0.60:
 
-            quality_score += 35
+            event_score += 45
 
         elif average_similarity >= 0.40:
 
-            quality_score += 20
+            event_score += 25
 
         else:
 
-            quality_score += 10
+            event_score += 10
 
         # Cluster size
+        if cluster_size >= 4:
 
-        if cluster_size >= 3:
+            event_score += 20
 
-            quality_score += 25
+        elif cluster_size >= 3:
+
+            event_score += 15
 
         elif cluster_size == 2:
 
-            quality_score += 15
+            event_score += 10
 
         # Source diversity
+        if unique_sources >= 4:
 
-        if source_diversity >= 3:
+            event_score += 20
 
-            quality_score += 25
+        elif unique_sources >= 2:
 
-        elif source_diversity == 2:
+            event_score += 15
 
-            quality_score += 15
+        elif unique_sources == 1:
 
-        elif source_diversity == 1:
-
-            quality_score += 5
+            event_score += 5
 
         # ----------------------------------------------------
-        # QUALITY LEVEL
+        # EVENT QUALITY LEVEL
         # ----------------------------------------------------
 
-        if quality_score >= 80:
+        if event_score >= 80:
 
-            quality_level = "HIGH"
+            event_level = "HIGH"
 
-            high_quality += 1
+            high_event += 1
 
-        elif quality_score >= 50:
+        elif event_score >= 50:
 
-            quality_level = "MEDIUM"
+            event_level = "MEDIUM"
 
-            medium_quality += 1
+            medium_event += 1
 
         else:
 
-            quality_level = "LOW"
+            event_level = "LOW"
 
-            low_quality += 1
+            low_event += 1
+
+        # ----------------------------------------------------
+        # DATA QUALITY
+        # ----------------------------------------------------
+
+        if duplicate_titles == 0:
+
+            data_quality = "CLEAN"
+
+        elif duplicate_titles == 1:
+
+            data_quality = "WARNING"
+
+        else:
+
+            data_quality = "DUPLICATES DETECTED"
 
         # ----------------------------------------------------
         # REPORT
@@ -7145,14 +7248,14 @@ def audit_event_quality(articles):
 
         print()
 
-        print("QUALITY RESULT")
+        print("EVENT QUALITY")
 
         print(
-            f"Quality Score       : {quality_score}/100"
+            f"Event Score         : {event_score}/100"
         )
 
         print(
-            f"Quality Level       : {quality_level}"
+            f"Event Level         : {event_level}"
         )
 
         print(
@@ -7162,8 +7265,26 @@ def audit_event_quality(articles):
 
         print(
             f"Unique Sources      : "
-            f"{source_diversity}"
+            f"{unique_sources}"
         )
+
+        print()
+
+        print("DATA QUALITY")
+
+        print(
+            f"Duplicate Titles    : "
+            f"{duplicate_titles}"
+        )
+
+        print(
+            f"Database Status     : "
+            f"{data_quality}"
+        )
+
+        # ----------------------------------------------------
+        # ARTICLES
+        # ----------------------------------------------------
 
         print()
 
@@ -7184,46 +7305,72 @@ def audit_event_quality(articles):
                 or "Tanpa Judul"
             )
 
+            source = get_article_source(
+                article
+            )
+
             print(
                 f"[{index}] ID={article_id}"
             )
 
             print(title)
 
+            print(
+                f"Source: {source}"
+            )
+
             print()
 
-    # --------------------------------------------------------
+    # ========================================================
     # SUMMARY
-    # --------------------------------------------------------
+    # ========================================================
 
     print()
     print("=" * 70)
-    print("RINGKASAN AUDIT EVENT QUALITY")
+
+    print(
+        "RINGKASAN AUDIT EVENT QUALITY"
+    )
+
     print("=" * 70)
 
     print()
 
     print(
-        f"Total Cluster : {len(clusters)}"
+        f"Total Cluster             : "
+        f"{len(clusters)}"
     )
 
     print(
-        f"HIGH Quality  : {high_quality}"
+        f"HIGH Event Quality        : "
+        f"{high_event}"
     )
 
     print(
-        f"MEDIUM Quality: {medium_quality}"
+        f"MEDIUM Event Quality      : "
+        f"{medium_event}"
     )
 
     print(
-        f"LOW Quality   : {low_quality}"
+        f"LOW Event Quality         : "
+        f"{low_event}"
+    )
+
+    print(
+        f"Duplicate Titles Detected : "
+        f"{total_duplicate_titles}"
     )
 
     print()
 
     print("=" * 70)
-    print("AUDIT EVENT QUALITY SELESAI")
+
+    print(
+        "AUDIT EVENT QUALITY SELESAI"
+    )
+
     print("=" * 70)
+    
 # ============================================================
 # MAIN
 # ============================================================
