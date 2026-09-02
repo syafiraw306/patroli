@@ -9,7 +9,15 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from audit_event_duplicates import audit_event_duplicates
+from audit_event_duplicates import (
+    audit_event_duplicates,
+    cluster_events,
+    generate_event_name,
+    extract_event_keywords,
+    get_tokens,
+    normalize_text,
+    jaccard_similarity
+)
 
 
 import feedparser
@@ -6921,33 +6929,7 @@ def calculate_event_quality(
 
 def cluster_event_duplicates(articles):
 
-    """
-    Mengelompokkan artikel yang membahas event/peristiwa yang sama.
-
-    Return:
-        list cluster
-
-    Contoh:
-
-        [
-            {
-                "event": "...",
-                "articles": [...]
-            }
-        ]
-    """
-
-    clusters = []
-
-    # ========================================================
-    # LOGIKA CLUSTERING
-    # ========================================================
-
-    # PENTING:
-    # Pindahkan logika clustering yang sebelumnya ada di
-    # audit_event_duplicates() ke sini.
-    
-    return clusters
+    return cluster_events(articles)
     
 def audit_event_quality(articles):
     """
@@ -6971,7 +6953,7 @@ def audit_event_quality(articles):
     # GUNAKAN CLUSTERING EVENT YANG SUDAH ADA
     # ==========================================================
 
-    clusters = cluster_event_duplicates(
+    clusters = cluster_events(
         articles
     )
 
