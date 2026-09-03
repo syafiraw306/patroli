@@ -8567,7 +8567,8 @@ def print_event_quality_summary(
 # ============================================================
 
 def test_new_article():
-   
+
+    """
     Test end-to-end pipeline:
 
     1. Ambil database
@@ -8722,23 +8723,54 @@ def test_new_article():
             existing_title_index,
             existing_content_index,
         )
-    
+
         print(
             f"[TEST DEBUG] Dedupe result: {result}"
         )
-    
+
         should_save = result[0]
         reason = result[1]
-    
+
         print(
             f"[TEST] Should save: {should_save}"
         )
-    
+
         print(
             f"[TEST] Reason: {reason}"
         )
-        
-        
+
+    except Exception as exc:
+
+        print(
+            f"[TEST DEDUPE ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
+
+    # ========================================================
+    # VALIDATE TEST ARTICLE
+    # ========================================================
+
+    if not should_save:
+
+        print(
+            f"[TEST FAILED] Artikel test "
+            f"ditolak oleh dedupe: {reason}"
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": reason,
+        }
+
+    print(
+        "[TEST] Duplicate check berhasil."
+    )
+    
 # ============================================================
 # MAIN
 # ============================================================
