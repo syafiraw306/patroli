@@ -4787,8 +4787,6 @@ def run_once() -> Dict[str, Any]:
         (
             should_save,
             reason,
-            similarity,
-            matched_article,
         ) = should_save_article(
         
             article,
@@ -4800,6 +4798,7 @@ def run_once() -> Dict[str, Any]:
             existing_content_index,
         
         )
+
     
         # ====================================================
         # SKIP DUPLICATE
