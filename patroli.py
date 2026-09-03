@@ -9844,7 +9844,7 @@ def main() -> None:
 
         return
 
-    if args.test_telegram_alert:
+    if args.test_telegram:
         
         test_telegram_alert()
 
