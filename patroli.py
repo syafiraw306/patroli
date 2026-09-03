@@ -4838,257 +4838,333 @@ def run_once() -> Dict[str, Any]:
         Dict[str, Any],
     ] = {}
 
-    for article in valid_articles:
-
-        link = normalize_url(
-            article.get("link")
-        )
-
-        if not link:
-            continue
-
-        existing = unique_articles.get(
-            link
-        )
-
-        if existing is None:
-
-            unique_articles[link] = article
-            continue
-
-        current_content_length = len(
-            normalize_text(
-                article.get("content")
-            )
-        )
-
-        existing_content_length = len(
-            normalize_text(
-                existing.get("content")
-            )
-        )
-
-        if (
-            current_content_length
-            > existing_content_length
-        ):
-
-            unique_articles[link] = article
-
-    valid_articles = list(
-        unique_articles.values()
-    )
-
-    print(
-        f"[PATROLI] Artikel valid setelah dedupe: "
-        f"{len(valid_articles)}"
-    )
-
     # ========================================================
     # CENTRAL DEDUPE + SAVE
     # ========================================================
-
+    
+    # --------------------------------------------------------
+    # DEDUPE STATISTICS
+    # --------------------------------------------------------
+    
+    duplicate_url_count = 0
+    duplicate_title_count = 0
+    duplicate_content_count = 0
+    other_duplicate_count = 0
+    
+    valid_new_article_count = 0
+    
+    
     for article in valid_articles:
-
+    
         link = normalize_url(
             article.get("link")
         )
-
+    
         if not link:
-            continue
-
-        try:
-
-            result = should_save_article(
-
-                article,
-
-                existing_link_index,
-
-                existing_title_index,
-
-                existing_content_index,
-
+    
+            print(
+                "[SKIP] invalid_link"
             )
-
-            # -----------------------------------------------
+    
+            continue
+    
+        try:
+    
+            # ====================================================
+            # CENTRAL DUPLICATE DECISION
+            # ====================================================
+    
+            result = should_save_article(
+    
+                article,
+    
+                existing_link_index,
+    
+                existing_title_index,
+    
+                existing_content_index,
+    
+            )
+    
+            # ====================================================
             # SUPPORT RETURN 2 ATAU 4 VALUE
-            # -----------------------------------------------
-
+            # ====================================================
+    
             should_save = False
             reason = "unknown"
             similarity = None
             matched_article = None
-
+    
             if isinstance(
                 result,
                 tuple,
             ):
-
+    
                 if len(result) >= 1:
-                    should_save = result[0]
-
+    
+                    should_save = bool(
+                        result[0]
+                    )
+    
                 if len(result) >= 2:
-                    reason = result[1]
-
+    
+                    reason = (
+                        result[1]
+                        or "unknown"
+                    )
+    
                 if len(result) >= 3:
+    
                     similarity = result[2]
-
+    
                 if len(result) >= 4:
+    
                     matched_article = result[3]
-
+    
             else:
-
+    
                 print(
                     "[DEDUPE ERROR] "
                     "Return should_save_article "
                     "bukan tuple."
                 )
-
+    
                 save_failed += 1
+    
                 continue
-
-            # -----------------------------------------------
-            # DUPLICATE
-            # -----------------------------------------------
-
+    
+            # ====================================================
+            # DUPLICATE STATISTICS
+            # ====================================================
+    
             if not should_save:
-
+    
+                # -----------------------------------------------
+                # DUPLICATE URL
+                # -----------------------------------------------
+    
+                if reason == "duplicate_url":
+    
+                    duplicate_url_count += 1
+    
+                # -----------------------------------------------
+                # DUPLICATE TITLE
+                # -----------------------------------------------
+    
+                elif reason in {
+    
+                    "duplicate_title",
+                    "duplicate_title_media",
+    
+                }:
+    
+                    duplicate_title_count += 1
+    
+                # -----------------------------------------------
+                # DUPLICATE CONTENT
+                # -----------------------------------------------
+    
+                elif reason in {
+    
+                    "duplicate_content",
+                    "duplicate_content_media",
+    
+                }:
+    
+                    duplicate_content_count += 1
+    
+                # -----------------------------------------------
+                # OTHER REASON
+                # -----------------------------------------------
+    
+                else:
+    
+                    other_duplicate_count += 1
+    
+                # -----------------------------------------------
+                # DEBUG OUTPUT
+                # -----------------------------------------------
+    
                 print()
-
+    
                 print(
                     f"[SKIP] {reason}"
                 )
-
+    
                 print(
                     f"TITLE: "
                     f"{article.get('title', '')}"
                 )
-
+    
                 print(
                     f"LINK: "
                     f"{link}"
                 )
-
+    
                 if similarity is not None:
-
+    
                     print(
                         f"SIMILARITY: "
                         f"{similarity}"
                     )
-
-                if matched_article:
-
+    
+                if (
+                    isinstance(
+                        matched_article,
+                        dict,
+                    )
+                ):
+    
                     print(
                         "[MATCHED] "
                         f"{matched_article.get('title', '')}"
                     )
-
+    
                 continue
-
+    
+            # ====================================================
+            # ARTICLE PASSED DEDUPE
+            # ====================================================
+    
+            valid_new_article_count += 1
+    
+            print()
+    
+            print(
+                "[DEDUPE PASS] "
+                f"{article.get('title', '')[:100]}"
+            )
+    
             # ====================================================
             # SAVE ARTICLE
             # ====================================================
-
+    
             saved = upsert_article(
                 article
             )
-
+    
             if saved is None:
-
+    
                 save_failed += 1
-
+    
                 print(
                     f"[SAVE ERROR] "
                     f"{link}"
                 )
-
+    
                 continue
-
+    
             saved_count += 1
-
-            new_articles.append(
+    
+            # ====================================================
+            # ADD TO NEW ARTICLES
+            #
+            # Hanya artikel yang BERHASIL disimpan
+            # yang masuk ke new_articles.
+            # ====================================================
+    
+            saved_article = (
+    
                 saved
-                if isinstance(saved, dict)
+    
+                if isinstance(
+                    saved,
+                    dict,
+                )
+    
                 else article
             )
-
+    
+            new_articles.append(
+                saved_article
+            )
+    
             # ====================================================
-            # UPDATE INDEX IMMEDIATELY
+            # UPDATE DUPLICATE INDEX IMMEDIATELY
+            #
+            # Supaya artikel berikutnya dalam run yang sama
+            # tidak bisa disimpan sebagai duplicate.
             # ====================================================
-
+    
             existing_link_index.add(
                 link
             )
-
+    
             # ------------------------------------------------
-            # TITLE INDEX
+            # UPDATE TITLE INDEX
             # ------------------------------------------------
-
+    
             try:
-
-                updated_articles = [
-                    article
-                ]
-
+    
                 temp_title_index = (
                     build_existing_title_index(
-                        updated_articles
+                        [saved_article]
                     )
                 )
-
+    
                 for key, value in (
                     temp_title_index.items()
                 ):
-
-                    existing_title_index[key] = (
-                        value
-                    )
-
-            except Exception:
-
-                pass
-
+    
+                    existing_title_index[
+                        key
+                    ] = value
+    
+            except Exception as exc:
+    
+                print(
+                    "[DEDUPE INDEX WARNING] "
+                    f"Title index: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+    
             # ------------------------------------------------
-            # CONTENT INDEX
+            # UPDATE CONTENT INDEX
             # ------------------------------------------------
-
+    
             try:
-
+    
                 temp_content_index = (
                     build_existing_content_index(
-                        [article]
+                        [saved_article]
                     )
                 )
-
+    
                 for key, value in (
                     temp_content_index.items()
                 ):
-
-                    existing_content_index[key] = (
-                        value
-                    )
-
-            except Exception:
-
-                pass
-
+    
+                    existing_content_index[
+                        key
+                    ] = value
+    
+            except Exception as exc:
+    
+                print(
+                    "[DEDUPE INDEX WARNING] "
+                    f"Content index: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+    
+            # ====================================================
+            # SUCCESS
+            # ====================================================
+    
             print(
                 f"[SAVE SUCCESS] "
-                f"{article.get('title', '')[:100]}"
+                f"{saved_article.get('title', '')[:100]}"
             )
-
+    
         except Exception as exc:
-
+    
             save_failed += 1
-
+    
             print(
                 f"[SAVE ERROR] "
                 f"{link} -> "
                 f"{type(exc).__name__}: "
                 f"{exc}"
             )
-
     # ========================================================
     # SAVE SUMMARY
     # ========================================================
@@ -5108,6 +5184,48 @@ def run_once() -> Dict[str, Any]:
         f"[DATABASE] Artikel baru: "
         f"{len(new_articles)}"
     )
+    
+    # ========================================================
+    # DEDUPE SUMMARY
+    # ========================================================
+    
+    print()
+    
+    print("=" * 70)
+    print("DEDUPE SUMMARY")
+    print("=" * 70)
+    
+    print(
+        f"[DEDUPE] Duplicate URL      : "
+        f"{duplicate_url_count}"
+    )
+    
+    print(
+        f"[DEDUPE] Duplicate Title    : "
+        f"{duplicate_title_count}"
+    )
+    
+    print(
+        f"[DEDUPE] Duplicate Content  : "
+        f"{duplicate_content_count}"
+    )
+    
+    print(
+        f"[DEDUPE] Other Skip Reason  : "
+        f"{other_duplicate_count}"
+    )
+    
+    print(
+        f"[DEDUPE] Lolos Dedupe       : "
+        f"{valid_new_article_count}"
+    )
+    
+    print(
+        f"[DEDUPE] Artikel Baru Saved : "
+        f"{len(new_articles)}"
+    )
+    
+    print("=" * 70)
 
     # ========================================================
     # TELEGRAM NOTIFICATION
