@@ -8770,7 +8770,44 @@ def test_new_article():
     print(
         "[TEST] Duplicate check berhasil."
     )
-    
+
+    # ========================================================
+    # SAVE TEST ARTICLE
+    # ========================================================
+
+    print()
+
+    print(
+        "[TEST] Menyimpan artikel test..."
+    )
+
+    try:
+
+        save_article(
+            test_article
+        )
+
+        saved_count += 1
+
+        print(
+            "[TEST SAVE SUCCESS] "
+            f"{test_article['title']}"
+        )
+
+    except Exception as exc:
+
+        save_failed += 1
+
+        print(
+            f"[TEST SAVE ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
+        
 # ============================================================
 # MAIN
 # ============================================================
