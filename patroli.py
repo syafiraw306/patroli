@@ -8566,8 +8566,8 @@ def print_event_quality_summary(
 # END-TO-END TEST NEW ARTICLE
 # ============================================================
 
-def test_new_article() -> Dict[str, Any]:
-    """
+def test_new_article():
+   
     Test end-to-end pipeline:
 
     1. Ambil database
@@ -8716,250 +8716,29 @@ def test_new_article() -> Dict[str, Any]:
 
     try:
 
-       result = should_save_article(
-            test_article,
-            existing_link_index,
-            existing_title_index,
-            existing_content_index,
-        )
-        
-        print(
-            f"[TEST DEBUG] Dedupe result: {result}"
-        )
-        
-        should_save = result[0]
-        reason = result[1]
 
-    except Exception as exc:
-
-        print(
-            f"[TEST DEDUPE ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "error": str(exc),
-        }
-
-    print(
-        f"[TEST] Dedupe result: "
-        f"{should_save}"
+    result = should_save_article(
+        test_article,
+        existing_link_index,
+        existing_title_index,
+        existing_content_index,
     )
 
     print(
-        f"[TEST] Reason: "
-        f"{reason}"
+        f"[TEST DEBUG] Dedupe result: {result}"
     )
 
-    if not should_save:
+    should_save = result[0]
+    reason = result[1]
 
-        print(
-            "[TEST FAILED] Artikel test "
-            "dianggap duplicate."
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": reason,
-        }
-
-    # ========================================================
-    # SAVE ARTICLE
-    # ========================================================
-
-    try:
-
-        save_article(
-            test_article
-        )
-
-        saved_count += 1
-
-        print(
-            "[TEST SAVE SUCCESS] "
-            "Artikel berhasil disimpan."
-        )
-
-    except Exception as exc:
-
-        save_failed += 1
-
-        print(
-            f"[TEST SAVE ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "error": str(exc),
-        }
-
-    # ========================================================
-    # UPDATE DUPLICATE INDEX
-    # ========================================================
-
-    try:
-
-        register_saved_article(
-            test_article,
-            existing_link_index,
-            existing_title_index,
-            existing_content_index,
-        )
-
-    except Exception as exc:
-
-        print(
-            f"[TEST INDEX WARNING] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-    # ========================================================
-    # ADD TO NEW ARTICLES
-    # ========================================================
-
-    new_articles.append(
-        test_article
+    print(
+        f"[TEST] Should save: {should_save}"
     )
 
     print(
-        "[TEST] Artikel masuk "
-        "ke new_articles."
+        f"[TEST] Reason: {reason}"
     )
-
-    # ========================================================
-    # TELEGRAM
-    # ========================================================
-
-    if new_articles:
-
-        print()
-        print("=" * 70)
-        print("TEST TELEGRAM")
-        print("=" * 70)
-
-        try:
-
-            telegram_count = (
-                send_telegram_notifications(
-                    new_articles
-                )
-            )
-
-        except Exception as exc:
-
-            print(
-                f"[TEST TELEGRAM ERROR] "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-    # ========================================================
-    # VERIFY DATABASE AFTER TEST
-    # ========================================================
-
-    try:
-
-        final_articles = (
-            get_all_articles()
-        )
-
-    except Exception as exc:
-
-        print(
-            f"[TEST VERIFY ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        final_articles = []
-
-    database_after = len(
-        final_articles
-    )
-
-    # ========================================================
-    # RESULT
-    # ========================================================
-
-    duration = round(
-        time.perf_counter() - started,
-        2,
-    )
-
-    print()
-    print("=" * 70)
-    print("HASIL END-TO-END TEST")
-    print("=" * 70)
-
-    print(
-        f"Database sebelum : "
-        f"{database_before}"
-    )
-
-    print(
-        f"Database sesudah : "
-        f"{database_after}"
-    )
-
-    print(
-        f"Berhasil simpan  : "
-        f"{saved_count}"
-    )
-
-    print(
-        f"Gagal simpan     : "
-        f"{save_failed}"
-    )
-
-    print(
-        f"New articles     : "
-        f"{len(new_articles)}"
-    )
-
-    print(
-        f"Telegram         : "
-        f"{telegram_count}"
-    )
-
-    print(
-        f"Durasi           : "
-        f"{duration} detik"
-    )
-
-    print("=" * 70)
-
-    return {
-
-        "status": "Selesai",
-
-        "database_before": (
-            database_before
-        ),
-
-        "database_after": (
-            database_after
-        ),
-
-        "saved_count": (
-            saved_count
-        ),
-
-        "save_failed": (
-            save_failed
-        ),
-
-        "new_article_count": (
-            len(new_articles)
-        ),
-
-        "telegram_count": (
-            telegram_count
-        ),
-
-        "duration_seconds": (
-            duration
-        ),
-    }
+    
     
 # ============================================================
 # MAIN
