@@ -9765,7 +9765,7 @@ def main() -> None:
         ),
     )
 
-    parse.add_argument(
+    parser.add_argument(
         "--test-telegram",
         action="store_true",
         help=(
