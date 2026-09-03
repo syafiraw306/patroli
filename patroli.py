@@ -23,7 +23,7 @@ from audit_event_duplicates import (
     jaccard_similarity
 )
 
-
+import uuid
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -8844,9 +8844,10 @@ def test_new_article():
         ),
 
         "content": (
-            f"Artikel testing Patroli Siber "
-            f"untuk end to end pipeline "
-            f"{test_timestamp}."
+            f"END TO END TEST ARTICLE UNIQUE ID {test_timestamp}. "
+            f"Pipeline verification for Patroli Siber. "
+            f"Random test marker: TEST-{test_timestamp}-"
+            f"{uuid.uuid4().hex}."
         ),
 
         # Field ini boleh digunakan selama pipeline,
