@@ -8200,9 +8200,8 @@ def should_save_article(
         return (
             False,
             "duplicate_url",
-            0.0,
-            None,
         )
+
 
     # ========================================================
     # 2. DUPLICATE TITLE + SAME MEDIA
@@ -8216,34 +8215,27 @@ def should_save_article(
         return (
             False,
             "duplicate_title_same_media",
-            0.0,
-            None,
         )
+
 
     # ========================================================
     # 3. DUPLICATE CONTENT
     # ========================================================
 
-    (
-        is_duplicate,
-        similarity,
-        matched_article,
-    ) = is_duplicate_content(
-
+    content_result = is_duplicate_content(
         article,
-
         existing_content_index,
-
     )
+
+    is_duplicate = content_result[0]
 
     if is_duplicate:
 
         return (
             False,
             "duplicate_content",
-            similarity,
-            matched_article,
         )
+
 
     # ========================================================
     # 4. VALID ARTICLE
@@ -8252,8 +8244,6 @@ def should_save_article(
     return (
         True,
         "valid",
-        similarity,
-        matched_article,
     )
     
 def register_saved_article(
