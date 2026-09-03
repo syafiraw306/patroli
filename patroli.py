@@ -8716,14 +8716,19 @@ def test_new_article() -> Dict[str, Any]:
 
     try:
 
-        should_save, reason = (
-            should_save_article(
-                test_article,
-                existing_link_index,
-                existing_title_index,
-                existing_content_index,
-            )
+       result = should_save_article(
+            test_article,
+            existing_link_index,
+            existing_title_index,
+            existing_content_index,
         )
+        
+        print(
+            f"[TEST DEBUG] Dedupe result: {result}"
+        )
+
+        should_save = result[0]
+        reason = result[1]
 
     except Exception as exc:
 
