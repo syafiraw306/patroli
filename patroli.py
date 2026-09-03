@@ -8578,8 +8578,7 @@ def test_new_article():
     5. Simpan artikel
     6. Update duplicate index
     7. Tambahkan ke new_articles
-    8. Kirim Telegram
-    9. Verifikasi database akhir
+    8. Verifikasi database akhir
     """
 
     print()
@@ -8595,7 +8594,6 @@ def test_new_article():
 
     saved_count = 0
     save_failed = 0
-    telegram_count = 0
 
     new_articles = []
 
@@ -8690,6 +8688,9 @@ def test_new_article():
             f"{test_timestamp}."
         ),
 
+        # Field ini boleh digunakan selama pipeline,
+        # tetapi upsert_article() jangan mengirimnya
+        # ke Supabase jika kolom tidak tersedia.
         "rss_description": (
             f"Testing pipeline Patroli Siber "
             f"{test_timestamp}"
@@ -8697,6 +8698,7 @@ def test_new_article():
     }
 
     print()
+
     print(
         "[TEST] Artikel test dibuat:"
     )
@@ -8725,18 +8727,21 @@ def test_new_article():
         )
 
         print(
-            f"[TEST DEBUG] Dedupe result: {result}"
+            f"[TEST DEBUG] Dedupe result: "
+            f"{result}"
         )
 
         should_save = result[0]
         reason = result[1]
 
         print(
-            f"[TEST] Should save: {should_save}"
+            f"[TEST] Should save: "
+            f"{should_save}"
         )
 
         print(
-            f"[TEST] Reason: {reason}"
+            f"[TEST] Reason: "
+            f"{reason}"
         )
 
     except Exception as exc:
@@ -8783,9 +8788,33 @@ def test_new_article():
 
     try:
 
-        upsert_article(
+        save_result = upsert_article(
             test_article
         )
+
+        # ----------------------------------------------------
+        # CHECK SAVE RESULT
+        # ----------------------------------------------------
+
+        print(
+            f"[TEST DEBUG] Save result: "
+            f"{save_result}"
+        )
+
+        # Jika fungsi mengembalikan False
+        if save_result is False:
+
+            save_failed += 1
+
+            print(
+                "[TEST SAVE FAILED] "
+                "upsert_article() mengembalikan False."
+            )
+
+            return {
+                "status": "Gagal",
+                "reason": "save_failed",
+            }
 
         saved_count += 1
 
@@ -8807,6 +8836,197 @@ def test_new_article():
             "status": "Gagal",
             "error": str(exc),
         }
+
+    # ========================================================
+    # UPDATE DUPLICATE INDEX
+    # ========================================================
+
+    saved_link = normalize_url(
+        test_article.get("link")
+    )
+
+    if saved_link:
+
+        existing_link_index.add(
+            saved_link
+        )
+
+    updated_articles = (
+        existing_articles
+        + [test_article]
+    )
+
+    existing_title_index = (
+        build_existing_title_index(
+            updated_articles
+        )
+    )
+
+    existing_content_index = (
+        build_existing_content_index(
+            updated_articles
+        )
+    )
+
+    print(
+        "[TEST] Duplicate index berhasil diperbarui."
+    )
+
+    # ========================================================
+    # ADD TO NEW ARTICLES
+    # ========================================================
+
+    new_articles.append(
+        test_article
+    )
+
+    print(
+        "[TEST] Artikel berhasil ditambahkan "
+        "ke new_articles."
+    )
+
+    # ========================================================
+    # VERIFY DATABASE AFTER TEST
+    # ========================================================
+
+    print()
+
+    print(
+        "[TEST] Verifikasi database akhir..."
+    )
+
+    try:
+
+        final_articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[TEST VERIFY ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
+
+    database_after = len(
+        final_articles
+    )
+
+    article_found = False
+
+    for article in final_articles:
+
+        article_link = normalize_url(
+            article.get("link")
+        )
+
+        if article_link == saved_link:
+
+            article_found = True
+
+            break
+
+    duration = round(
+        time.perf_counter()
+        - started,
+        2,
+    )
+
+    # ========================================================
+    # TEST SUMMARY
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print("END-TO-END TEST SUMMARY")
+    print("=" * 70)
+
+    print(
+        f"Database sebelum      : "
+        f"{database_before}"
+    )
+
+    print(
+        f"Database sesudah      : "
+        f"{database_after}"
+    )
+
+    print(
+        f"Artikel tersimpan     : "
+        f"{article_found}"
+    )
+
+    print(
+        f"Saved count           : "
+        f"{saved_count}"
+    )
+
+    print(
+        f"Save failed           : "
+        f"{save_failed}"
+    )
+
+    print(
+        f"New articles          : "
+        f"{len(new_articles)}"
+    )
+
+    print(
+        f"Durasi                : "
+        f"{duration} detik"
+    )
+
+    print("=" * 70)
+
+    # ========================================================
+    # FINAL DECISION
+    # ========================================================
+
+    if not article_found:
+
+        print(
+            "[TEST FAILED] Artikel tidak ditemukan "
+            "di database setelah upsert."
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": "article_not_found_after_save",
+            "database_before": database_before,
+            "database_after": database_after,
+        }
+
+    if database_after < database_before:
+
+        print(
+            "[TEST FAILED] Jumlah database "
+            "berkurang secara tidak normal."
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": "database_count_decreased",
+        }
+
+    print(
+        "[TEST SUCCESS] END-TO-END TEST BERHASIL."
+    )
+
+    return {
+        "status": "Sukses",
+        "database_before": database_before,
+        "database_after": database_after,
+        "article_found": article_found,
+        "saved_count": saved_count,
+        "save_failed": save_failed,
+        "new_article_count": len(
+            new_articles
+        ),
+        "duration_seconds": duration,
+    }
         
 # ============================================================
 # MAIN
