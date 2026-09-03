@@ -8572,6 +8572,399 @@ def print_event_quality_summary(
 
     print()
     
+# ============================================================
+# END-TO-END TEST NEW ARTICLE
+# ============================================================
+
+def test_new_article() -> Dict[str, Any]:
+    """
+    Test end-to-end pipeline:
+
+    1. Ambil database
+    2. Build duplicate index
+    3. Buat artikel test unik
+    4. Check duplicate
+    5. Simpan artikel
+    6. Update duplicate index
+    7. Tambahkan ke new_articles
+    8. Kirim Telegram
+    9. Verifikasi database akhir
+    """
+
+    print()
+    print("=" * 70)
+    print("END-TO-END TEST NEW ARTICLE")
+    print("=" * 70)
+
+    started = time.perf_counter()
+
+    # ========================================================
+    # COUNTERS
+    # ========================================================
+
+    saved_count = 0
+    save_failed = 0
+    telegram_count = 0
+
+    new_articles = []
+
+    # ========================================================
+    # GET DATABASE BEFORE TEST
+    # ========================================================
+
+    try:
+
+        existing_articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[TEST DATABASE ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
+
+    database_before = len(
+        existing_articles
+    )
+
+    print(
+        f"[TEST] Database sebelum: "
+        f"{database_before}"
+    )
+
+    # ========================================================
+    # BUILD DUPLICATE INDEX
+    # ========================================================
+
+    existing_link_index = set()
+
+    for article in existing_articles:
+
+        link = normalize_url(
+            article.get("link")
+        )
+
+        if link:
+
+            existing_link_index.add(
+                link
+            )
+
+    existing_title_index = (
+        build_existing_title_index(
+            existing_articles
+        )
+    )
+
+    existing_content_index = (
+        build_existing_content_index(
+            existing_articles
+        )
+    )
+
+    # ========================================================
+    # CREATE UNIQUE TEST ARTICLE
+    # ========================================================
+
+    test_timestamp = datetime.now().strftime(
+        "%Y%m%d%H%M%S"
+    )
+
+    test_article = {
+
+        "title": (
+            f"TEST PATROLI SIBER "
+            f"END TO END {test_timestamp}"
+        ),
+
+        "link": (
+            f"https://example.com/"
+            f"patroli-test-{test_timestamp}"
+        ),
+
+        "source": "Patroli Siber Test",
+
+        "published_date": (
+            datetime.now().isoformat()
+        ),
+
+        "content": (
+            f"Artikel testing Patroli Siber "
+            f"untuk end to end pipeline "
+            f"{test_timestamp}."
+        ),
+
+        "rss_description": (
+            f"Testing pipeline Patroli Siber "
+            f"{test_timestamp}"
+        ),
+    }
+
+    print()
+    print(
+        "[TEST] Artikel test dibuat:"
+    )
+
+    print(
+        f"[TEST] TITLE: "
+        f"{test_article['title']}"
+    )
+
+    print(
+        f"[TEST] LINK : "
+        f"{test_article['link']}"
+    )
+
+    # ========================================================
+    # DUPLICATE CHECK
+    # ========================================================
+
+    try:
+
+        should_save, reason = (
+            should_save_article(
+                test_article,
+                existing_link_index,
+                existing_title_index,
+                existing_content_index,
+            )
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[TEST DEDUPE ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
+
+    print(
+        f"[TEST] Dedupe result: "
+        f"{should_save}"
+    )
+
+    print(
+        f"[TEST] Reason: "
+        f"{reason}"
+    )
+
+    if not should_save:
+
+        print(
+            "[TEST FAILED] Artikel test "
+            "dianggap duplicate."
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": reason,
+        }
+
+    # ========================================================
+    # SAVE ARTICLE
+    # ========================================================
+
+    try:
+
+        save_article(
+            test_article
+        )
+
+        saved_count += 1
+
+        print(
+            "[TEST SAVE SUCCESS] "
+            "Artikel berhasil disimpan."
+        )
+
+    except Exception as exc:
+
+        save_failed += 1
+
+        print(
+            f"[TEST SAVE ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "error": str(exc),
+        }
+
+    # ========================================================
+    # UPDATE DUPLICATE INDEX
+    # ========================================================
+
+    try:
+
+        register_saved_article(
+            test_article,
+            existing_link_index,
+            existing_title_index,
+            existing_content_index,
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[TEST INDEX WARNING] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    # ========================================================
+    # ADD TO NEW ARTICLES
+    # ========================================================
+
+    new_articles.append(
+        test_article
+    )
+
+    print(
+        "[TEST] Artikel masuk "
+        "ke new_articles."
+    )
+
+    # ========================================================
+    # TELEGRAM
+    # ========================================================
+
+    if new_articles:
+
+        print()
+        print("=" * 70)
+        print("TEST TELEGRAM")
+        print("=" * 70)
+
+        try:
+
+            telegram_count = (
+                send_telegram_notifications(
+                    new_articles
+                )
+            )
+
+        except Exception as exc:
+
+            print(
+                f"[TEST TELEGRAM ERROR] "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    # ========================================================
+    # VERIFY DATABASE AFTER TEST
+    # ========================================================
+
+    try:
+
+        final_articles = (
+            get_all_articles()
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[TEST VERIFY ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        final_articles = []
+
+    database_after = len(
+        final_articles
+    )
+
+    # ========================================================
+    # RESULT
+    # ========================================================
+
+    duration = round(
+        time.perf_counter() - started,
+        2,
+    )
+
+    print()
+    print("=" * 70)
+    print("HASIL END-TO-END TEST")
+    print("=" * 70)
+
+    print(
+        f"Database sebelum : "
+        f"{database_before}"
+    )
+
+    print(
+        f"Database sesudah : "
+        f"{database_after}"
+    )
+
+    print(
+        f"Berhasil simpan  : "
+        f"{saved_count}"
+    )
+
+    print(
+        f"Gagal simpan     : "
+        f"{save_failed}"
+    )
+
+    print(
+        f"New articles     : "
+        f"{len(new_articles)}"
+    )
+
+    print(
+        f"Telegram         : "
+        f"{telegram_count}"
+    )
+
+    print(
+        f"Durasi           : "
+        f"{duration} detik"
+    )
+
+    print("=" * 70)
+
+    return {
+
+        "status": "Selesai",
+
+        "database_before": (
+            database_before
+        ),
+
+        "database_after": (
+            database_after
+        ),
+
+        "saved_count": (
+            saved_count
+        ),
+
+        "save_failed": (
+            save_failed
+        ),
+
+        "new_article_count": (
+            len(new_articles)
+        ),
+
+        "telegram_count": (
+            telegram_count
+        ),
+
+        "duration_seconds": (
+            duration
+        ),
+    }
     
 # ============================================================
 # MAIN
@@ -8678,6 +9071,15 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--test-new-article",
+        action="store_true",
+        help=(
+            "tes artikel baru"
+        ),
+    )
+
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -8739,6 +9141,12 @@ def main() -> None:
         articles = get_all_articles()
         
         audit_event_quality(articles)
+
+        return
+
+    if args.test_new_article:
+        
+        test_new_article()
 
         return
 
