@@ -4323,16 +4323,29 @@ def telegram_text(
         f"{link}"
     )
 
-
 def send_alert_if_needed(
     article: Dict[str, Any],
 ) -> bool:
     """
-    Kirim semua artikel baru ke Telegram.
+    Mengirim alert Telegram hanya jika:
 
-    Kategori dan prioritas tetap ditampilkan
-    pada isi pesan Telegram.
+    1. Artikel adalah artikel baru
+       (fungsi ini dipanggil hanya untuk new_articles).
+
+    2. Kategori artikel adalah:
+       - Negatif Kuat
+       - Perlu Penanganan
+
+    3. Tanggal artikel berada dalam bulan
+       dan tahun berjalan.
+
+    Artikel yang tidak memenuhi syarat
+    tidak akan dikirim ke Telegram.
     """
+
+    # ========================================================
+    # TELEGRAM ENABLED CHECK
+    # ========================================================
 
     if not telegram_enabled():
 
@@ -4343,6 +4356,138 @@ def send_alert_if_needed(
         )
 
         return False
+
+    # ========================================================
+    # CATEGORY CHECK
+    # ========================================================
+
+    allowed_categories = {
+        "Negatif Kuat",
+        "Perlu Penanganan",
+    }
+
+    category = normalize_text(
+        article.get(
+            "category"
+        )
+    )
+
+    if category not in allowed_categories:
+
+        print(
+            "[TELEGRAM SKIP] "
+            f"Kategori tidak dikirim: "
+            f"{category or 'Unknown'}"
+        )
+
+        return False
+
+    # ========================================================
+    # DATE CHECK
+    #
+    # Hanya artikel dalam bulan berjalan.
+    # ========================================================
+
+    published_value = article.get(
+        "published_date"
+    )
+
+    if not published_value:
+
+        print(
+            "[TELEGRAM SKIP] "
+            "published_date kosong."
+        )
+
+        return False
+
+    try:
+
+        # Jika sudah datetime
+        if isinstance(
+            published_value,
+            datetime,
+        ):
+
+            published_date = (
+                published_value
+            )
+
+        else:
+
+            published_text = str(
+                published_value
+            ).strip()
+
+            # Handle ISO format dengan Z
+            published_text = (
+                published_text.replace(
+                    "Z",
+                    "+00:00",
+                )
+            )
+
+            published_date = (
+                datetime.fromisoformat(
+                    published_text
+                )
+            )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+
+        print(
+            "[TELEGRAM SKIP] "
+            f"Format tanggal tidak valid: "
+            f"{published_value}"
+        )
+
+        return False
+
+    # ========================================================
+    # CURRENT MONTH CHECK
+    # ========================================================
+
+    now = datetime.now()
+
+    if (
+        published_date.year != now.year
+        or published_date.month != now.month
+    ):
+
+        print(
+            "[TELEGRAM SKIP] "
+            "Artikel bukan dari bulan berjalan. "
+            f"published={published_date.strftime('%Y-%m-%d')} "
+            f"current={now.strftime('%Y-%m')}"
+        )
+
+        return False
+
+    # ========================================================
+    # SEND TELEGRAM
+    # ========================================================
+
+    print(
+        "[TELEGRAM] Mengirim artikel baru..."
+    )
+
+    print(
+        f"[TELEGRAM] TITLE: "
+        f"{article.get('title')}"
+    )
+
+    print(
+        f"[TELEGRAM] CATEGORY: "
+        f"{category}"
+    )
+
+    print(
+        f"[TELEGRAM] DATE: "
+        f"{published_date.strftime('%Y-%m-%d')}"
+    )
 
     result = send_telegram_message(
         telegram_text(
@@ -4365,7 +4510,7 @@ def send_alert_if_needed(
         )
 
     return result
-
+    
 # ============================================================
 # RECLASSIFY ALL
 # ============================================================
@@ -4965,55 +5110,49 @@ def run_once() -> Dict[str, Any]:
     )
 
     # ========================================================
-    # TELEGRAM
+    # TELEGRAM NOTIFICATION
     # ========================================================
-
-    if new_articles:
-
-        if telegram_enabled():
-
-            print(
-                f"[TELEGRAM] Artikel baru: "
-                f"{len(new_articles)}"
-            )
-
-            for article in new_articles:
-
-                try:
-
-                    sent = send_alert_if_needed(
-                        article
-                    )
-
-                    if sent:
-
-                        telegram_count += 1
-
-                        print(
-                            "[TELEGRAM] Terkirim: "
-                            f"{article.get('title', '')[:100]}"
-                        )
-
-                except Exception as exc:
-
-                    print(
-                        f"[TELEGRAM ERROR] "
-                        f"{type(exc).__name__}: "
-                        f"{exc}"
-                    )
-
-        else:
-
-            print(
-                "[TELEGRAM] Tidak aktif."
-            )
-
-    else:
-
+    
+    telegram_count = 0
+    telegram_skipped = 0
+    
+    if not new_articles:
+    
         print(
-            "[TELEGRAM] Tidak ada artikel baru."
+            "[TELEGRAM] Tidak ada artikel baru "
+            "untuk diproses."
         )
-
+    
+    else:
+    
+        print(
+            f"[TELEGRAM] Total artikel baru: "
+            f"{len(new_articles)}"
+        )
+    
+        for article in new_articles:
+    
+            sent = send_alert_if_needed(
+                article
+            )
+    
+            if sent:
+    
+                telegram_count += 1
+    
+            else:
+    
+                telegram_skipped += 1
+    
+    print(
+        f"[TELEGRAM] Berhasil dikirim: "
+        f"{telegram_count}"
+    )
+    
+    print(
+        f"[TELEGRAM] Tidak dikirim/skipped: "
+        f"{telegram_skipped}"
+    )
     # ========================================================
     # FAST CLASSIFICATION COUNT
     #
