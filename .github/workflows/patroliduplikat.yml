@@ -33,6 +33,7 @@ on:
           - audit-event-duplicates
           - audit-event-quality
           - test-new-article
+          - test-telegram
 
 jobs:
   patroli:
@@ -137,6 +138,10 @@ jobs:
             elif [ "${{ inputs.mode }}" = "test-new-article" ]; then
               echo "Menjalankan test new article..."
               python patroli.py --test-new-article
+
+            elif [ "${{ inputs.mode }}" = "test-telegram" ]; then
+              echo "Menjalankan test alert telegram..."
+              python patroli.py --test-telegram
               
             else
           
