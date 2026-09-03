@@ -280,33 +280,79 @@ def clean_article_payload(
     """
     Membersihkan payload artikel sebelum dikirim ke Supabase.
 
-    Hanya kolom yang memang dikenal/berasal dari patroli.py
-    diproses secara khusus.
+    Hanya data yang sesuai dengan kolom tabel articles
+    yang dikirim ke Supabase.
 
-    Kolom 'keywords' sengaja dibuang karena belum tersedia
-    pada tabel articles saat ini.
+    Field sementara dari RSS dibuang.
     """
+
+    # ========================================================
+    # COPY DATA
+    # ========================================================
 
     data = dict(article or {})
 
+    # ========================================================
+    # CLEAN TEXT
+    # ========================================================
+
     if "title" in data:
-        data["title"] = clean_html(data.get("title"))
+
+        data["title"] = clean_html(
+            data.get("title")
+        )
 
     if "content" in data:
-        data["content"] = clean_html(data.get("content"))
+
+        data["content"] = clean_html(
+            data.get("content")
+        )
 
     if "summary" in data:
-        data["summary"] = clean_html(data.get("summary"))
+
+        data["summary"] = clean_html(
+            data.get("summary")
+        )
+
+    # ========================================================
+    # NORMALIZE LINK
+    # ========================================================
 
     if "link" in data:
-        data["link"] = normalize_url(data.get("link"))
 
-    # Kolom belum ada di tabel articles
-    data.pop("keywords", None)
+        data["link"] = normalize_url(
+            data.get("link")
+        )
+
+    # ========================================================
+    # REMOVE TEMPORARY / UNKNOWN COLUMNS
+    # ========================================================
+
+    # Tidak ada di tabel articles
+    data.pop(
+        "keywords",
+        None
+    )
+
+    # Field sementara dari Google News RSS
+    # Tidak ada di tabel articles
+    data.pop(
+        "rss_description",
+        None
+    )
+
+    # Field internal jika pernah ikut terbawa
+    data.pop(
+        "_candidate_score",
+        None
+    )
+
+    data.pop(
+        "_description_length",
+        None
+    )
 
     return data
-
-
 # ============================================================
 # TIME
 # ============================================================
@@ -519,30 +565,50 @@ def article_exists(
 def upsert_article(
     article: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
+
     """
     Insert artikel baru atau update artikel lama.
 
     Konflik ditentukan oleh kolom:
         link
-
-    Catatan:
-    Supabase/PostgreSQL harus memiliki UNIQUE constraint
-    pada kolom link agar on_conflict='link' bekerja dengan
-    benar.
     """
 
-    data = clean_article_payload(article)
+    # ========================================================
+    # CLEAN PAYLOAD
+    # ========================================================
+
+    data = clean_article_payload(
+        article
+    )
+
+    # ========================================================
+    # HAPUS FIELD YANG TIDAK ADA DI DATABASE
+    # ========================================================
+
+    data.pop(
+        "rss_description",
+        None
+    )
+
+    # ========================================================
+    # VALIDATE LINK
+    # ========================================================
 
     normalized_link = normalize_url(
         data.get("link")
     )
 
     if not normalized_link:
+
         raise ValueError(
             "Artikel tidak memiliki link yang valid."
         )
 
     data["link"] = normalized_link
+
+    # ========================================================
+    # TIMESTAMP
+    # ========================================================
 
     current_time = now_iso()
 
@@ -553,7 +619,12 @@ def upsert_article(
 
     data["updated_at"] = current_time
 
+    # ========================================================
+    # UPSERT SUPABASE
+    # ========================================================
+
     try:
+
         response = (
             get_supabase()
             .table("articles")
@@ -566,18 +637,41 @@ def upsert_article(
 
         rows = response.data or []
 
+        # ====================================================
+        # SUCCESS
+        # ====================================================
+
         if rows:
+
+            print(
+                "[SUPABASE UPSERT SUCCESS] "
+                f"link={normalized_link}"
+            )
+
             return rows[0]
+
+        print(
+            "[SUPABASE UPSERT WARNING] "
+            f"Tidak ada data dikembalikan untuk "
+            f"link={normalized_link}"
+        )
 
         return data
 
-    except Exception as e:
+    except Exception as exc:
+
         print(
             "[SUPABASE UPSERT ERROR] "
-            f"link={normalized_link} -> {e}"
+            f"link={normalized_link} -> "
+            f"{type(exc).__name__}: {exc}"
         )
 
-        return None
+        # PENTING:
+        # Jangan diam-diam return None.
+        # Lempar error agar test/run mengetahui
+        # bahwa penyimpanan benar-benar gagal.
+
+        raise
 
 
 # ============================================================
