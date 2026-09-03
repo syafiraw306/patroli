@@ -8726,7 +8726,7 @@ def test_new_article() -> Dict[str, Any]:
         print(
             f"[TEST DEBUG] Dedupe result: {result}"
         )
-
+        
         should_save = result[0]
         reason = result[1]
 
