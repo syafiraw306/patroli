@@ -4327,25 +4327,44 @@ def telegram_text(
 def send_alert_if_needed(
     article: Dict[str, Any],
 ) -> bool:
+    """
+    Kirim semua artikel baru ke Telegram.
 
-    if (
-        article.get(
-            "category"
+    Kategori dan prioritas tetap ditampilkan
+    pada isi pesan Telegram.
+    """
+
+    if not telegram_enabled():
+
+        print(
+            "[TELEGRAM] Telegram tidak aktif. "
+            "Periksa TELEGRAM_BOT_TOKEN dan "
+            "TELEGRAM_CHAT_ID."
         )
-        not in {
-            "Negatif Kuat",
-            "Perlu Penanganan",
-        }
-    ):
 
         return False
 
-    return send_telegram_message(
+    result = send_telegram_message(
         telegram_text(
             article
         )
     )
 
+    if result:
+
+        print(
+            "[TELEGRAM SUCCESS] "
+            f"{article.get('title')}"
+        )
+
+    else:
+
+        print(
+            "[TELEGRAM FAILED] "
+            f"{article.get('title')}"
+        )
+
+    return result
 
 # ============================================================
 # RECLASSIFY ALL
