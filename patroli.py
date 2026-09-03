@@ -8783,7 +8783,7 @@ def test_new_article():
 
     try:
 
-        save_article(
+        upsert_article(
             test_article
         )
 
