@@ -8716,30 +8716,29 @@ def test_new_article():
 
     try:
 
-
-    result = should_save_article(
-        test_article,
-        existing_link_index,
-        existing_title_index,
-        existing_content_index,
-    )
-
-    print(
-        f"[TEST DEBUG] Dedupe result: {result}"
-    )
-
-    should_save = result[0]
-    reason = result[1]
-
-    print(
-        f"[TEST] Should save: {should_save}"
-    )
-
-    print(
-        f"[TEST] Reason: {reason}"
-    )
+        result = should_save_article(
+            test_article,
+            existing_link_index,
+            existing_title_index,
+            existing_content_index,
+        )
     
+        print(
+            f"[TEST DEBUG] Dedupe result: {result}"
+        )
     
+        should_save = result[0]
+        reason = result[1]
+    
+        print(
+            f"[TEST] Should save: {should_save}"
+        )
+    
+        print(
+            f"[TEST] Reason: {reason}"
+        )
+        
+        
 # ============================================================
 # MAIN
 # ============================================================
