@@ -9347,7 +9347,311 @@ def test_new_article():
         ),
         "duration_seconds": duration,
     }
-        
+
+def test_telegram_alert() -> Dict[str, Any]:
+    """
+    Test end-to-end Telegram alert.
+
+    Test ini memastikan:
+
+    1. Telegram configuration tersedia
+    2. Artikel test dibuat unik
+    3. Tanggal artikel berada dalam bulan berjalan
+    4. Kategori memenuhi aturan alert
+    5. Pesan Telegram berhasil dibuat
+    6. Pesan berhasil dikirim ke Telegram
+
+    Artikel test TIDAK disimpan ke database.
+    """
+
+    print()
+    print("=" * 70)
+    print("END-TO-END TEST TELEGRAM ALERT")
+    print("=" * 70)
+
+    started = time.perf_counter()
+
+    # ========================================================
+    # CHECK TELEGRAM CONFIGURATION
+    # ========================================================
+
+    if not telegram_enabled():
+
+        print(
+            "[TEST TELEGRAM FAILED] "
+            "Telegram tidak aktif."
+        )
+
+        print(
+            "[TEST TELEGRAM] Periksa "
+            "TELEGRAM_BOT_TOKEN dan "
+            "TELEGRAM_CHAT_ID."
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": "telegram_not_enabled",
+        }
+
+    print(
+        "[TEST TELEGRAM] Telegram configuration aktif."
+    )
+
+    # ========================================================
+    # CREATE UNIQUE TEST ARTICLE
+    # ========================================================
+
+    test_timestamp = datetime.now().strftime(
+        "%Y%m%d%H%M%S"
+    )
+
+    unique_id = uuid.uuid4().hex
+
+    current_time = datetime.now()
+
+    test_article = {
+
+        "title": (
+            "TEST TELEGRAM PATROLI SIBER "
+            f"{test_timestamp}"
+        ),
+
+        "link": (
+            "https://example.com/"
+            f"telegram-test-{unique_id}"
+        ),
+
+        "source": (
+            "Patroli Siber Telegram Test"
+        ),
+
+        "published_date": (
+            current_time.isoformat()
+        ),
+
+        "content": (
+            "TEST TELEGRAM ARTICLE. "
+            f"Unique ID: {unique_id}"
+        ),
+
+        "category": (
+            "Negatif Kuat"
+        ),
+
+        "priority": (
+            "Tinggi"
+        ),
+    }
+
+    print()
+    print(
+        "[TEST TELEGRAM] Artikel test dibuat."
+    )
+
+    print(
+        f"[TEST TELEGRAM] TITLE: "
+        f"{test_article['title']}"
+    )
+
+    print(
+        f"[TEST TELEGRAM] CATEGORY: "
+        f"{test_article['category']}"
+    )
+
+    print(
+        f"[TEST TELEGRAM] PRIORITY: "
+        f"{test_article['priority']}"
+    )
+
+    print(
+        f"[TEST TELEGRAM] DATE: "
+        f"{test_article['published_date']}"
+    )
+
+    # ========================================================
+    # CHECK CATEGORY
+    # ========================================================
+
+    allowed_categories = {
+        "Negatif Kuat",
+        "Perlu Penanganan",
+    }
+
+    category = test_article.get(
+        "category"
+    )
+
+    if category not in allowed_categories:
+
+        print(
+            "[TEST TELEGRAM FAILED] "
+            f"Kategori tidak lolos: {category}"
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": "invalid_category",
+        }
+
+    print(
+        "[TEST TELEGRAM] Category check berhasil."
+    )
+
+    # ========================================================
+    # CHECK CURRENT MONTH
+    # ========================================================
+
+    article_date = current_time
+
+    if (
+        article_date.year
+        != current_time.year
+        or article_date.month
+        != current_time.month
+    ):
+
+        print(
+            "[TEST TELEGRAM FAILED] "
+            "Artikel bukan bulan berjalan."
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": "not_current_month",
+        }
+
+    print(
+        "[TEST TELEGRAM] Current month check berhasil."
+    )
+
+    # ========================================================
+    # GENERATE TELEGRAM MESSAGE
+    # ========================================================
+
+    try:
+
+        message = telegram_text(
+            test_article
+        )
+
+        print()
+        print(
+            "[TEST TELEGRAM] Message berhasil dibuat."
+        )
+
+        print("-" * 70)
+
+        print(message)
+
+        print("-" * 70)
+
+    except Exception as exc:
+
+        print(
+            "[TEST TELEGRAM MESSAGE ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": "message_generation_error",
+            "error": str(exc),
+        }
+
+    # ========================================================
+    # SEND TELEGRAM
+    # ========================================================
+
+    print()
+
+    print(
+        "[TEST TELEGRAM] Mengirim pesan..."
+    )
+
+    try:
+
+        success = send_alert_if_needed(
+            test_article
+        )
+
+    except Exception as exc:
+
+        print(
+            "[TEST TELEGRAM ERROR] "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return {
+            "status": "Gagal",
+            "reason": "telegram_exception",
+            "error": str(exc),
+        }
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    duration = (
+        time.perf_counter()
+        - started
+    )
+
+    print()
+    print("=" * 70)
+    print("TEST TELEGRAM SUMMARY")
+    print("=" * 70)
+
+    print(
+        f"Telegram aktif       : "
+        f"{telegram_enabled()}"
+    )
+
+    print(
+        f"Kategori             : "
+        f"{category}"
+    )
+
+    print(
+        f"Bulan berjalan       : "
+        f"True"
+    )
+
+    print(
+        f"Telegram terkirim    : "
+        f"{success}"
+    )
+
+    print(
+        f"Durasi               : "
+        f"{duration:.2f} detik"
+    )
+
+    print("=" * 70)
+
+    if success:
+
+        print(
+            "[TEST TELEGRAM SUCCESS] "
+            "Pesan berhasil dikirim."
+        )
+
+        return {
+            "status": "Berhasil",
+            "telegram_sent": True,
+            "duration": duration,
+        }
+
+    print(
+        "[TEST TELEGRAM FAILED] "
+        "Pesan gagal dikirim."
+    )
+
+    return {
+        "status": "Gagal",
+        "telegram_sent": False,
+        "duration": duration,
+    }
+    
 # ============================================================
 # MAIN
 # ============================================================
@@ -9461,6 +9765,14 @@ def main() -> None:
         ),
     )
 
+    parse.add_argument(
+        "--test-telegram",
+        action="store_true",
+        help=(
+            "tes alert telegram"
+        )
+    )
+
 
     args = parser.parse_args()
 
@@ -9529,6 +9841,12 @@ def main() -> None:
     if args.test_new_article:
         
         test_new_article()
+
+        return
+
+    if args.test_telegram_alert:
+        
+        test_telegram_alert()
 
         return
 
