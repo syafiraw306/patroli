@@ -4826,27 +4826,6 @@ def run_once() -> Dict[str, Any]:
                 f"{get_media_source(article)}"
             )
     
-            if matched_article:
-    
-                print(
-                    f"MATCHED ID: "
-                    f"{matched_article.get('id', 'Unknown')}"
-                )
-    
-                print(
-                    f"MATCHED TITLE: "
-                    f"{matched_article.get('title', '')}"
-                )
-    
-                print(
-                    f"MATCHED MEDIA: "
-                    f"{get_media_source(matched_article)}"
-                )
-    
-                print(
-                    f"SIMILARITY: "
-                    f"{similarity:.2%}"
-                )
     
             continue
     
