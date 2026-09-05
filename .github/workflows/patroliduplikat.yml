@@ -34,6 +34,7 @@ on:
           - audit-event-quality
           - test-new-article
           - test-telegram
+          - database-audit
 
 jobs:
   patroli:
@@ -142,6 +143,10 @@ jobs:
             elif [ "${{ inputs.mode }}" = "test-telegram" ]; then
               echo "Menjalankan test alert telegram..."
               python patroli.py --test-telegram
+
+            elif [ "${{ inputs.mode }}" = "database-audit" ]; then
+              echo "Menjalankan audit database..."
+              python patroli.py --database-audit
               
             else
           
