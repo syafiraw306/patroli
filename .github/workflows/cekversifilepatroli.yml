@@ -1,0 +1,22 @@
+- name: VERIFY PATROLI VERSION
+  run: |
+    echo "===== VERIFY PATROLI.PY ====="
+    sha256sum patroli.py
+    wc -l patroli.py
+
+    echo "===== CHECK RESOLVE FUNCTION ====="
+    grep -n "def resolve_article_url" patroli.py
+
+    echo "===== CHECK CORRECT ARGUMENT ====="
+    grep -n "rss_url=rss_link" patroli.py
+
+    echo "===== CHECK WRONG ARGUMENT ====="
+    grep -n "rss_link=rss_link" patroli.py || true
+
+    echo "===== CHECK SAVE BLOCK ====="
+    grep -n "Artikel valid setelah dedupe" patroli.py
+    grep -n "\[SAVE\] NEW_ARTICLE" patroli.py
+    grep -n "should_save_article(" patroli.py
+
+    echo "===== CHECK DATABASE HASH ====="
+    sha256sum database.py
