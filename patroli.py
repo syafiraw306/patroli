@@ -4875,7 +4875,7 @@ def run_once() -> Dict[str, Any]:
     )
     print(
         f"Resolved to media URL      : "
-        f"{sum(url_resolution_counts[k] for k in ("canonical", "redirect", "embedded_original"))}"
+        f"{sum(url_resolution_counts[k] for k in ('canonical', 'redirect', 'embedded_original'))}"
     )
     print(
         f"Canonical URL              : {url_resolution_counts.get('canonical', 0)}"
