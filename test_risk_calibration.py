@@ -94,3 +94,36 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    levels = Counter(r["risk_level"] for r in results)
+    categories = Counter(r["category"] for r in results)
+    print("\n" + "=" * 78)
+    print("DISTRIBUSI RISK")
+    print("=" * 78)
+    for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        print(f"{level:<9}: {levels[level]}")
+
+    print("\n" + "=" * 78)
+    print("RISK LEVEL PER KATEGORI")
+    print("=" * 78)
+    for cat in sorted(categories):
+        subset = [r for r in results if r["category"] == cat]
+        lv = Counter(r["risk_level"] for r in subset)
+        print(f"{cat:<22}: total={len(subset):3d} | LOW={lv['LOW']:3d} MEDIUM={lv['MEDIUM']:3d} HIGH={lv['HIGH']:3d} CRITICAL={lv['CRITICAL']:3d}")
+
+    neutral_medium = [r for r in results if r["category"] in {"Netral", "Positif"} and r["risk_score"] >= 31]
+    print("\n" + "=" * 78)
+    print("AUDIT KALIBRASI")
+    print("=" * 78)
+    print(f"Netral/Positif dengan risk >= 31 : {len(neutral_medium)}")
+    if neutral_medium:
+        print("Contoh yang perlu ditinjau:")
+        for r in neutral_medium[:10]:
+            print(f"- [{r['risk_score']}] {r['category']} | {r['title']}")
+
+    print("\nBoundary check: 30=LOW, 31=MEDIUM, 60=MEDIUM, 61=HIGH, 80=HIGH, 81=CRITICAL sesuai implementasi engine.")
+    print("Tidak ada INSERT/UPDATE/DELETE/Telegram dalam test ini.")
+    print("=" * 78)
+
+if __name__ == "__main__":
+    main()
