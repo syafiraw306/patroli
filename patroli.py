@@ -30,7 +30,6 @@ from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
 from database import (
-    get_all_articles,
     get_supabase,
     get_article_by_link,
     upsert_article,
@@ -111,6 +110,74 @@ def normalize_url(url: str) -> str:
     except Exception:
         return url.lower().strip()
 
+# ============================================================
+# GET ALL ARTICLES
+# ============================================================
+# Lokal agar patroli.py tidak bergantung pada export
+# get_all_articles dari database.py.
+# database.py TIDAK diubah.
+def get_all_articles(
+    page_size: int = 1000,
+) -> List[Dict[str, Any]]:
+    """
+    Mengambil seluruh artikel dari Supabase secara pagination.
+    """
+
+    if not isinstance(page_size, int):
+        raise TypeError(
+            f"page_size harus integer, "
+            f"tetapi menerima {type(page_size).__name__}"
+        )
+
+    if page_size <= 0:
+        raise ValueError(
+            "page_size harus lebih besar dari 0"
+        )
+
+    client = get_supabase()
+
+    results: List[Dict[str, Any]] = []
+
+    start = 0
+
+    while True:
+        end = start + page_size - 1
+
+        try:
+            response = (
+                client
+                .table("articles")
+                .select("*")
+                .range(start, end)
+                .execute()
+            )
+
+            rows = response.data or []
+
+        except Exception as exc:
+            print(
+                "[DB GET ALL ERROR] "
+                f"range={start}-{end} -> "
+                f"{type(exc).__name__}: {exc}"
+            )
+            break
+
+        if not rows:
+            break
+
+        results.extend(rows)
+
+        if len(rows) < page_size:
+            break
+
+        start += page_size
+
+    print(
+        f"[DB] Total artikel berhasil diambil: "
+        f"{len(results)}"
+    )
+
+    return results
 
 # ============================================================
 # ENVIRONMENT
