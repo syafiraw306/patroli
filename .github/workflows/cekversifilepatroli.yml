@@ -1,4 +1,4 @@
-name: Dedupe Dry Run
+name: VERIFY PATROLI VERSION
 
 on:
   workflow_dispatch:
@@ -8,54 +8,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - name: VERIFY PATROLI VERSION
+      run: |
+      echo "========================================"
+      echo "VERIFY PATROLI.PY"
+      echo "========================================"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      echo "SHA256:"
+      sha256sum patroli.py
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+      echo "LINE COUNT:"
+      wc -l patroli.py
 
+      echo ""
+      echo "CHECK resolve_article_url:"
+      grep -n "def resolve_article_url" patroli.py
 
-  run: |
-    echo "========================================"
-    echo "VERIFY PATROLI.PY"
-    echo "========================================"
+      echo ""
+      echo "CHECK CORRECT ARGUMENT:"
+      grep -n "rss_url=rss_link" patroli.py
 
-    echo "SHA256:"
-    sha256sum patroli.py
+      echo ""
+      echo "CHECK WRONG ARGUMENT:"
+      grep -n "rss_link=rss_link" patroli.py || true
 
-    echo "LINE COUNT:"
-    wc -l patroli.py
+      echo ""
+      echo "CHECK SAVE BLOCK:"
+      grep -n "Artikel valid setelah dedupe" patroli.py
 
-    echo ""
-    echo "CHECK resolve_article_url:"
-    grep -n "def resolve_article_url" patroli.py
+      grep -n "\[SAVE\] NEW_ARTICLE" patroli.py
 
-    echo ""
-    echo "CHECK CORRECT ARGUMENT:"
-    grep -n "rss_url=rss_link" patroli.py
+      grep -n "should_save_article(" patroli.py
 
-    echo ""
-    echo "CHECK WRONG ARGUMENT:"
-    grep -n "rss_link=rss_link" patroli.py || true
+      echo ""
+      echo "========================================"
+      echo "VERIFY DATABASE.PY"
+      echo "========================================"
 
-    echo ""
-    echo "CHECK SAVE BLOCK:"
-    grep -n "Artikel valid setelah dedupe" patroli.py
-
-    grep -n "\[SAVE\] NEW_ARTICLE" patroli.py
-
-    grep -n "should_save_article(" patroli.py
-
-    echo ""
-    echo "========================================"
-    echo "VERIFY DATABASE.PY"
-    echo "========================================"
-
-    sha256sum database.py
+      sha256sum database.py
