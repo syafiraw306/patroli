@@ -186,5 +186,7 @@ jobs:
             dedupe_delete_report.json
             dedupe_diagnostic_report.csv
             dedupe_diagnostic_report.json
+            existing_url_repair.csv
+            existing_url_repair.json
           if-no-files-found: warn
           retention-days: 30
