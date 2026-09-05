@@ -1206,6 +1206,63 @@ def _looks_like_media_url(url: str) -> bool:
     return True
 
 
+def _decode_embedded_url(value: Any) -> str:
+    """Decode URL yang disimpan escaped/HTML-encoded di HTML Google News."""
+    if not value:
+        return ""
+    text = html.unescape(str(value)).strip()
+    text = text.replace(r"\/", "/")
+    text = text.replace(r"\u002F", "/").replace(r"\u003A", ":")
+    text = text.replace(r"\u0026", "&").replace(r"\u003F", "?")
+    text = text.replace(r"\u003D", "=").replace(r"\u0025", "%")
+    return text
+
+
+def _extract_url_like_strings(raw_html: str) -> List[str]:
+    """Mengambil URL absolut dari HTML termasuk JSON/JS escaped URLs."""
+    if not raw_html:
+        return []
+
+    decoded = _decode_embedded_url(raw_html)
+    patterns = [
+        r'https?://[^\s"\'<>\\]+',
+        r'https?:\\/\\/[^\s"\'<>]+',
+    ]
+
+    found = []
+    seen = set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, decoded, flags=re.I):
+            value = _decode_embedded_url(match.group(0)).rstrip(".,;)]}\"")
+            if value and value not in seen:
+                seen.add(value)
+                found.append(value)
+    return found
+
+
+def _title_token_set(value: Any) -> set:
+    stopwords = {
+        "yang", "dengan", "dari", "untuk", "dalam", "pada", "oleh", "dan", "atau",
+        "ini", "itu", "telah", "akan", "jadi", "saat", "setelah", "sebagai", "karena",
+        "kepada", "hingga", "dalam", "news", "berita",
+    }
+    return {
+        token.lower()
+        for token in re.findall(r"[\w]{4,}", normalize_text(value))
+        if token.lower() not in stopwords
+    }
+
+
+def _domain_related(host: str, source_domain: str) -> bool:
+    if not host or not source_domain:
+        return False
+    return (
+        host == source_domain
+        or host.endswith("." + source_domain)
+        or source_domain.endswith("." + host)
+    )
+
+
 def extract_google_news_original_url(
     raw_html: str,
     response_url: str = "",
@@ -1215,10 +1272,15 @@ def extract_google_news_original_url(
     """
     Mencari URL media asli ketika URL Google News tidak melakukan redirect.
 
-    Fungsi ini hanya mengembalikan URL jika ada sinyal yang cukup kuat:
-    - domain cocok dengan URL source RSS, atau
-    - anchor pada halaman sangat mirip dengan judul artikel.
-    Jika tidak yakin, dikembalikan kosong agar aturan duplicate URL tetap aman.
+    V5.2 memperluas pencarian ke:
+    - anchor href
+    - meta refresh
+    - URL absolut yang tertanam di JSON/JavaScript
+    - field JSON/JS yang bernama url/targetUrl/originalUrl/articleUrl/canonicalUrl
+
+    Pemilihan tetap konservatif: domain source RSS menjadi sinyal terkuat,
+    kemudian kemiripan anchor/judul dan bentuk path artikel. URL navigasi umum
+    tidak dipilih sebagai media asli.
     """
     if not raw_html:
         return ""
@@ -1226,95 +1288,119 @@ def extract_google_news_original_url(
     try:
         soup = BeautifulSoup(raw_html, "html.parser")
     except Exception:
-        return ""
+        soup = None
 
     source_domain = _url_source_domain(source_url)
-    title_tokens = {
-        token.lower()
-        for token in re.findall(r"[\w]{4,}", normalize_text(title))
-        if token.lower() not in {
-            "yang", "dengan", "dari", "untuk", "dalam", "pada", "oleh", "dan", "atau",
-        }
-    }
-    scored = {}
+    title_tokens = _title_token_set(title)
+    scored: Dict[str, float] = {}
+    candidate_reasons: Dict[str, List[str]] = defaultdict(list)
 
-    def add_candidate(value: Any, anchor_text: str = "") -> None:
-        cleaned = _clean_candidate_url(value, response_url)
+    def add_candidate(value: Any, anchor_text: str = "", context: str = "") -> None:
+        cleaned = _clean_candidate_url(_decode_embedded_url(value), response_url)
         if not _looks_like_media_url(cleaned):
             return
+
+        parsed = urllib.parse.urlparse(cleaned)
         host = _url_source_domain(cleaned)
-        score = 0
-        if source_domain and (
-            host == source_domain
-            or host.endswith("." + source_domain)
-            or source_domain.endswith("." + host)
-        ):
+        path = parsed.path or "/"
+        path_lower = path.lower()
+        score = 0.0
+
+        if _domain_related(host, source_domain):
             score += 100
+            candidate_reasons[cleaned].append("source-domain")
+
         if anchor_text and title_tokens:
-            anchor_tokens = {
-                token.lower()
-                for token in re.findall(r"[\w]{4,}", normalize_text(anchor_text))
-            }
-            score += min(len(title_tokens & anchor_tokens), 10) * 5
-        if urllib.parse.urlparse(cleaned).path not in {"", "/"}:
+            overlap = len(title_tokens & _title_token_set(anchor_text))
+            score += min(overlap, 12) * 6
+            if overlap:
+                candidate_reasons[cleaned].append(f"title-overlap:{overlap}")
+
+        # URL yang terlihat seperti halaman artikel mendapat bonus kecil.
+        article_markers = (
+            "/berita/", "/news/", "/artikel/", "/read/", "/story/",
+            "/detail/", "/2026/", "/2025/", "/amp/", "/post/",
+        )
+        if any(marker in path_lower for marker in article_markers):
+            score += 12
+            candidate_reasons[cleaned].append("article-path")
+        elif path not in {"", "/"}:
+            score += 3
+
+        # URL media yang terlalu panjang/aneh cenderung berupa tracking payload.
+        if len(cleaned) <= 350:
             score += 2
-        if len(cleaned) < 300:
-            score += 1
-        scored[cleaned] = max(scored.get(cleaned, -1), score)
+        if len(cleaned) > 900:
+            score -= 8
 
-    for tag in soup.find_all("a", href=True):
-        add_candidate(tag.get("href"), tag.get_text(" ", strip=True))
+        # URL yang muncul dalam field yang jelas-jelas menunjuk target artikel.
+        context_lower = context.lower()
+        if any(key in context_lower for key in (
+            "originalurl", "targeturl", "articleurl", "canonicalurl", "article_url",
+        )):
+            score += 30
+            candidate_reasons[cleaned].append("article-url-field")
+        elif re.search(r'(?i)(?:["\']url["\']\s*:|["\']url["\']\s*=)', context):
+            score += 10
+            candidate_reasons[cleaned].append("url-field")
 
-    for tag in soup.find_all("meta"):
-        if str(tag.get("http-equiv") or "").lower().strip() == "refresh":
-            content = str(tag.get("content") or "")
-            match = re.search(r"url\s*=\s*(.+)$", content, flags=re.I)
-            if match:
-                add_candidate(match.group(1).strip(" \\\"'"))
+        scored[cleaned] = max(scored.get(cleaned, -999.0), score)
 
-    if not scored:
-        for match in re.finditer(r"https?:(?:\\/\\/|//)[^\"'<>\s]+", raw_html):
-            add_candidate(match.group(0).replace("\\/", "/"))
+    if soup is not None:
+        for tag in soup.find_all("a", href=True):
+            add_candidate(tag.get("href"), tag.get_text(" ", strip=True), "anchor")
+
+        for tag in soup.find_all("meta"):
+            if str(tag.get("http-equiv") or "").lower().strip() == "refresh":
+                content = str(tag.get("content") or "")
+                match = re.search(r"url\s*=\s*(.+)$", content, flags=re.I)
+                if match:
+                    add_candidate(match.group(1).strip(" \\\"'"), "", "meta-refresh")
+
+    # Field-oriented extraction sebelum fallback seluruh HTML.
+    field_pattern = re.compile(
+        r'(?is)["\'](?P<key>originalUrl|targetUrl|articleUrl|canonicalUrl|article_url|url)["\']\s*[:=]\s*["\'](?P<url>https?:(?:\\/\\/|//)[^"\']+)["\']'
+    )
+    for match in field_pattern.finditer(raw_html):
+        add_candidate(match.group("url"), title, match.group("key"))
+
+    # URL absolut tertanam di JSON/JS. Gunakan hanya jika ada sinyal domain/title.
+    for embedded_url in _extract_url_like_strings(raw_html):
+        add_candidate(embedded_url, "", "embedded-url")
 
     if not scored:
         return ""
 
-    best_url, best_score = max(scored.items(), key=lambda item: item[1])
+    ranked = sorted(scored.items(), key=lambda item: item[1], reverse=True)
+    best_url, best_score = ranked[0]
     best_domain = _url_source_domain(best_url)
-    if source_domain and (
-        best_domain == source_domain
-        or best_domain.endswith("." + source_domain)
-        or source_domain.endswith("." + best_domain)
-    ):
+
+    # Domain source adalah bukti utama. Jika source domain tidak tersedia,
+    # wajib ada skor kuat dari konteks/title agar tidak mengambil URL acak.
+    if source_domain and _domain_related(best_domain, source_domain):
         return best_url
-    if best_score >= 20:
+
+    if best_score >= 45:
         return best_url
+
     return ""
 
 
-def resolve_article_url(
+def resolve_article_url_details(
     rss_url: str,
     response_url: str = "",
     raw_html: str = "",
     source_url: str = "",
     title: str = "",
-) -> str:
-    """
-    Menentukan URL artikel yang disimpan tanpa mengubah database.py.
-
-    Prioritas:
-    1. canonical/og:url
-    2. URL akhir redirect HTTP jika bukan Google News
-    3. URL media yang tertanam pada halaman Google News
-    4. URL RSS sebagai fallback
-    """
+) -> Tuple[str, str]:
+    """Resolve URL sekaligus mengembalikan metode resolusinya."""
     canonical = extract_canonical_article_url(raw_html, response_url)
     if canonical:
-        return canonical
+        return canonical, "canonical"
 
     resolved = _clean_candidate_url(response_url)
     if resolved and not _is_google_news_url(resolved):
-        return resolved
+        return resolved, "redirect"
 
     original = extract_google_news_original_url(
         raw_html=raw_html,
@@ -1324,10 +1410,27 @@ def resolve_article_url(
     )
     if original:
         print(f"[URL GOOGLE NEWS] Media asli ditemukan: {original}")
-        return original
+        return original, "embedded_original"
 
-    return normalize_url(rss_url) or _clean_candidate_url(rss_url)
+    return normalize_url(rss_url) or _clean_candidate_url(rss_url), "google_fallback"
 
+
+def resolve_article_url(
+    rss_url: str,
+    response_url: str = "",
+    raw_html: str = "",
+    source_url: str = "",
+    title: str = "",
+) -> str:
+    """Backward-compatible wrapper; mengembalikan URL saja."""
+    resolved, _method = resolve_article_url_details(
+        rss_url=rss_url,
+        response_url=response_url,
+        raw_html=raw_html,
+        source_url=source_url,
+        title=title,
+    )
+    return resolved
 
 def fetch_webpage_content(
     url: str,
@@ -3556,7 +3659,7 @@ candidate: Dict[str, Any],
     
     try:
         fetched_url, raw_html = fetch_webpage_content(rss_link)
-        final_url = resolve_article_url(
+        final_url, url_resolution_method = resolve_article_url_details(
             rss_url=rss_link,
             response_url=fetched_url,
             raw_html=raw_html,
@@ -3580,10 +3683,12 @@ candidate: Dict[str, Any],
             f"{exc}"
         )
         final_url = normalize_url(rss_link)
+        url_resolution_method = "fetch_failed_google_fallback"
         raw_html = ""
     
     if not final_url:
         final_url = rss_link
+        url_resolution_method = "google_fallback"
     
     # ========================================================
     # CONTENT
@@ -3755,6 +3860,9 @@ candidate: Dict[str, Any],
         "title": title,
     
         "link": final_url,
+
+        # Internal observability field. Dihapus sebelum upsert ke database.py.
+        "_url_resolution_method": url_resolution_method,
     
         "content": content[
             :15000
@@ -4747,6 +4855,46 @@ def run_once() -> Dict[str, Any]:
     )
 
     # ========================================================
+    # V5.2 URL RESOLUTION SUMMARY
+    # ========================================================
+
+    url_resolution_counts = Counter()
+    for item in valid_articles:
+        method = normalize_text(
+            item.get("_url_resolution_method")
+        ) or "unknown"
+        url_resolution_counts[method] += 1
+
+    print()
+    print("[URL RESOLUTION SUMMARY]")
+    print(
+        f"RSS candidates             : {len(candidates)}"
+    )
+    print(
+        f"Valid articles processed   : {len(valid_articles)}"
+    )
+    print(
+        f"Resolved to media URL      : "
+        f"{sum(url_resolution_counts[k] for k in ("canonical", "redirect", "embedded_original"))}"
+    )
+    print(
+        f"Canonical URL              : {url_resolution_counts.get('canonical', 0)}"
+    )
+    print(
+        f"Redirect URL               : {url_resolution_counts.get('redirect', 0)}"
+    )
+    print(
+        f"Embedded original URL      : {url_resolution_counts.get('embedded_original', 0)}"
+    )
+    print(
+        f"Still Google News URL      : "
+        f"{url_resolution_counts.get('google_fallback', 0) + url_resolution_counts.get('fetch_failed_google_fallback', 0)}"
+    )
+    print(
+        f"Fetch failed fallback      : {url_resolution_counts.get('fetch_failed_google_fallback', 0)}"
+    )
+
+    # ========================================================
     # SAVE
     # ========================================================
     # ========================================================
@@ -4767,6 +4915,7 @@ def run_once() -> Dict[str, Any]:
     
     saved_count = 0
     save_failed = 0
+    duplicate_reason_counts = Counter()
     
     new_articles = []
     
@@ -4818,6 +4967,9 @@ def run_once() -> Dict[str, Any]:
     
             existing_content_index,
         )
+
+        if not should_save and reason.startswith("DUPLICATE_"):
+            duplicate_reason_counts[reason] += 1
     
     
         # Diagnostic-only: identify the existing DB row for URL duplicates.
@@ -4981,6 +5133,8 @@ def run_once() -> Dict[str, Any]:
         # ====================================================
     
         try:
+            # Jangan pernah mengirim field observability internal ke database.py.
+            article.pop("_url_resolution_method", None)
     
             saved = upsert_article(
                 article
@@ -5090,6 +5244,28 @@ def run_once() -> Dict[str, Any]:
                 f"{type(exc).__name__}: "
                 f"{exc}"
             )
+    # ========================================================
+    # V5.2 DUPLICATE SUMMARY
+    # ========================================================
+
+    print()
+    print("[DUPLICATE SUMMARY]")
+    print(
+        f"DUPLICATE_URL               : {duplicate_reason_counts.get('DUPLICATE_URL', 0)}"
+    )
+    print(
+        f"DUPLICATE_TITLE_SAME_MEDIA  : {duplicate_reason_counts.get('DUPLICATE_TITLE_SAME_MEDIA', 0)}"
+    )
+    print(
+        f"DUPLICATE_CONTENT_SAME_MEDIA: {duplicate_reason_counts.get('DUPLICATE_CONTENT_SAME_MEDIA', 0)}"
+    )
+    print(
+        f"NEW_ARTICLE                 : {saved_count}"
+    )
+    print(
+        f"SAVE_FAILED                 : {save_failed}"
+    )
+
     # ========================================================
     # RISK SUMMARY
     # ========================================================
