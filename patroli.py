@@ -1,5 +1,4 @@
 import argparse
-import base64
 import csv
 import html
 import json
@@ -30,8 +29,6 @@ from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
-from risk_engine import calculate_risk_score
-
 from database import (
     normalize_url,
     get_all_articles,
@@ -43,8 +40,6 @@ from database import (
     delete_article_by_id,
 )
 
-
-PATROLI_DIAGNOSTIC_VERSION = "V5.1"
 
 # ============================================================
 # ENVIRONMENT
@@ -68,18 +63,6 @@ MAX_ARTICLES_PER_FEED = int(
     os.getenv("MAX_ARTICLES_PER_FEED") or "40"
 )
 
-RSS_MAX_RETRIES = int(
-    os.getenv("RSS_MAX_RETRIES") or "4"
-)
-
-RSS_BACKOFF_BASE = float(
-    os.getenv("RSS_BACKOFF_BASE") or "2"
-)
-
-RSS_QUERY_DELAY = float(
-    os.getenv("RSS_QUERY_DELAY") or "1.5"
-)
-
 MIN_CONTENT_LENGTH = int(
     os.getenv("MIN_CONTENT_LENGTH") or "180"
 )
@@ -98,17 +81,6 @@ TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
     "",
 ).strip()
-
-# ============================================================
-# DUPLICATE & EVENT SIMILARITY CONFIGURATION
-# ============================================================
-
-# Artikel dianggap duplicate content jika similarity sangat tinggi
-CONTENT_DUPLICATE_THRESHOLD = 0.95
-
-# Artikel kemungkinan membahas event yang sama
-# tetapi tetap boleh disimpan jika medianya berbeda
-EVENT_CONTENT_SIMILARITY_THRESHOLD = 0.75
 
 
 # ============================================================
@@ -951,21 +923,101 @@ def article_link_exists(
 
 
 def is_duplicate_link(link, existing_link_index):
-    """
-    Mengecek apakah link sudah ada di database/index.
-
-    Return:
-        True  -> duplicate
-        False -> bukan duplicate
-    """
-
+    """True jika URL setelah normalisasi sudah pernah ada."""
     normalized = normalize_url(link)
+    return bool(normalized and normalized in existing_link_index)
 
-    if not normalized:
-        return False
 
-    return normalized in existing_link_index
+def _article_content(article):
+    return normalize_text(
+        article.get("content")
+        or article.get("summary")
+        or article.get("description")
+        or ""
+    )
 
+
+def make_title_media_key(article):
+    """Kunci duplicate: judul identik + media identik."""
+    title = normalize_title(article.get("title", ""))
+    media = normalize_title(get_media_source(article))
+    if not title or not media or media == "unknown":
+        return None
+    return (title, media)
+
+
+def build_title_media_index(articles):
+    return {
+        key
+        for article in articles
+        if (key := make_title_media_key(article))
+    }
+
+
+def normalize_content_for_duplicate(content):
+    text = normalize_text(content)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def calculate_content_similarity(content_a, content_b):
+    a = normalize_content_for_duplicate(content_a)
+    b = normalize_content_for_duplicate(content_b)
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def find_duplicate_content_same_media(article, existing_articles, threshold=0.95):
+    """Return artikel existing jika konten sangat mirip dari media sama."""
+    content = _article_content(article)
+    if len(content) < 100:
+        return None
+    media = normalize_title(get_media_source(article))
+    if not media or media == "unknown":
+        return None
+    for existing in existing_articles:
+        if normalize_title(get_media_source(existing)) != media:
+            continue
+        existing_content = _article_content(existing)
+        if len(existing_content) < 100:
+            continue
+        similarity = calculate_content_similarity(content, existing_content)
+        if similarity >= threshold:
+            return existing
+    return None
+
+
+def should_save_article(article, existing_link_index, existing_title_media_index, existing_articles):
+    """
+    Prevention layer final:
+    1. URL sama -> BLOCK
+    2. Judul identik + media sama -> BLOCK
+    3. Konten >=95% mirip + media sama -> BLOCK
+    4. Event sama + media berbeda -> TETAP SAVE
+    """
+    link = article.get("link") or article.get("url") or ""
+    if is_duplicate_link(link, existing_link_index):
+        return False, "DUPLICATE URL"
+
+    title_media_key = make_title_media_key(article)
+    if title_media_key and title_media_key in existing_title_media_index:
+        return False, "DUPLICATE TITLE SAME MEDIA"
+
+    duplicate_content = find_duplicate_content_same_media(article, existing_articles)
+    if duplicate_content:
+        return False, "DUPLICATE CONTENT SAME MEDIA"
+
+    return True, "NEW ARTICLE"
+
+
+def is_duplicate_article(article, existing_link_index, existing_title_index):
+    """Backward-compatible wrapper."""
+    key = make_title_media_key(article)
+    title_media_index = existing_title_index or set()
+    if key and key in title_media_index:
+        return True
+    return is_duplicate_link(article.get("link", ""), existing_link_index)
 
 def register_new_link(link, existing_link_index):
     """
@@ -1123,558 +1175,44 @@ def is_url_old(
 # FETCH WEB
 # ============================================================
 
-def _is_google_news_url(url: Any) -> bool:
-    """True jika URL berasal dari domain Google News."""
-    if not url:
-        return False
-    try:
-        host = urllib.parse.urlparse(str(url).strip()).netloc.lower().split(":", 1)[0]
-        return host == "news.google.com"
-    except Exception:
-        return False
-
-
-def _clean_candidate_url(url: Any, base_url: str = "") -> str:
-    """Validasi dan normalisasi URL HTTP(S), termasuk URL relatif."""
-    if not url:
-        return ""
-    value = html.unescape(str(url)).strip().strip('"\'')
-    if not value:
-        return ""
-    if base_url:
-        value = urllib.parse.urljoin(base_url, value)
-    try:
-        parsed = urllib.parse.urlparse(value)
-    except Exception:
-        return ""
-    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-        return ""
-    return normalize_url(value)
-
-
-def extract_canonical_article_url(raw_html: str, response_url: str = "") -> str:
-    """Ambil canonical/og:url artikel asli dari HTML."""
-    if not raw_html:
-        return ""
-
-    try:
-        soup = BeautifulSoup(raw_html, "html.parser")
-    except Exception:
-        return ""
-
-    candidates = []
-    for tag in soup.find_all("link"):
-        rel = tag.get("rel") or []
-        if isinstance(rel, str):
-            rel = [rel]
-        if "canonical" in {str(item).lower().strip() for item in rel}:
-            candidates.append(tag.get("href"))
-
-    for tag in soup.find_all("meta"):
-        prop = str(tag.get("property") or tag.get("name") or "").lower().strip()
-        if prop == "og:url":
-            candidates.append(tag.get("content"))
-
-    for candidate in candidates:
-        cleaned = _clean_candidate_url(candidate, response_url)
-        if cleaned and not _is_google_news_url(cleaned):
-            return cleaned
-    return ""
-
-
-def _url_source_domain(url: str) -> str:
-    try:
-        host = urllib.parse.urlparse(str(url)).netloc.lower().split(":", 1)[0]
-        return host[4:] if host.startswith("www.") else host
-    except Exception:
-        return ""
-
-
-def _looks_like_media_url(url: str) -> bool:
-    """Menolak URL navigasi umum agar ekstraksi Google News tetap konservatif."""
-    if not url or _is_google_news_url(url):
-        return False
-    host = _url_source_domain(url)
-    if not host:
-        return False
-    blocked_hosts = {
-        "google.com", "google.co.id", "youtube.com", "youtu.be",
-        "facebook.com", "instagram.com", "twitter.com", "x.com",
-        "t.me", "linkedin.com",
-    }
-    if host in blocked_hosts or any(host.endswith("." + h) for h in blocked_hosts):
-        return False
-    return True
-
-
-def _decode_embedded_url(value: Any) -> str:
-    """Decode URL yang disimpan escaped/HTML-encoded di HTML Google News."""
-    if not value:
-        return ""
-    text = html.unescape(str(value)).strip()
-    text = text.replace(r"\/", "/")
-    text = text.replace(r"\u002F", "/").replace(r"\u003A", ":")
-    text = text.replace(r"\u0026", "&").replace(r"\u003F", "?")
-    text = text.replace(r"\u003D", "=").replace(r"\u0025", "%")
-    return text
-
-
-def _extract_url_like_strings(raw_html: str) -> List[str]:
-    """Mengambil URL absolut dari HTML termasuk JSON/JS escaped URLs."""
-    if not raw_html:
-        return []
-
-    decoded = _decode_embedded_url(raw_html)
-    patterns = [
-        r'https?://[^\s"\'<>\\]+',
-        r'https?:\\/\\/[^\s"\'<>]+',
-    ]
-
-    found = []
-    seen = set()
-    for pattern in patterns:
-        for match in re.finditer(pattern, decoded, flags=re.I):
-            value = _decode_embedded_url(match.group(0)).rstrip(".,;)]}\"")
-            if value and value not in seen:
-                seen.add(value)
-                found.append(value)
-    return found
-
-
-def _title_token_set(value: Any) -> set:
-    stopwords = {
-        "yang", "dengan", "dari", "untuk", "dalam", "pada", "oleh", "dan", "atau",
-        "ini", "itu", "telah", "akan", "jadi", "saat", "setelah", "sebagai", "karena",
-        "kepada", "hingga", "dalam", "news", "berita",
-    }
-    return {
-        token.lower()
-        for token in re.findall(r"[\w]{4,}", normalize_text(value))
-        if token.lower() not in stopwords
-    }
-
-
-def _domain_related(host: str, source_domain: str) -> bool:
-    if not host or not source_domain:
-        return False
-    return (
-        host == source_domain
-        or host.endswith("." + source_domain)
-        or source_domain.endswith("." + host)
-    )
-
-
-
-def decode_google_news_base64_url(url: str, raw_html: str = "") -> str:
-    """
-    Resolve Google News RSS article URLs to publisher URLs.
-
-    Google News currently uses an internal `garturl` RPC for many
-    /rss/articles/CBMi... links.  The most reliable flow is:
-
-    1. GET the Google News article/RSS URL.
-    2. Read c-wiz[data-p] from the returned HTML.
-    3. Build the Fbv4je/garturlreq request from that payload.
-    4. Parse garturlres from Google's response.
-
-    A legacy direct base64 URL extraction is retained as a fallback.
-    """
-    if not _is_google_news_url(url):
-        return ""
-
-    try:
-        parsed = urllib.parse.urlparse(str(url))
-        parts = [p for p in parsed.path.split("/") if p]
-        if len(parts) < 3 or parts[-2] not in {"articles", "read"}:
-            return ""
-        token = parts[-1]
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
-            return ""
-
-        # --------------------------------------------------------
-        # 1. Legacy offline format
-        # --------------------------------------------------------
-        padded = token + "=" * ((4 - len(token) % 4) % 4)
-        try:
-            decoded = base64.urlsafe_b64decode(padded)
-            matches = re.findall(
-                rb"https?://[^\x00\x0a\x0d\x22\x27<>]+",
-                decoded,
-            )
-            for raw in matches:
-                candidate = raw.decode("utf-8", errors="ignore").rstrip(".,;)]}")
-                candidate = _clean_candidate_url(candidate, url)
-                if candidate and _looks_like_media_url(candidate):
-                    return candidate
-        except Exception:
-            pass
-
-        # --------------------------------------------------------
-        # 2. Preferred current Google News garturl flow.
-        # --------------------------------------------------------
-        # The Google News article page exposes a c-wiz[data-p] payload.
-        # Community-tested implementations use that payload to construct
-        # the Fbv4je request rather than guessing the protobuf structure.
-        html_text = raw_html or ""
-        if not html_text:
-            response = SESSION.get(
-                str(url),
-                timeout=REQUEST_TIMEOUT,
-                allow_redirects=True,
-            )
-            response.raise_for_status()
-            html_text = response.text
-
-        try:
-            soup = BeautifulSoup(html_text, "html.parser")
-            data_p = ""
-            node = soup.select_one("c-wiz[data-p]")
-            if node is not None:
-                data_p = node.get("data-p") or ""
-            if not data_p:
-                node = soup.select_one("c-wiz > div[data-p]")
-                if node is not None:
-                    data_p = node.get("data-p") or ""
-        except Exception:
-            data_p = ""
-
-        if data_p:
-            try:
-                decoded_data = html.unescape(data_p)
-                obj = json.loads(
-                    decoded_data.replace("%.@.", '["garturlreq",', 1)
-                )
-
-                # Google currently expects the garturl request object with
-                # the last six metadata elements reduced to the final two.
-                if isinstance(obj, list) and len(obj) >= 6:
-                    garturl_obj = obj[:-6] + obj[-2:]
-                else:
-                    garturl_obj = obj
-
-                rpc_payload = json.dumps(
-                    [[
-                        [
-                            "Fbv4je",
-                            json.dumps(garturl_obj, separators=(",", ":")),
-                            "null",
-                            "generic",
-                        ]
-                    ]],
-                    separators=(",", ":"),
-                )
-
-                response = SESSION.post(
-                    "https://news.google.com/_/DotsSplashUi/data/batchexecute",
-                    params={"rpcids": "Fbv4je"},
-                    data={"f.req": rpc_payload},
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                        "Referer": "https://news.google.com/",
-                        "User-Agent": SESSION.headers.get("User-Agent", "Mozilla/5.0"),
-                    },
-                    timeout=REQUEST_TIMEOUT,
-                )
-                response.raise_for_status()
-                text = response.text
-
-                # Primary parser used by known working Python implementations.
-                try:
-                    outer = json.loads(text.replace(")]}'", "", 1))
-                    array_string = outer[0][2]
-                    inner = json.loads(array_string)
-                    if isinstance(inner, list) and len(inner) > 1:
-                        candidate = inner[1]
-                        candidate = _clean_candidate_url(candidate, url)
-                        if candidate and _looks_like_media_url(candidate):
-                            return candidate
-                except Exception:
-                    pass
-
-                # Secondary parser for escaped garturlres responses.
-                marker = r'[\\"garturlres\\",\\"'
-                pos = text.find('garturlres')
-                if pos >= 0:
-                    tail = text[pos:pos + 20000]
-                    for match in re.finditer(
-                        r'https?://[^\\"\'<>\\s]+',
-                        tail,
-                        flags=re.I,
-                    ):
-                        candidate = match.group(0)
-                        candidate = candidate.replace(r'\\u0026', '&')
-                        candidate = candidate.replace(r'\\/', '/')
-                        candidate = html.unescape(candidate)
-                        candidate = _clean_candidate_url(candidate, url)
-                        if candidate and _looks_like_media_url(candidate):
-                            return candidate
-            except Exception as exc:
-                print(
-                    "[GOOGLE NEWS GARTURL WARNING] "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
-        # --------------------------------------------------------
-        # 3. Alternative current format using data-n-a-sg / data-n-a-ts.
-        # --------------------------------------------------------
-        try:
-            soup = BeautifulSoup(html_text, "html.parser")
-            node = soup.select_one("c-wiz > div[data-n-a-sg][data-n-a-ts]")
-            if node is not None:
-                signature = node.get("data-n-a-sg")
-                timestamp = node.get("data-n-a-ts")
-                if signature and timestamp:
-                    req = [
-                        "Fbv4je",
-                        (
-                            '["garturlreq",[["en-US","US",'
-                            '["FINANCE_TOP_INDICES","WEB_TEST_1_0_0"],'
-                            'null,null,1,1,"US:en",null,180,null,null,null,null,null,0,null,null,'
-                            '[1608992183,723341000]],"en-US","US",1,[2,3,4,8],1,0,"655000234",0,0,null,0],'
-                            f'"{token}",{timestamp},"{signature}"]'
-                        ),
-                        "null",
-                        "generic",
-                    ]
-                    rpc_payload = json.dumps([[req]], separators=(",", ":"))
-                    response = SESSION.post(
-                        "https://news.google.com/_/DotsSplashUi/data/batchexecute",
-                        params={"rpcids": "Fbv4je"},
-                        data={"f.req": rpc_payload},
-                        headers={
-                            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                            "Referer": "https://news.google.com/",
-                            "User-Agent": SESSION.headers.get("User-Agent", "Mozilla/5.0"),
-                        },
-                        timeout=REQUEST_TIMEOUT,
-                    )
-                    response.raise_for_status()
-                    text = response.text
-                    pos = text.find("garturlres")
-                    if pos >= 0:
-                        tail = text[pos:pos + 20000]
-                        for match in re.finditer(r'https?://[^\\"\'<>\\s]+', tail, flags=re.I):
-                            candidate = match.group(0)
-                            candidate = candidate.replace(r'\\u0026', '&').replace(r'\\/', '/')
-                            candidate = html.unescape(candidate)
-                            candidate = _clean_candidate_url(candidate, url)
-                            if candidate and _looks_like_media_url(candidate):
-                                return candidate
-        except Exception as exc:
-            print(
-                "[GOOGLE NEWS DECODER WARNING] "
-                f"{type(exc).__name__}: {exc}"
-            )
-
-    except Exception as exc:
-        print(
-            "[GOOGLE NEWS DECODER WARNING] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-    return ""
-
-def extract_google_news_original_url(
-    raw_html: str,
-    response_url: str = "",
-    source_url: str = "",
-    title: str = "",
-) -> str:
-    """
-    Mencari URL media asli ketika URL Google News tidak melakukan redirect.
-
-    V5.2 memperluas pencarian ke:
-    - anchor href
-    - meta refresh
-    - URL absolut yang tertanam di JSON/JavaScript
-    - field JSON/JS yang bernama url/targetUrl/originalUrl/articleUrl/canonicalUrl
-
-    Pemilihan tetap konservatif: domain source RSS menjadi sinyal terkuat,
-    kemudian kemiripan anchor/judul dan bentuk path artikel. URL navigasi umum
-    tidak dipilih sebagai media asli.
-    """
-    if not raw_html:
-        return ""
-
-    try:
-        soup = BeautifulSoup(raw_html, "html.parser")
-    except Exception:
-        soup = None
-
-    source_domain = _url_source_domain(source_url)
-    title_tokens = _title_token_set(title)
-    scored: Dict[str, float] = {}
-    candidate_reasons: Dict[str, List[str]] = defaultdict(list)
-
-    def add_candidate(value: Any, anchor_text: str = "", context: str = "") -> None:
-        cleaned = _clean_candidate_url(_decode_embedded_url(value), response_url)
-        if not _looks_like_media_url(cleaned):
-            return
-
-        parsed = urllib.parse.urlparse(cleaned)
-        host = _url_source_domain(cleaned)
-        path = parsed.path or "/"
-        path_lower = path.lower()
-        score = 0.0
-
-        if _domain_related(host, source_domain):
-            score += 100
-            candidate_reasons[cleaned].append("source-domain")
-
-        if anchor_text and title_tokens:
-            overlap = len(title_tokens & _title_token_set(anchor_text))
-            score += min(overlap, 12) * 6
-            if overlap:
-                candidate_reasons[cleaned].append(f"title-overlap:{overlap}")
-
-        # URL yang terlihat seperti halaman artikel mendapat bonus kecil.
-        article_markers = (
-            "/berita/", "/news/", "/artikel/", "/read/", "/story/",
-            "/detail/", "/2026/", "/2025/", "/amp/", "/post/",
-        )
-        if any(marker in path_lower for marker in article_markers):
-            score += 12
-            candidate_reasons[cleaned].append("article-path")
-        elif path not in {"", "/"}:
-            score += 3
-
-        # URL media yang terlalu panjang/aneh cenderung berupa tracking payload.
-        if len(cleaned) <= 350:
-            score += 2
-        if len(cleaned) > 900:
-            score -= 8
-
-        # URL yang muncul dalam field yang jelas-jelas menunjuk target artikel.
-        context_lower = context.lower()
-        if any(key in context_lower for key in (
-            "originalurl", "targeturl", "articleurl", "canonicalurl", "article_url",
-        )):
-            score += 30
-            candidate_reasons[cleaned].append("article-url-field")
-        elif re.search(r'(?i)(?:["\']url["\']\s*:|["\']url["\']\s*=)', context):
-            score += 10
-            candidate_reasons[cleaned].append("url-field")
-
-        scored[cleaned] = max(scored.get(cleaned, -999.0), score)
-
-    if soup is not None:
-        for tag in soup.find_all("a", href=True):
-            add_candidate(tag.get("href"), tag.get_text(" ", strip=True), "anchor")
-
-        for tag in soup.find_all("meta"):
-            if str(tag.get("http-equiv") or "").lower().strip() == "refresh":
-                content = str(tag.get("content") or "")
-                match = re.search(r"url\s*=\s*(.+)$", content, flags=re.I)
-                if match:
-                    add_candidate(match.group(1).strip(" \\\"'"), "", "meta-refresh")
-
-    # Field-oriented extraction sebelum fallback seluruh HTML.
-    field_pattern = re.compile(
-        r'(?is)["\'](?P<key>originalUrl|targetUrl|articleUrl|canonicalUrl|article_url|url)["\']\s*[:=]\s*["\'](?P<url>https?:(?:\\/\\/|//)[^"\']+)["\']'
-    )
-    for match in field_pattern.finditer(raw_html):
-        add_candidate(match.group("url"), title, match.group("key"))
-
-    # URL absolut tertanam di JSON/JS. Gunakan hanya jika ada sinyal domain/title.
-    for embedded_url in _extract_url_like_strings(raw_html):
-        add_candidate(embedded_url, "", "embedded-url")
-
-    if not scored:
-        return ""
-
-    ranked = sorted(scored.items(), key=lambda item: item[1], reverse=True)
-    best_url, best_score = ranked[0]
-    best_domain = _url_source_domain(best_url)
-
-    # Domain source adalah bukti utama. Jika source domain tidak tersedia,
-    # wajib ada skor kuat dari konteks/title agar tidak mengambil URL acak.
-    if source_domain and _domain_related(best_domain, source_domain):
-        return best_url
-
-    if best_score >= 45:
-        return best_url
-
-    return ""
-
-
-def resolve_article_url_details(
-    rss_url: str,
-    response_url: str = "",
-    raw_html: str = "",
-    source_url: str = "",
-    title: str = "",
-) -> Tuple[str, str]:
-    """Resolve URL sekaligus mengembalikan metode resolusinya."""
-    # ------------------------------------------------------------
-    # 0. Offline Google News token decoding
-    # ------------------------------------------------------------
-    # Untuk URL /rss/articles/CBMi..., token sering memuat URL publisher
-    # secara langsung. Ini lebih stabil daripada mengandalkan HTML Google.
-    decoded = decode_google_news_base64_url(rss_url, raw_html=raw_html)
-    if decoded and not _is_google_news_url(decoded):
-        return decoded, "base64_embedded"
-
-    canonical = extract_canonical_article_url(raw_html, response_url)
-    if canonical:
-        return canonical, "canonical"
-
-    resolved = _clean_candidate_url(response_url)
-    if resolved and not _is_google_news_url(resolved):
-        return resolved, "redirect"
-
-    decoded = decode_google_news_base64_url(rss_url, raw_html=raw_html)
-    if decoded:
-        print(f"[URL GOOGLE NEWS] Media asli via garturl: {decoded}")
-        return decoded, "base64_embedded"
-
-    original = extract_google_news_original_url(
-        raw_html=raw_html,
-        response_url=response_url,
-        source_url=source_url,
-        title=title,
-    )
-    if original:
-        print(f"[URL GOOGLE NEWS] Media asli ditemukan: {original}")
-        return original, "embedded_original"
-
-    return normalize_url(rss_url) or _clean_candidate_url(rss_url), "google_fallback"
-
-
-def resolve_article_url(
-    rss_url: str,
-    response_url: str = "",
-    raw_html: str = "",
-    source_url: str = "",
-    title: str = "",
-) -> str:
-    """Backward-compatible wrapper; mengembalikan URL saja."""
-    resolved, _method = resolve_article_url_details(
-        rss_url=rss_url,
-        response_url=response_url,
-        raw_html=raw_html,
-        source_url=source_url,
-        title=title,
-    )
-    return resolved
-
 def fetch_webpage_content(
     url: str,
 ) -> Tuple[str, str]:
-    """Fetch halaman dengan redirect dan mengembalikan URL akhir + HTML."""
+
     if not url:
         return "", ""
 
-    response = SESSION.get(
-        url,
-        timeout=REQUEST_TIMEOUT,
-        allow_redirects=True,
-    )
-    response.raise_for_status()
+    try:
 
-    return (
-        normalize_url(response.url),
-        response.text,
-    )
+        response = SESSION.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
+
+        response.raise_for_status()
+
+        final_url = normalize_url(
+            response.url
+        )
+
+        return (
+            final_url,
+            response.text,
+        )
+
+    except Exception as exc:
+
+        print(
+            f"[FETCH ERROR] "
+            f"{url} -> "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return (
+            url,
+            "",
+        )
 
 
 # ============================================================
@@ -3369,7 +2907,11 @@ def parse_google_news_feed(
     query: str,
 ) -> List[Dict[str, Any]]:
 
-    encoded = urllib.parse.quote_plus(query)
+    encoded = (
+        urllib.parse.quote_plus(
+            query
+        )
+    )
 
     url = (
         "https://news.google.com/rss/search?"
@@ -3379,170 +2921,151 @@ def parse_google_news_feed(
         "&ceid=ID:id"
     )
 
-    last_error = None
+    try:
 
-    for attempt in range(1, RSS_MAX_RETRIES + 1):
+        response = SESSION.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
 
-        try:
+        response.raise_for_status()
 
-            response = SESSION.get(
-                url,
-                timeout=REQUEST_TIMEOUT,
-                allow_redirects=True,
-            )
+        feed = feedparser.parse(
+            response.content
+        )
 
-            status = response.status_code
+        print(
+            f"[RSS DEBUG] "
+            f"query={query} | "
+            f"status={response.status_code} | "
+            f"bytes={len(response.content)} | "
+            f"entries={len(feed.entries)} | "
+            f"bozo={getattr(feed, 'bozo', False)}"
+        )
 
-            # Retry khusus rate-limit / transient server errors.
-            if status in {429, 502, 503, 504}:
+        if getattr(
+            feed,
+            "bozo",
+            False,
+        ):
 
-                retry_after = response.headers.get(
-                    "Retry-After"
-                )
-
-                if retry_after:
-                    try:
-                        delay = max(0.0, float(retry_after))
-                    except (TypeError, ValueError):
-                        delay = RSS_BACKOFF_BASE * (2 ** (attempt - 1))
-                else:
-                    delay = RSS_BACKOFF_BASE * (2 ** (attempt - 1))
-
-                if attempt < RSS_MAX_RETRIES:
-
-                    print(
-                        f"[RSS RETRY] query={query} | "
-                        f"status={status} | "
-                        f"attempt={attempt}/{RSS_MAX_RETRIES} | "
-                        f"sleep={delay:.1f}s"
-                    )
-
-                    time.sleep(delay)
-                    continue
-
-                response.raise_for_status()
-
-            response.raise_for_status()
-
-            feed = feedparser.parse(response.content)
-
-            print(
-                f"[RSS DEBUG] query={query} | "
-                f"status={response.status_code} | "
-                f"bytes={len(response.content)} | "
-                f"entries={len(feed.entries)} | "
-                f"bozo={getattr(feed, 'bozo', False)}"
-            )
-
-            if getattr(feed, "bozo", False):
-
-                bozo_exception = getattr(
+            bozo_exception = (
+                getattr(
                     feed,
                     "bozo_exception",
                     None,
                 )
-
-                if bozo_exception:
-
-                    print(
-                        f"[RSS BOZO ERROR] "
-                        f"{query} -> "
-                        f"{type(bozo_exception).__name__}: "
-                        f"{bozo_exception}"
-                    )
-
-            if not feed.entries:
-
-                print(
-                    f"[RSS EMPTY] "
-                    f"Tidak ada entry untuk: {query}"
-                )
-
-                return []
-
-            rows = []
-
-            for entry in feed.entries[:MAX_ARTICLES_PER_FEED]:
-
-                link = normalize_url(
-                    entry.get("link")
-                )
-
-                if not link:
-                    continue
-
-                published = extract_feed_date(entry)
-
-                source_value = entry.get("source")
-                source_url = ""
-
-                if isinstance(source_value, dict):
-                    source = source_value.get("title", "")
-                    source_url = source_value.get("href", "") or source_value.get("url", "")
-                else:
-                    source = source_value or ""
-
-                rows.append(
-                    {
-                        "title": normalize_text(
-                            entry.get("title")
-                        ),
-                        "link": link,
-                        "published_date": (
-                            published.isoformat()
-                            if published
-                            else None
-                        ),
-                        "source": normalize_text(source),
-                        "source_url": _clean_candidate_url(source_url),
-                        "rss_description": normalize_text(
-                            entry.get("summary")
-                        ),
-                    }
-                )
-
-            print(
-                f"[RSS OK] "
-                f"{query} -> {len(rows)} kandidat"
             )
 
-            return rows
-
-        except requests.RequestException as exc:
-
-            last_error = exc
-
-            if attempt < RSS_MAX_RETRIES:
-
-                delay = RSS_BACKOFF_BASE * (
-                    2 ** (attempt - 1)
-                )
+            if bozo_exception:
 
                 print(
-                    f"[RSS RETRY] query={query} | "
-                    f"error={type(exc).__name__}: {exc} | "
-                    f"attempt={attempt}/{RSS_MAX_RETRIES} | "
-                    f"sleep={delay:.1f}s"
+                    f"[RSS BOZO ERROR] "
+                    f"{query} -> "
+                    f"{type(bozo_exception).__name__}: "
+                    f"{bozo_exception}"
                 )
 
-                time.sleep(delay)
+        if not feed.entries:
+
+            print(
+                f"[RSS EMPTY] "
+                f"Tidak ada entry untuk: "
+                f"{query}"
+            )
+
+            return []
+
+        rows = []
+
+        for entry in feed.entries[
+            :MAX_ARTICLES_PER_FEED
+        ]:
+
+            link = normalize_url(
+                entry.get("link")
+            )
+
+            if not link:
                 continue
 
-            break
+            published = (
+                extract_feed_date(
+                    entry
+                )
+            )
 
-        except Exception as exc:
+            source_value = (
+                entry.get("source")
+            )
 
-            last_error = exc
-            break
+            if isinstance(
+                source_value,
+                dict,
+            ):
 
-    print(
-        f"[RSS ERROR] "
-        f"{query} -> "
-        f"{type(last_error).__name__ if last_error else 'UnknownError'}: "
-        f"{last_error}"
-    )
+                source = (
+                    source_value.get(
+                        "title",
+                        "",
+                    )
+                )
 
-    return []
+            else:
+
+                source = (
+                    source_value
+                    or ""
+                )
+
+            rows.append(
+                {
+                    "title": normalize_text(
+                        entry.get(
+                            "title"
+                        )
+                    ),
+
+                    "link": link,
+
+                    "published_date": (
+                        published.isoformat()
+                        if published
+                        else None
+                    ),
+
+                    "source": normalize_text(
+                        source
+                    ),
+
+                    "rss_description": (
+                        normalize_text(
+                            entry.get(
+                                "summary"
+                            )
+                        )
+                    ),
+                }
+            )
+
+        print(
+            f"[RSS OK] "
+            f"{query} -> "
+            f"{len(rows)} kandidat"
+        )
+
+        return rows
+
+    except Exception as exc:
+
+        print(
+            f"[RSS ERROR] "
+            f"{query} -> "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+        return []
 
 
 # ============================================================
@@ -3570,12 +3093,7 @@ def collect_candidates() -> List[Dict[str, Any]]:
     skipped_empty_link = 0
     replaced_with_better = 0
 
-    for query_index, query in enumerate(SEARCH_TARGETS):
-
-        # Jeda sebelum query berikutnya untuk mengurangi risiko 429/503.
-        # Diterapkan walaupun query sebelumnya gagal atau mengembalikan 0 hasil.
-        if query_index > 0 and RSS_QUERY_DELAY > 0:
-            time.sleep(RSS_QUERY_DELAY)
+    for query in SEARCH_TARGETS:
 
         print(
             f"[RSS] Mencari: {query}"
@@ -3736,6 +3254,7 @@ def collect_candidates() -> List[Dict[str, Any]]:
 
                 replaced_with_better += 1
 
+    # --------------------------------------------------------
     # HAPUS FIELD INTERNAL
     # --------------------------------------------------------
 
@@ -3883,37 +3402,32 @@ candidate: Dict[str, Any],
     raw_html = ""
     
     try:
-        fetched_url, raw_html = fetch_webpage_content(rss_link)
-        final_url, url_resolution_method = resolve_article_url_details(
-            rss_url=rss_link,
-            response_url=fetched_url,
-            raw_html=raw_html,
-            source_url=candidate.get("source_url", ""),
-            title=title,
-        )
-        print(
-            f"[URL] RSS={rss_link} -> RESOLVED={final_url}"
-        )
-        if _is_google_news_url(final_url):
-            print(
-                "[URL WARNING] URL masih Google News; "
-                "canonical media URL tidak ditemukan."
+    
+        final_url, raw_html = (
+            fetch_webpage_content(
+                rss_link
             )
+        )
     
     except Exception as exc:
+    
         print(
             "[FETCH WARNING] "
             f"{rss_link} -> "
             f"{type(exc).__name__}: "
             f"{exc}"
         )
-        final_url = normalize_url(rss_link)
-        url_resolution_method = "fetch_failed_google_fallback"
+    
+        final_url = rss_link
         raw_html = ""
     
+    final_url = normalize_url(
+        final_url or rss_link
+    )
+    
     if not final_url:
+    
         final_url = rss_link
-        url_resolution_method = "google_fallback"
     
     # ========================================================
     # CONTENT
@@ -4085,9 +3599,6 @@ candidate: Dict[str, Any],
         "title": title,
     
         "link": final_url,
-
-        # Internal observability field. Dihapus sebelum upsert ke database.py.
-        "_url_resolution_method": url_resolution_method,
     
         "content": content[
             :15000
@@ -4104,12 +3615,6 @@ candidate: Dict[str, Any],
                 )
             )
             or "Google News"
-        ),
-
-        "publisher": (
-            get_publisher_from_title(title)
-            or (urllib.parse.urlparse(final_url).netloc.lower().replace("www.", "")
-                if final_url and "news.google.com" not in str(final_url) else "")
         ),
     
         "category": (
@@ -4203,336 +3708,6 @@ candidate: Dict[str, Any],
     return result
    
 
-
-
-# ============================================================
-# RISK CONTEXT ENGINE
-# ============================================================
-# Mengaktifkan seluruh 5 faktor Risk Engine tanpa mengubah database.py.
-# Konteks dihitung READ-ONLY dari artikel yang sudah ada + artikel baru.
-# ============================================================
-
-RISK_EVENT_SIMILARITY_THRESHOLD = 0.62
-RISK_STRONG_TITLE_SIMILARITY = 0.82
-RISK_MAX_RELATED_ARTICLES = 100
-RISK_RECENT_DAYS = 7
-
-# Kata yang terlalu umum untuk menjadi penentu utama event.
-RISK_GENERIC_EVENT_TOKENS = {
-    "deli", "serdang", "kejari", "kejaksaan", "negeri", "kajari",
-    "cabang", "cabjari", "sumut", "sumatera", "utara", "terkait",
-    "dengan", "setelah", "resmi", "terhadap", "ungkap", "dalam",
-    "untuk", "yang", "dan", "atau", "ini", "itu", "jadi", "jadi",
-    "kini", "saat", "sebut", "kata", "menurut", "berikut", "diperiksa",
-}
-
-# Anchor event: kata yang biasanya menjelaskan kejadian inti.
-RISK_EVENT_ANCHOR_TOKENS = {
-    # Penegakan hukum / masalah
-    "korupsi", "narkotika", "narkoba", "tersangka", "terdakwa", "pidana",
-    "penyidikan", "penyelidikan", "penuntutan", "perkara", "pengadilan",
-    "sidang", "vonis", "dakwaan", "suap", "gratifikasi", "penggeledahan",
-    "penyitaan", "penangkapan", "ditangkap", "ditangkapnya", "diamankan",
-    "dicopot", "pencopotan", "dipanggil", "pelanggaran", "kode", "etik",
-    "diganti", "penggantinya", "pelantikan", "dilantik", "lantik", "plh",
-    # Kegiatan/kebijakan yang cukup spesifik
-    "sertifikasi", "wakaf", "tanah", "bunga", "pelakor", "bos", "dana",
-    "desa", "lubuk", "pakam", "batu", "lokong", "revanda", "sitepu",
-    "padang", "lawas", "sapta", "putra", "jamintel", "integritas",
-}
-
-# V3: proteksi context untuk kategori non-prioritas.
-# Netral/Positif tetap dapat context untuk observability, tetapi context
-# tidak boleh sendirian menaikkan risk ke MEDIUM/HIGH/CRITICAL.
-RISK_NONPRIORITY_MAX_SCORE = 30
-
-
-def _risk_article_fingerprint(article: Dict[str, Any]) -> str:
-    """Fingerprint ringan untuk menghindari duplicate internal saat context dihitung."""
-    url = normalize_url(article.get("link") or "")
-    if url:
-        return f"url:{url}"
-    title = normalize_text(article.get("title") or "").lower()
-    media = normalize_text(get_media_source(article)).lower()
-    return f"title_media:{title}|{media}"
-
-
-def _risk_unique_articles(all_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Deduplicate context tanpa menggabungkan artikel berbeda media."""
-    unique = []
-    seen = set()
-    for item in all_articles:
-        marker = _risk_article_fingerprint(item)
-        if marker in seen:
-            continue
-        seen.add(marker)
-        unique.append(item)
-    return unique
-
-
-_RISK_BLOCK_CACHE = {}
-
-
-def _risk_tokens(value: Any) -> set:
-    text = normalize_text(value).lower()
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    return {token for token in text.split() if len(token) >= 4}
-
-
-def _risk_event_tokens(article: Dict[str, Any]) -> set:
-    """Token judul yang relevan untuk identitas event, tanpa kata institusi umum."""
-    title_tokens = _risk_tokens(article.get("title"))
-    return title_tokens - RISK_GENERIC_EVENT_TOKENS
-
-
-def _risk_event_anchors(article: Dict[str, Any]) -> set:
-    """Anchor event dari judul; fallback ke token judul non-generik yang cukup informatif."""
-    tokens = _risk_event_tokens(article)
-    anchors = tokens & RISK_EVENT_ANCHOR_TOKENS
-    if anchors:
-        return anchors
-    # Untuk event non-hukum, token non-generik tetap dapat menjadi anchor.
-    return {token for token in tokens if len(token) >= 6}
-
-
-def _risk_event_similarity(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> float:
-    title_a = normalize_text(article_a.get("title"))
-    title_b = normalize_text(article_b.get("title"))
-    if not title_a or not title_b:
-        return 0.0
-
-    title_ratio = SequenceMatcher(None, title_a.lower(), title_b.lower()).ratio()
-    title_tokens_a = _risk_event_tokens(article_a)
-    title_tokens_b = _risk_event_tokens(article_b)
-    title_token_ratio = (
-        len(title_tokens_a & title_tokens_b) / len(title_tokens_a | title_tokens_b)
-        if (title_tokens_a and title_tokens_b)
-        else 0.0
-    )
-
-    content_a = normalize_text(article_a.get("content") or article_a.get("summary"))[:2000]
-    content_b = normalize_text(article_b.get("content") or article_b.get("summary"))[:2000]
-    content_tokens_a = _risk_tokens(content_a) - RISK_GENERIC_EVENT_TOKENS
-    content_tokens_b = _risk_tokens(content_b) - RISK_GENERIC_EVENT_TOKENS
-    content_ratio = (
-        len(content_tokens_a & content_tokens_b) / len(content_tokens_a | content_tokens_b)
-        if (content_tokens_a and content_tokens_b)
-        else 0.0
-    )
-
-    return round(
-        (title_ratio * 0.55)
-        + (title_token_ratio * 0.30)
-        + (content_ratio * 0.15),
-        4,
-    )
-
-
-def _risk_same_url(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> bool:
-    url_a = normalize_url(article_a.get("link") or "")
-    url_b = normalize_url(article_b.get("link") or "")
-    return bool(url_a and url_b and url_a == url_b)
-
-
-def _risk_same_title_media(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> bool:
-    title_a = normalize_text(article_a.get("title")).lower()
-    title_b = normalize_text(article_b.get("title")).lower()
-    if not title_a or not title_b or title_a != title_b:
-        return False
-    media_a = normalize_text(get_media_source(article_a)).lower()
-    media_b = normalize_text(get_media_source(article_b)).lower()
-    return bool(media_a and media_b and media_a == media_b)
-
-
-def _risk_is_related_event(article: Dict[str, Any], other: Dict[str, Any]) -> Tuple[bool, float]:
-    """Validasi dua tahap agar institusi/lokasi umum tidak membuat false cluster."""
-    similarity = _risk_event_similarity(article, other)
-    if similarity < RISK_EVENT_SIMILARITY_THRESHOLD:
-        return False, similarity
-
-    anchors_a = _risk_event_anchors(article)
-    anchors_b = _risk_event_anchors(other)
-    anchor_overlap = anchors_a & anchors_b
-
-    # Judul yang sangat kuat boleh lolos tanpa anchor eksplisit.
-    title_a = normalize_text(article.get("title"))
-    title_b = normalize_text(other.get("title"))
-    title_ratio = SequenceMatcher(None, title_a.lower(), title_b.lower()).ratio()
-
-    if title_ratio >= RISK_STRONG_TITLE_SIMILARITY:
-        return True, similarity
-
-    # Untuk similarity normal, wajib ada anchor event yang sama.
-    if not anchor_overlap:
-        return False, similarity
-
-    # Minimal dua anchor yang sama untuk mencegah event berbeda yang hanya
-    # berbagi satu istilah umum seperti "dana", "desa", atau "korupsi".
-    # Satu anchor tetap boleh jika judul sudah cukup dekat.
-    if len(anchor_overlap) >= 2:
-        return True, similarity
-    if title_ratio >= 0.72:
-        return True, similarity
-    return False, similarity
-
-
-def _build_risk_block_index(all_articles: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-    """Membuat inverted index setelah dedup internal untuk mencegah recurrence palsu."""
-    index = defaultdict(list)
-    for item in _risk_unique_articles(all_articles):
-        anchors = _risk_event_anchors(item)
-        for anchor in anchors:
-            index[anchor].append(item)
-    return index
-
-
-def _risk_candidate_articles(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Ambil kandidat berdasarkan anchor event; fallback terbatas untuk judul sangat kuat."""
-    cache_key = (id(all_articles), len(all_articles), "v3")
-    index = _RISK_BLOCK_CACHE.get(cache_key)
-    if index is None:
-        index = _build_risk_block_index(all_articles)
-        _RISK_BLOCK_CACHE.clear()
-        _RISK_BLOCK_CACHE[cache_key] = index
-
-    candidates = []
-    seen = set()
-    for anchor in _risk_event_anchors(article):
-        for item in index.get(anchor, []):
-            marker = id(item)
-            if marker not in seen:
-                seen.add(marker)
-                candidates.append(item)
-
-    # Bila tidak ada anchor, jangan melakukan O(N) similarity scan.
-    return candidates
-
-
-def _risk_published_datetime(article: Dict[str, Any]) -> Optional[datetime]:
-    value = article.get("published_date")
-    if not value:
-        return None
-    try:
-        parsed = date_parser.parse(str(value))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
-def build_risk_context(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Hitung media spread, recurrence, dan trend secara READ-ONLY."""
-    article_date = _risk_published_datetime(article)
-    related = []
-
-    candidates = _risk_candidate_articles(article, all_articles)
-    for other in candidates:
-        if other is article:
-            continue
-        if _risk_same_url(article, other):
-            continue
-        is_related, similarity = _risk_is_related_event(article, other)
-        if is_related:
-            related.append((similarity, other))
-
-    related.sort(key=lambda item: item[0], reverse=True)
-    related = related[:RISK_MAX_RELATED_ARTICLES]
-    event_articles = [article] + [item[1] for item in related]
-
-    media_sources = set()
-    for item in event_articles:
-        source = normalize_text(get_media_source(item))
-        if source:
-            media_sources.add(source.lower())
-
-    recurrence_count = 0
-    recent_count = 0
-    previous_count = 0
-    seen_recurrence = set()
-
-    if article_date is not None:
-        current_ts = article_date.timestamp()
-        recent_start = current_ts - (RISK_RECENT_DAYS * 86400)
-        previous_start = current_ts - (RISK_RECENT_DAYS * 2 * 86400)
-
-        for _, other in related:
-            # Copy artikel dari media yang sama dengan judul sama tidak boleh
-            # dihitung sebagai recurrence kedua kali.
-            if _risk_same_title_media(article, other):
-                continue
-
-            other_link = normalize_url(other.get("link") or "")
-            marker = other_link or normalize_text(other.get("title")).lower()
-            if marker in seen_recurrence:
-                continue
-            seen_recurrence.add(marker)
-
-            other_date = _risk_published_datetime(other)
-            if other_date is None:
-                continue
-            ts = other_date.timestamp()
-            if ts < current_ts:
-                recurrence_count += 1
-            if recent_start <= ts <= current_ts:
-                recent_count += 1
-            elif previous_start <= ts < recent_start:
-                previous_count += 1
-
-    if recent_count <= 0:
-        trend_score = 0
-    elif previous_count <= 0:
-        trend_score = 15 if recent_count >= 3 else 10
-    else:
-        ratio = recent_count / previous_count
-        if ratio >= 3:
-            trend_score = 15
-        elif ratio >= 2:
-            trend_score = 12
-        elif ratio >= 1.5:
-            trend_score = 8
-        elif ratio > 1:
-            trend_score = 5
-        else:
-            trend_score = 0
-
-    return {
-        "media_count": max(1, len(media_sources)),
-        "media_sources": media_sources,
-        "recurrence_count": recurrence_count,
-        "trend_score": trend_score,
-        "related_count": len(related),
-        "related_titles": [item.get("title", "") for _, item in related[:20]],
-        "recent_count": recent_count,
-        "previous_count": previous_count,
-    }
-
-
-def calculate_article_risk(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
-    context = build_risk_context(article, all_articles)
-    result = calculate_risk_score(
-        article,
-        media_count=context["media_count"],
-        media_sources=context["media_sources"],
-        recurrence_count=context["recurrence_count"],
-        trend_score=context["trend_score"],
-    )
-
-    # V3 business guard: Netral/Positif tidak menjadi MEDIUM hanya karena
-    # context amplification. Scoring engine tetap unchanged; guard berada
-    # di application layer.
-    category = str(article.get("category") or "Netral").strip()
-    if category in {"Netral", "Positif"} and result["risk_score"] > RISK_NONPRIORITY_MAX_SCORE:
-        result["risk_score"] = RISK_NONPRIORITY_MAX_SCORE
-        result["risk_level"] = "LOW"
-        result["reasons"] = list(result.get("reasons") or [])
-        result["reasons"].append(
-            "Proteksi V3: kategori Netral/Positif dibatasi LOW; context tidak boleh menjadi satu-satunya dasar prioritas."
-        )
-
-    result["context"] = context
-    result["context"]["v3_nonpriority_guard"] = category in {"Netral", "Positif"}
-    return result
 
 
 # ============================================================
@@ -4634,9 +3809,6 @@ def telegram_text(
         f"{category}\n"
         f"<b>Prioritas:</b> "
         f"{priority}\n"
-        f"<b>Risk:</b> "
-        f"{html.escape(str(article.get('risk_score', 'N/A')))} / 100 "
-        f"({html.escape(str(article.get('risk_level', 'N/A')))})\n"
         f"<b>Satker:</b> "
         f"{html.escape(NAMA_SATKER)}\n\n"
         f"<b>{title}</b>\n"
@@ -4644,53 +3816,26 @@ def telegram_text(
     )
 
 
-def is_current_month_year_article(
-    article: Dict[str, Any],
-) -> bool:
-    """
-    Telegram hanya untuk artikel pada bulan dan tahun berjalan.
-    Waktu pembanding menggunakan UTC agar konsisten di GitHub Actions.
-    """
-
-    published = _risk_published_datetime(article)
-
-    if published is None:
-        return False
-
-    now = datetime.now(timezone.utc)
-
-    return (
-        published.year == now.year
-        and published.month == now.month
-    )
-
-
 def send_alert_if_needed(
     article: Dict[str, Any],
 ) -> bool:
 
-    category = normalize_text(
-        article.get("category")
-    ) or "Netral"
-
-    if category not in {
-        "Negatif Kuat",
-        "Perlu Penanganan",
-    }:
-        return False
-
-    if not is_current_month_year_article(article):
-
-        print(
-            "[TELEGRAM SKIP] "
-            "Artikel bukan bulan/tahun berjalan: "
-            f"{article.get('title', '')[:100]}"
+    if (
+        article.get(
+            "category"
         )
+        not in {
+            "Negatif Kuat",
+            "Perlu Penanganan",
+        }
+    ):
 
         return False
 
     return send_telegram_message(
-        telegram_text(article)
+        telegram_text(
+            article
+        )
     )
 
 
@@ -4766,6 +3911,11 @@ def reclassify_all() -> Dict[str, int]:
 # RUN ONCE
 # ============================================================
 
+
+# ============================================================
+# RUN ONCE
+# ============================================================
+
 def run_once() -> Dict[str, Any]:
 
     started = time.perf_counter()
@@ -4781,75 +3931,6 @@ def run_once() -> Dict[str, Any]:
     try:
         existing_articles = get_all_articles()
 
-        # ========================================================
-        # BUILD DUPLICATE INDEXES
-        # ========================================================
-        
-        existing_link_index = {
-        
-            normalize_url(
-                article.get("link")
-            )
-        
-            for article in existing_articles
-        
-            if normalize_url(
-                article.get("link")
-            )
-        }
-        
-        
-        # Diagnostic-only lookup: normalized URL -> full DB article.
-        # This does NOT change the duplicate decision rule.
-        existing_article_by_link = {}
-        for existing_article in existing_articles:
-            existing_link = normalize_url(
-                existing_article.get("link")
-            )
-            if existing_link:
-                existing_article_by_link.setdefault(
-                    existing_link,
-                    existing_article,
-                )
-
-        existing_title_index = (
-            build_existing_title_index(
-                existing_articles
-            )
-        )
-        
-        
-        existing_content_index = (
-            build_existing_content_index(
-                existing_articles
-            )
-        )
-        
-        
-        print(
-            f"[DATABASE] "
-            f"Total artikel sebelum run: "
-            f"{len(existing_articles)}"
-        )
-        
-        print(
-            f"[DEDUPE] "
-            f"Unique URL index: "
-            f"{len(existing_link_index)}"
-        )
-        
-        print(
-            f"[DEDUPE] "
-            f"Title + media index: "
-            f"{len(existing_title_index)}"
-        )
-        
-        print(
-            f"[DEDUPE] "
-            f"Content index: "
-            f"{len(existing_content_index)}"
-        )
-
     except Exception as exc:
 
         print(
@@ -4862,6 +3943,28 @@ def run_once() -> Dict[str, Any]:
             "status": "Gagal",
             "error": str(exc),
         }
+
+    existing_links = {
+        normalize_url(article.get("link"))
+        for article in existing_articles
+        if normalize_url(article.get("link"))
+    }
+
+    # Prevention indexes. Semua index di-update setelah save sukses.
+    existing_link_index = set(existing_links)
+    existing_title_media_index = build_title_media_index(existing_articles)
+
+    print(
+        f"[DATABASE] "
+        f"Total artikel sebelum run: "
+        f"{len(existing_articles)}"
+    )
+
+    print(
+        f"[DATABASE] "
+        f"Link unik sebelum run: "
+        f"{len(existing_links)}"
+    )
 
     # ========================================================
     # COLLECT CANDIDATES
@@ -5014,22 +4117,8 @@ def run_once() -> Dict[str, Any]:
         Dict[str, Any],
     ] = {}
 
-    print(
-        f"[DEBUG SAVE] Memasuki SAVE LOOP | "
-        f"total={len(valid_articles)}"
-    )
-    
     for article in valid_articles:
 
-        print(
-            f"[DEBUG SAVE] Memproses artikel: "
-            f"{article.get('title', '')[:120]}"
-        )
-    
-        # ====================================================
-        # VALIDATE LINK
-        # ====================================================
-        
         link = normalize_url(
             article.get("link")
         )
@@ -5067,450 +4156,153 @@ def run_once() -> Dict[str, Any]:
     valid_articles = list(
         unique_articles.values()
     )
-    
+
     print(
         f"[PATROLI] "
         f"Artikel valid setelah dedupe: "
         f"{len(valid_articles)}"
     )
-    
-    print(
-        f"[DEBUG SAVE] valid_articles sebelum SAVE = "
-        f"{len(valid_articles)}"
-    )
-
-    # ========================================================
-    # V5.2 URL RESOLUTION SUMMARY
-    # ========================================================
-
-    url_resolution_counts = Counter()
-    for item in valid_articles:
-        method = normalize_text(
-            item.get("_url_resolution_method")
-        ) or "unknown"
-        url_resolution_counts[method] += 1
-
-    print()
-    print("[URL RESOLUTION SUMMARY]")
-    print(
-        f"RSS candidates             : {len(candidates)}"
-    )
-    print(
-        f"Valid articles processed   : {len(valid_articles)}"
-    )
-    print(
-        f"Resolved to media URL      : "
-        f"{sum(url_resolution_counts[k] for k in ('base64_embedded', 'canonical', 'redirect', 'embedded_original'))}"
-    )
-    print(
-        f"Base64 embedded URL        : {url_resolution_counts.get('base64_embedded', 0)}"
-    )
-    print(
-        f"Canonical URL              : {url_resolution_counts.get('canonical', 0)}"
-    )
-    print(
-        f"Redirect URL               : {url_resolution_counts.get('redirect', 0)}"
-    )
-    print(
-        f"Embedded original URL      : {url_resolution_counts.get('embedded_original', 0)}"
-    )
-    print(
-        f"Still Google News URL      : "
-        f"{url_resolution_counts.get('google_fallback', 0) + url_resolution_counts.get('fetch_failed_google_fallback', 0)}"
-    )
-    print(
-        f"Fetch failed fallback      : {url_resolution_counts.get('fetch_failed_google_fallback', 0)}"
-    )
 
     # ========================================================
     # SAVE
     # ========================================================
-    # ========================================================
-    # SAVE
-    #
-    # Semua keputusan duplicate hanya melalui:
-    #
-    # should_save_article()
-    #
-    # Tidak ada lagi:
-    #
-    # - is_duplicate_article()
-    # - existing_links tambahan
-    # - was_existing
-    # - get_article_by_link()
-    #
-    # ========================================================
-    
+
     saved_count = 0
     save_failed = 0
-    duplicate_reason_counts = Counter()
-    
     new_articles = []
-    
-    
+
     for article in valid_articles:
-    
-        # ====================================================
-        # VALIDATE LINK
-        # ====================================================
-    
+
         link = normalize_url(
             article.get("link")
         )
-    
+
         if not link:
-    
-            print(
-                "[SKIP] INVALID_LINK"
-            )
-    
             continue
-    
-    
-        # ====================================================
-        # CENTRAL DUPLICATE DECISION
-        #
-        # Hanya fungsi ini yang menentukan:
-        #
-        # - Duplicate URL
-        # - Duplicate Title + Media
-        # - Duplicate Content + Media
-        #
-        # Event sama dari media berbeda
-        # TETAP BOLEH DISIMPAN.
-        # ====================================================
-    
-        (
-            should_save,
-            reason,
-            similarity,
-            matched_article,
-        ) = should_save_article(
-    
-            article,
-    
-            existing_link_index,
-    
-            existing_title_index,
-    
-            existing_content_index,
+
+        was_existing = (
+            link in existing_links
         )
 
-        if not should_save and reason.startswith("DUPLICATE_"):
-            duplicate_reason_counts[reason] += 1
-    
-    
-        # Diagnostic-only: identify the existing DB row for URL duplicates.
-        matched_url_article = None
-        if reason == "DUPLICATE_URL":
-            matched_url_article = existing_article_by_link.get(link)
+        print(
+            f"[CHECK LINK] "
+            f"{'LAMA' if was_existing else 'BARU'} | "
+            f"{link}"
+        )
 
+        # ----------------------------------------------------
+        # CEK LANGSUNG KE DATABASE
+        # ----------------------------------------------------
 
-        # ====================================================
-        # SKIP DUPLICATE
-        # ====================================================
-    
+        if not was_existing:
+
+            try:
+
+                existing_by_link = (
+                    get_article_by_link(
+                        link
+                    )
+                )
+
+                if existing_by_link:
+
+                    was_existing = True
+
+            except Exception as exc:
+
+                print(
+                    f"[CHECK LINK WARNING] "
+                    f"{link} -> "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
+
+        # ============================================================
+        # FINAL DUPLICATE PREVENTION
+        # ============================================================
+        should_save, duplicate_reason = should_save_article(
+            article,
+            existing_link_index,
+            existing_title_media_index,
+            existing_articles,
+        )
+
         if not should_save:
-    
-            print()
             print(
-                f"[SKIP] {reason}"
-            )
-    
-            print(
-                f"TITLE: "
+                f"[DUPLICATE] {duplicate_reason}: "
                 f"{article.get('title', '')}"
             )
-    
-            print(
-                f"LINK: "
-                f"{article.get('link', '')}"
-            )
-    
-            print(
-                f"MEDIA: "
-                f"{get_media_source(article)}"
-            )
-
-            if reason == "DUPLICATE_URL":
-                print("[DUPLICATE URL DIAGNOSTIC]")
-
-                if matched_url_article:
-                    print(
-                        f"MATCHED DB ID: "
-                        f"{matched_url_article.get('id', 'Unknown')}"
-                    )
-                    print(
-                        f"MATCHED DB TITLE: "
-                        f"{matched_url_article.get('title', '')}"
-                    )
-                    print(
-                        f"MATCHED DB MEDIA: "
-                        f"{get_media_source(matched_url_article)}"
-                    )
-                    print(
-                        f"MATCHED DB SOURCE: "
-                        f"{normalize_text(matched_url_article.get('source', ''))}"
-                    )
-                    print(
-                        f"MATCHED DB PUBLISHER: "
-                        f"{normalize_text(matched_url_article.get('publisher', ''))}"
-                    )
-                    print(
-                        f"MATCHED DB LINK: "
-                        f"{matched_url_article.get('link', '')}"
-                    )
-                    print(
-                        f"CANDIDATE LINK NORMALIZED: {link}"
-                    )
-                    print(
-                        "MATCHED DB LINK NORMALIZED: "
-                        f"{normalize_url(matched_url_article.get('link'))}"
-                    )
-                    print(
-                        "TITLE+MEDIA MATCH: "
-                        f"{build_title_key(article) == build_title_key(matched_url_article)}"
-                    )
-                    print(
-                        "MEDIA MATCH: "
-                        f"{get_media_source(article).lower().strip() == get_media_source(matched_url_article).lower().strip()}"
-                    )
-
-                    candidate_content = normalize_content_for_duplicate(
-                        get_article_content(article)
-                    )
-                    matched_content = normalize_content_for_duplicate(
-                        get_article_content(matched_url_article)
-                    )
-
-                    if candidate_content and matched_content:
-                        try:
-                            similarity_url = calculate_content_similarity(
-                                candidate_content,
-                                matched_content,
-                            )
-                            print(
-                                f"CONTENT SIMILARITY: {similarity_url:.2%}"
-                            )
-                        except Exception as exc:
-                            print(
-                                "CONTENT SIMILARITY: ERROR "
-                                f"{type(exc).__name__}: {exc}"
-                            )
-                    else:
-                        print(
-                            "CONTENT SIMILARITY: "
-                            "Tidak dapat dihitung (content kosong)"
-                        )
-                else:
-                    print(
-                        "[DUPLICATE URL DIAGNOSTIC] "
-                        "Matched database article tidak ditemukan "
-                        "meskipun URL ada di index."
-                    )
-
-    
-            if matched_article:
-    
-                print(
-                    f"MATCHED ID: "
-                    f"{matched_article.get('id', 'Unknown')}"
-                )
-    
-                print(
-                    f"MATCHED TITLE: "
-                    f"{matched_article.get('title', '')}"
-                )
-    
-                print(
-                    f"MATCHED MEDIA: "
-                    f"{get_media_source(matched_article)}"
-                )
-    
-                print(
-                    f"SIMILARITY: "
-                    f"{similarity:.2%}"
-                )
-    
             continue
-    
-    
-        # ====================================================
-        # ARTICLE APPROVED
-        # ====================================================
-    
-        print()
-    
-        print(
-            "[SAVE] NEW_ARTICLE"
-        )
-    
-        print(
-            f"TITLE: "
-            f"{article.get('title', '')}"
-        )
-    
-        print(
-            f"MEDIA: "
-            f"{get_media_source(article)}"
-        )
-    
-    
-        # ====================================================
-        # UPSERT ARTICLE
-        # ====================================================
-    
+        # ----------------------------------------------------
+        # UPSERT
+        # ----------------------------------------------------
+
         try:
-            # Jangan pernah mengirim field observability internal ke database.py.
-            article.pop("_url_resolution_method", None)
-    
+
             saved = upsert_article(
                 article
             )
-    
-    
-            # ====================================================
-            # SAVE FAILED
-            # ====================================================
-    
+
             if saved is None:
-    
+
                 save_failed += 1
-    
+
                 print(
                     f"[SAVE ERROR] "
                     f"Gagal menyimpan: "
                     f"{link}"
                 )
-    
+
                 continue
-    
-    
-            # ====================================================
-            # SAVE SUCCESS
-            # ====================================================
-    
+
             saved_count += 1
-    
-    
-            # ====================================================
-            # UPDATE DUPLICATE INDEX
-            #
-            # SANGAT PENTING.
-            #
-            # Artikel yang baru saja disimpan harus langsung
-            # dimasukkan ke index.
-            #
-            # Dengan demikian artikel berikutnya dalam satu
-            # GitHub Actions run juga bisa terdeteksi duplicate.
-            # ====================================================
-    
-            register_saved_article(
-    
-                article,
-    
-                existing_link_index,
-    
-                existing_title_index,
-    
-                existing_content_index,
-            )
-    
-    
-            # ====================================================
-            # RISK ANALYSIS — 5 FACTORS AKTIF
-            # ====================================================
-            # Tidak menulis risk fields ke database karena database.py
-            # harus tetap tidak berubah.
-            risk_pool = existing_articles + new_articles + [article]
-            try:
-                risk_result = calculate_article_risk(article, risk_pool)
-                article["risk_score"] = risk_result["risk_score"]
-                article["risk_level"] = risk_result["risk_level"]
-                article["risk_factors"] = risk_result["factors"]
-                article["risk_reasons"] = risk_result["reasons"]
-                article["risk_context"] = risk_result["context"]
-                print(
-                    f"[RISK] {risk_result['risk_score']}/100 "
-                    f"{risk_result['risk_level']} | "
-                    f"media={risk_result['context']['media_count']} | "
-                    f"recurrence={risk_result['context']['recurrence_count']} | "
-                    f"trend={risk_result['context']['trend_score']}"
-                )
-            except Exception as exc:
-                print(
-                    f"[RISK WARNING] Gagal menghitung risk: "
-                    f"{type(exc).__name__}: {exc}"
+
+            # Update index immediately so duplicate dalam run yang sama ikut diblok.
+            normalized_saved_link = normalize_url(link)
+            if normalized_saved_link:
+                existing_link_index.add(normalized_saved_link)
+                existing_links.add(normalized_saved_link)
+
+            saved_title_media_key = make_title_media_key(article)
+            if saved_title_media_key:
+                existing_title_media_index.add(saved_title_media_key)
+
+            existing_articles.append(article)
+
+            if not was_existing:
+
+                new_articles.append(
+                    article
                 )
 
-
-            # ====================================================
-            # NEW ARTICLE
-            #
-            # Artikel hanya masuk Telegram jika benar-benar
-            # lolos duplicate prevention dan berhasil disimpan.
-            # ====================================================
-    
-            new_articles.append(
-                article
-            )
-    
-    
-            print(
-                f"[SAVE SUCCESS] "
-                f"{article.get('title', '')[:100]}"
-            )
-    
-    
         except Exception as exc:
-    
+
             save_failed += 1
-    
+
             print(
                 f"[SAVE ERROR] "
                 f"{link}: "
                 f"{type(exc).__name__}: "
                 f"{exc}"
             )
-    # ========================================================
-    # V5.2 DUPLICATE SUMMARY
-    # ========================================================
 
     print()
-    print("[DUPLICATE SUMMARY]")
     print(
-        f"DUPLICATE_URL               : {duplicate_reason_counts.get('DUPLICATE_URL', 0)}"
-    )
-    print(
-        f"DUPLICATE_TITLE_SAME_MEDIA  : {duplicate_reason_counts.get('DUPLICATE_TITLE_SAME_MEDIA', 0)}"
-    )
-    print(
-        f"DUPLICATE_CONTENT_SAME_MEDIA: {duplicate_reason_counts.get('DUPLICATE_CONTENT_SAME_MEDIA', 0)}"
-    )
-    print(
-        f"NEW_ARTICLE                 : {saved_count}"
-    )
-    print(
-        f"SAVE_FAILED                 : {save_failed}"
+        f"[DATABASE] "
+        f"Berhasil disimpan/update: "
+        f"{saved_count}"
     )
 
-    # ========================================================
-    # RISK SUMMARY
-    # ========================================================
-    risk_level_counts = Counter()
-    for item in new_articles:
-        level = normalize_text(item.get("risk_level"))
-        if level:
-            risk_level_counts[level] += 1
-
-    print()
-    print("[RISK] RINGKASAN ARTIKEL BARU")
     print(
-        f"[RISK] Scored: {sum(risk_level_counts.values())} | "
-        f"CRITICAL={risk_level_counts.get('CRITICAL', 0)} | "
-        f"HIGH={risk_level_counts.get('HIGH', 0)} | "
-        f"MEDIUM={risk_level_counts.get('MEDIUM', 0)} | "
-        f"LOW={risk_level_counts.get('LOW', 0)}"
+        f"[DATABASE] "
+        f"Gagal simpan: "
+        f"{save_failed}"
+    )
+
+    print(
+        f"[DATABASE] "
+        f"Artikel baru: "
+        f"{len(new_articles)}"
     )
 
     # ========================================================
@@ -5518,41 +4310,22 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
 
     telegram_count = 0
-    telegram_skipped = 0
-
-    print(
-        f"[TELEGRAM] Total artikel baru: "
-        f"{len(new_articles)}"
-    )
 
     if telegram_enabled():
+
+        print(
+            f"[TELEGRAM] "
+            f"Kandidat artikel baru: "
+            f"{len(new_articles)}"
+        )
 
         for article in new_articles:
 
             try:
 
-                category = normalize_text(
-                    article.get("category")
-                ) or "Netral"
-
-                # Hanya Negatif Kuat dan Perlu Penanganan
-                # yang boleh dikirim ke Telegram.
-                if category not in {
-                    "Negatif Kuat",
-                    "Perlu Penanganan",
-                }:
-                    telegram_skipped += 1
-
-                    print(
-                        "[TELEGRAM SKIP] "
-                        f"Kategori tidak dikirim: {category}"
-                    )
-                    continue
-
                 if not send_alert_if_needed(
                     article
                 ):
-                    telegram_skipped += 1
                     continue
 
                 telegram_count += 1
@@ -5564,8 +4337,6 @@ def run_once() -> Dict[str, Any]:
 
             except Exception as exc:
 
-                telegram_skipped += 1
-
                 print(
                     f"[TELEGRAM ERROR] "
                     f"{type(exc).__name__}: "
@@ -5574,32 +4345,21 @@ def run_once() -> Dict[str, Any]:
 
     else:
 
-        telegram_skipped = len(new_articles)
+        print(
+            "[TELEGRAM] Tidak aktif. "
+            "Periksa TELEGRAM_BOT_TOKEN "
+            "dan TELEGRAM_CHAT_ID."
+        )
 
-        if new_articles:
-            print(
-                "[TELEGRAM] Tidak aktif. "
-                "Periksa TELEGRAM_BOT_TOKEN "
-                "dan TELEGRAM_CHAT_ID."
-            )
+    # ========================================================
+    # RECLASSIFICATION
+    # ========================================================
 
-    print(
-        f"[TELEGRAM] Berhasil dikirim: "
-        f"{telegram_count}"
-    )
-
-    print(
-        f"[TELEGRAM] Tidak dikirim/skipped: "
-        f"{telegram_skipped}"
-    )
+    counts = reclassify_all()
 
     # ========================================================
     # FINAL DATABASE
     # ========================================================
-    # IMPORTANT:
-    # run_once() TIDAK melakukan reclassify seluruh database.
-    # Reklasifikasi hanya dijalankan oleh mode --reclassify
-    # di main().
 
     try:
 
@@ -5619,15 +4379,6 @@ def run_once() -> Dict[str, Any]:
         time.perf_counter()
         - started,
         2,
-    )
-
-    # Hitung distribusi kategori secara READ-ONLY untuk summary/log.
-    # Ini bukan reclassification dan tidak mengubah database.
-    counts = Counter(
-        normalize_text(
-            article.get("category")
-        ) or "Netral"
-        for article in final_articles
     )
 
     # ========================================================
@@ -5658,8 +4409,9 @@ def run_once() -> Dict[str, Any]:
             new_articles
         ),
 
-        # Mode --once tidak melakukan reclassification.
-        "reclassified_count": 0,
+        "reclassified_count": len(
+            final_articles
+        ),
 
         "negative_count": counts.get(
             "Negatif Kuat",
@@ -5687,24 +4439,6 @@ def run_once() -> Dict[str, Any]:
     }
 
     save_run_log(log)
-
-    # ========================================================
-    # INTERNAL PRODUCTION-AUDIT PAYLOAD
-    # Tidak disimpan ke database/run_logs. Hanya dikembalikan
-    # ke caller --production-audit untuk validasi otomatis.
-    # ========================================================
-    log["_audit_new_articles"] = [
-        {
-            "id": item.get("id"),
-            "title": item.get("title", ""),
-            "link": item.get("link", ""),
-            "category": item.get("category", ""),
-            "published_date": item.get("published_date", ""),
-            "risk_score": item.get("risk_score"),
-            "risk_level": item.get("risk_level", ""),
-        }
-        for item in new_articles
-    ]
 
     # ========================================================
     # SUMMARY
@@ -5789,112 +4523,6 @@ def run_once() -> Dict[str, Any]:
 
     return log
 
-
-
-
-
-# ============================================================
-# PRODUCTION AUDIT
-# ============================================================
-
-def production_audit() -> Dict[str, Any]:
-    """Jalankan patroli normal lalu validasi invariant production."""
-    print("=" * 70)
-    print("PRODUCTION AUDIT")
-    print("=" * 70)
-    print("Menjalankan patroli normal + validasi invariant...")
-
-    result = run_once()
-    failures = []
-
-    def check(condition: bool, name: str, detail: str) -> None:
-        if condition:
-            print(f"[AUDIT PASS] {name}: {detail}")
-        else:
-            print(f"[AUDIT FAIL] {name}: {detail}")
-            failures.append(f"{name}: {detail}")
-
-    check(result.get("status") == "Selesai", "RUN_STATUS", f"status={result.get('status')!r}")
-    check(int(result.get("worker_error_count", 0) or 0) == 0, "WORKER_ERRORS", f"count={result.get('worker_error_count', 0)}")
-    check(int(result.get("save_failed_count", 0) or 0) == 0, "SAVE_FAILURES", f"count={result.get('save_failed_count', 0)}")
-
-    saved = int(result.get("saved_count", 0) or 0)
-    new_count = int(result.get("new_article_count", 0) or 0)
-    valid = int(result.get("valid_count", 0) or 0)
-    telegram = int(result.get("telegram_count", 0) or 0)
-
-    check(saved == new_count, "SAVE_NEW_ACCOUNTING", f"saved={saved}, new={new_count}")
-    check(0 <= new_count <= valid, "NEW_COUNT_BOUND", f"new={new_count}, valid={valid}")
-    check(0 <= telegram <= new_count, "TELEGRAM_BOUND", f"telegram={telegram}, new={new_count}")
-
-    new_items = result.get("_audit_new_articles") or []
-    check(len(new_items) == new_count, "NEW_ARTICLE_PAYLOAD", f"payload={len(new_items)}, reported={new_count}")
-
-    allowed_categories = {"Negatif Kuat", "Perlu Penanganan", "Netral", "Positif"}
-    telegram_categories = {"Negatif Kuat", "Perlu Penanganan"}
-    normalized_new_links = []
-    invalid_category = []
-    google_links = []
-    invalid_risk = []
-
-    for item in new_items:
-        link = normalize_url(item.get("link") or "")
-        normalized_new_links.append(link)
-        domain = urllib.parse.urlparse(link).netloc.lower().replace("www.", "") if link else ""
-        if not link or domain == "news.google.com":
-            google_links.append(link or "<EMPTY>")
-
-        category = item.get("category") or ""
-        if category not in allowed_categories:
-            invalid_category.append(category)
-
-        score = item.get("risk_score")
-        level = item.get("risk_level")
-        if score is None or not isinstance(score, (int, float)) or not 0 <= float(score) <= 100:
-            invalid_risk.append({"title": item.get("title", ""), "risk_score": score})
-        if level not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
-            invalid_risk.append({"title": item.get("title", ""), "risk_level": level})
-
-    nonempty_links = [x for x in normalized_new_links if x]
-    check(len(nonempty_links) == len(set(nonempty_links)), "NEW_ARTICLE_URL_UNIQUENESS", f"duplicates={len(nonempty_links) - len(set(nonempty_links))}")
-    check(not google_links, "NEW_URLS_ARE_PUBLISHER_URLS", f"google_news_or_empty={len(google_links)}")
-    check(not invalid_category, "CATEGORY_VALIDITY", f"invalid={invalid_category[:5]}")
-    check(not invalid_risk, "RISK_FIELDS_VALID", f"invalid={invalid_risk[:5]}")
-
-    try:
-        final_articles = get_all_articles()
-        final_link_counts = Counter(
-            normalize_url(article.get("link") or "")
-            for article in final_articles
-            if normalize_url(article.get("link") or "")
-        )
-        missing_after_save = [
-            link for link in normalized_new_links
-            if link and final_link_counts.get(link, 0) != 1
-        ]
-        check(not missing_after_save, "DATABASE_READBACK_NEW_ARTICLES", f"missing_or_nonunique={len(missing_after_save)}")
-    except Exception as exc:
-        check(False, "DATABASE_READBACK", f"{type(exc).__name__}: {exc}")
-
-    expected_telegram_upper_bound = sum(
-        1 for item in new_items
-        if item.get("category") in telegram_categories
-        and is_current_month_year_article(item)
-    )
-    check(telegram <= expected_telegram_upper_bound, "TELEGRAM_CATEGORY_DATE_RULE", f"sent={telegram}, eligible={expected_telegram_upper_bound}")
-
-    print("=" * 70)
-    if failures:
-        print("PRODUCTION AUDIT: FAILED")
-        for failure in failures:
-            print(f" - {failure}")
-        print("=" * 70)
-        raise RuntimeError(f"Production audit gagal pada {len(failures)} invariant(s).")
-
-    print("PRODUCTION AUDIT: PASSED")
-    print("Semua invariant production terpenuhi.")
-    print("=" * 70)
-    return result
 
 
 # ============================================================
@@ -7234,67 +5862,241 @@ def audit_negative_articles() -> Dict[str, Any]:
     }
 
 def audit_content_duplicates() -> None:
-    """Audit duplicate sesuai aturan produksi; tidak mengubah database."""
+    """
+    Audit artikel dengan judul atau konten identik.
+
+    Tidak menghapus data.
+    Hanya menampilkan kandidat duplikat.
+    """
+
     print("=" * 70)
     print("AUDIT CONTENT DUPLICATES")
     print("=" * 70)
-    articles = get_all_articles()
-    print(f"[AUDIT] Total artikel: {len(articles)}")
 
-    title_groups = defaultdict(list)
+    try:
+        articles = get_all_articles()
+
+    except Exception as exc:
+        print(
+            f"[AUDIT ERROR] "
+            f"Gagal mengambil artikel: {exc}"
+        )
+        return
+
+    print(
+        f"[AUDIT] Total artikel: "
+        f"{len(articles)}"
+    )
+
+    # ========================================================
+    # KELOMPOK DUPLIKAT BERDASARKAN TITLE
+    # ========================================================
+
+    title_groups = {}
+
     for article in articles:
-        key = build_title_key(article)
-        if key:
-            title_groups[key].append(article)
-    duplicate_titles = {k:v for k,v in title_groups.items() if len(v) > 1}
 
-    content_items = []
+        title = normalize_text(
+            article.get("title") or ""
+        )
+
+        normalized_title = title.lower().strip()
+
+        if not normalized_title:
+            continue
+
+        if normalized_title not in title_groups:
+
+            title_groups[
+                normalized_title
+            ] = []
+
+        title_groups[
+            normalized_title
+        ].append(article)
+
+    duplicate_titles = {
+
+        title: items
+
+        for title, items
+        in title_groups.items()
+
+        if len(items) > 1
+    }
+
+    # ========================================================
+    # TAMPILKAN DUPLIKAT TITLE
+    # ========================================================
+
+    print()
+    print("=" * 70)
+    print(
+        f"DUPLIKAT JUDUL: "
+        f"{len(duplicate_titles)} KELOMPOK"
+    )
+    print("=" * 70)
+
+    for title, items in duplicate_titles.items():
+
+        print()
+        print("-" * 70)
+
+        print("TITLE:")
+        print(title)
+
+        print()
+        print(
+            f"JUMLAH ARTIKEL: "
+            f"{len(items)}"
+        )
+
+        print()
+
+        for item in items:
+
+            print(
+                f"ID    : "
+                f"{item.get('id')}"
+            )
+
+            print(
+                f"LINK  : "
+                f"{item.get('link')}"
+            )
+
+            print(
+                f"DATE  : "
+                f"{item.get('published_at')}"
+            )
+
+            print()
+
+    # ========================================================
+    # KELOMPOK DUPLIKAT BERDASARKAN CONTENT
+    # ========================================================
+
+    content_groups = {}
+
     for article in articles:
-        content = normalize_content_for_duplicate(get_article_content(article))
-        if len(content) >= 100:
-            content_items.append((article, content))
 
-    content_groups = []
-    seen = set()
-    for i, (article_a, content_a) in enumerate(content_items):
-        media_a = get_media_source(article_a).lower().strip()
-        group = [article_a]
-        for j in range(i + 1, len(content_items)):
-            article_b, content_b = content_items[j]
-            if get_media_source(article_b).lower().strip() != media_a:
-                continue
-            similarity = calculate_content_similarity(content_a, content_b)
-            if similarity >= CONTENT_DUPLICATE_THRESHOLD:
-                group.append(article_b)
-        if len(group) > 1:
-            ids = tuple(sorted(str(a.get("id", "")) for a in group))
-            if ids not in seen:
-                seen.add(ids)
-                content_groups.append(group)
+        content = normalize_text(
+            article.get("content")
+            or article.get("summary")
+            or ""
+        )
 
-    print("\n" + "=" * 70)
-    print(f"DUPLIKAT TITLE + MEDIA: {len(duplicate_titles)} KELOMPOK")
+        normalized_content = content.lower().strip()
+
+        # Abaikan konten kosong
+        if not normalized_content:
+            continue
+
+        # Abaikan snippet terlalu pendek
+        if len(normalized_content) < 100:
+            continue
+
+        if normalized_content not in content_groups:
+
+            content_groups[
+                normalized_content
+            ] = []
+
+        content_groups[
+            normalized_content
+        ].append(article)
+
+    duplicate_contents = {
+
+        content: items
+
+        for content, items
+        in content_groups.items()
+
+        if len(items) > 1
+    }
+
+    # ========================================================
+    # TAMPILKAN DUPLIKAT CONTENT
+    # ========================================================
+
+    print()
     print("=" * 70)
-    for key, items in duplicate_titles.items():
-        print("\n" + "-" * 70)
-        print(f"KEY: {key}")
-        for item in items:
-            print(f"ID={item.get('id')} | {item.get('title')} | MEDIA={get_media_source(item)}")
-
-    print("\n" + "=" * 70)
-    print(f"DUPLIKAT CONTENT + MEDIA: {len(content_groups)} KELOMPOK")
+    print(
+        f"DUPLIKAT CONTENT: "
+        f"{len(duplicate_contents)} KELOMPOK"
+    )
     print("=" * 70)
-    for number, items in enumerate(content_groups, 1):
-        print(f"\nCONTENT DUPLICATE #{number} | MEDIA={get_media_source(items[0])}")
-        for item in items:
-            print(f"ID={item.get('id')} | {item.get('title')}")
 
-    print("\n" + "=" * 70)
+    for content, items in duplicate_contents.items():
+
+        print()
+        print("-" * 70)
+
+        print(
+            f"CONTENT LENGTH: "
+            f"{len(content)}"
+        )
+
+        print(
+            f"JUMLAH ARTIKEL: "
+            f"{len(items)}"
+        )
+
+        print()
+
+        print("CONTENT PREVIEW:")
+
+        print(
+            content[:300]
+        )
+
+        print()
+
+        for item in items:
+
+            print(
+                f"ID    : "
+                f"{item.get('id')}"
+            )
+
+            print(
+                f"TITLE : "
+                f"{item.get('title')}"
+            )
+
+            print(
+                f"LINK  : "
+                f"{item.get('link')}"
+            )
+
+            print()
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    print()
+    print("=" * 70)
     print("AUDIT CONTENT DUPLICATES SELESAI")
     print("=" * 70)
-    print(f"Total artikel              : {len(articles)}")
-    print(f"Duplicate title + media    : {len(duplicate_titles)} kelompok")
-    print(f"Duplicate content + media  : {len(content_groups)} kelompok")
+
+    print(
+        f"Total artikel              : "
+        f"{len(articles)}"
+    )
+
+    print(
+        f"Kelompok duplicate title   : "
+        f"{len(duplicate_titles)}"
+    )
+
+    print(
+        f"Kelompok duplicate content : "
+        f"{len(duplicate_contents)}"
+    )
+
+    print("=" * 70)
 
 def audit_exact_duplicates() -> None:
     """
@@ -8246,6 +7048,43 @@ def get_publisher_from_title(title):
     return ""
 
 
+def get_media_source(article):
+    """Mengembalikan publisher/media, bukan sekadar channel ingestion seperti Google News RSS."""
+    if not isinstance(article, dict):
+        return "Unknown"
+
+    for field in (
+        "publisher",
+        "media_name",
+        "media",
+        "source_name",
+        "nama_media",
+    ):
+        value = article.get(field)
+        if value:
+            return str(value).strip()
+
+    publisher = get_publisher_from_title(article.get("title", ""))
+    if publisher:
+        return publisher
+
+    link = article.get("link") or article.get("url") or ""
+    if link:
+        try:
+            domain = urllib.parse.urlparse(str(link)).netloc.lower()
+            domain = domain.replace("www.", "")
+            if domain and domain != "news.google.com":
+                return domain
+        except Exception:
+            pass
+
+    source = article.get("source")
+    if source:
+        return str(source).strip()
+
+    return "Unknown"
+
+
 # Backward-compatible alias.
 def get_article_source(article):
     return get_media_source(article)
@@ -8259,617 +7098,6 @@ def normalize_title(title):
     title = re.sub(r"\s+", " ", title)
     return title.strip()
 
-# ============================================================
-# DUPLICATE PREVENTION
-# ============================================================
-
-CONTENT_DUPLICATE_THRESHOLD = 0.95
-
-
-def normalize_content_for_duplicate(value):
-    """
-    Normalisasi content untuk perbandingan duplicate.
-    """
-
-    if not value:
-        return ""
-
-    text = normalize_text(value).lower()
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text,
-    ).strip()
-
-    return text
-
-
-def get_article_content(article):
-    """
-    Mengambil content terbaik dari artikel.
-    """
-
-    if not isinstance(article, dict):
-        return ""
-
-    return (
-        article.get("content")
-        or article.get("summary")
-        or article.get("snippet")
-        or ""
-    )
-
-
-def calculate_content_similarity(
-    content_a,
-    content_b,
-):
-    """
-    Menghitung similarity content.
-
-    Return:
-        0.0 - 1.0
-    """
-
-    text_a = normalize_content_for_duplicate(
-        content_a
-    )
-
-    text_b = normalize_content_for_duplicate(
-        content_b
-    )
-
-    if not text_a or not text_b:
-        return 0.0
-
-    return SequenceMatcher(
-        None,
-        text_a,
-        text_b,
-    ).ratio()
-
-
-def get_media_source(article):
-    """Mengembalikan identitas publisher yang stabil untuk dedupe."""
-    if not isinstance(article, dict):
-        return "unknown"
-
-    for field in ("publisher", "media_name", "media", "source_name", "nama_media"):
-        value = normalize_text(article.get(field))
-        if value and value.lower() not in {"google news", "google news rss", "unknown"}:
-            return value.strip()
-
-    publisher = get_publisher_from_title(article.get("title", ""))
-    if publisher:
-        return publisher.strip()
-
-    link = article.get("link") or article.get("url") or ""
-    try:
-        domain = urllib.parse.urlparse(str(link)).netloc.lower().replace("www.", "")
-        if domain and domain != "news.google.com":
-            return domain
-    except Exception:
-        pass
-
-    source = normalize_text(article.get("source"))
-    if source and source.lower() not in {"google news", "google news rss"}:
-        return source.strip()
-
-    return "unknown"
-
-def build_title_key(article):
-    """
-    Duplicate title hanya dianggap duplicate
-    jika berasal dari media yang sama.
-
-    Format:
-        normalized_title|media
-    """
-
-    if not isinstance(article, dict):
-        return ""
-
-    title = normalize_title(
-        article.get("title", "")
-    )
-
-    media = get_media_source(
-        article
-    ).lower().strip()
-
-    if not title:
-        return ""
-
-    return f"{title}|{media}"
-
-
-def build_existing_title_index(
-    articles,
-):
-    """
-    Membuat index duplicate title.
-
-    Duplicate title dicek berdasarkan:
-
-        TITLE + MEDIA
-
-    Jadi:
-
-    Media A:
-        "Kejari Deli Serdang Raih Penghargaan"
-
-    Media B:
-        "Kejari Deli Serdang Raih Penghargaan"
-
-    Tetap boleh disimpan.
-
-    Tetapi jika judul identik dari media yang sama,
-    artikel dianggap duplicate.
-    """
-
-    title_index = set()
-
-    for article in articles:
-
-        key = build_title_key(
-            article
-        )
-
-        if key:
-
-            title_index.add(
-                key
-            )
-
-    return title_index
-
-
-def build_existing_content_index(
-    articles,
-):
-    """
-    Membuat list artikel existing untuk
-    pengecekan duplicate content.
-
-    Content tidak menggunakan dictionary/set karena
-    perlu perhitungan similarity.
-    """
-
-    content_index = []
-
-    for article in articles:
-
-        content = get_article_content(
-            article
-        )
-
-        normalized = normalize_content_for_duplicate(
-            content
-        )
-
-        if not normalized:
-            continue
-
-        content_index.append(
-            {
-                "article": article,
-                "content": normalized,
-            }
-        )
-
-    return content_index
-
-
-def is_duplicate_content(
-    article,
-    existing_content_index,
-    threshold=CONTENT_DUPLICATE_THRESHOLD,
-):
-    """
-    Mengecek apakah content artikel hampir sama.
-
-    PENTING:
-
-    Duplicate content hanya dianggap duplicate
-    jika berasal dari MEDIA YANG SAMA.
-
-    Artikel dari media berbeda yang membahas
-    event yang sama TETAP BOLEH disimpan.
-
-    Return:
-
-        (
-            is_duplicate,
-            similarity,
-            matched_article
-        )
-    """
-
-    # ========================================================
-    # VALIDASI ARTICLE
-    # ========================================================
-
-    if not isinstance(article, dict):
-
-        return (
-            False,
-            0.0,
-            None,
-        )
-
-    # ========================================================
-    # CANDIDATE CONTENT
-    # ========================================================
-
-    candidate_content = get_article_content(
-        article
-    )
-
-    candidate_content = (
-        normalize_content_for_duplicate(
-            candidate_content
-        )
-    )
-
-    if not candidate_content:
-
-        return (
-            False,
-            0.0,
-            None,
-        )
-
-    # ========================================================
-    # CANDIDATE MEDIA
-    # ========================================================
-
-    candidate_media = (
-        get_media_source(
-            article
-        )
-        .lower()
-        .strip()
-    )
-
-    # ========================================================
-    # BEST MATCH
-    # ========================================================
-
-    best_similarity = 0.0
-
-    best_article = None
-
-    # ========================================================
-    # CHECK EXISTING CONTENT
-    # ========================================================
-
-    for item in existing_content_index:
-
-        if not isinstance(item, dict):
-            continue
-
-        existing_article = item.get(
-            "article"
-        )
-
-        if not isinstance(
-            existing_article,
-            dict,
-        ):
-            continue
-
-        # ====================================================
-        # GET EXISTING MEDIA
-        # ====================================================
-
-        existing_media = (
-            get_media_source(
-                existing_article
-            )
-            .lower()
-            .strip()
-        )
-
-        # ====================================================
-        # PENTING
-        #
-        # HANYA BANDINGKAN CONTENT
-        # DARI MEDIA YANG SAMA
-        # ====================================================
-
-        if existing_media != candidate_media:
-            continue
-
-        # ====================================================
-        # EXISTING CONTENT
-        # ====================================================
-
-        existing_content = item.get(
-            "content",
-            "",
-        )
-
-        if not existing_content:
-            continue
-
-        # ====================================================
-        # CALCULATE SIMILARITY
-        # ====================================================
-
-        similarity = (
-            calculate_content_similarity(
-                candidate_content,
-                existing_content,
-            )
-        )
-
-        # ====================================================
-        # BEST MATCH
-        # ====================================================
-
-        if similarity > best_similarity:
-
-            best_similarity = similarity
-
-            best_article = existing_article
-
-    # ========================================================
-    # DUPLICATE DECISION
-    # ========================================================
-
-    if best_similarity >= threshold:
-
-        return (
-            True,
-            best_similarity,
-            best_article,
-        )
-
-    return (
-        False,
-        best_similarity,
-        best_article,
-    )
-    
-def should_save_article(
-    article,
-    existing_link_index,
-    existing_title_index,
-    existing_content_index,
-):
-    """
-    CENTRAL DECISION FUNCTION.
-
-    Menentukan apakah artikel boleh disimpan.
-
-    PRIORITAS:
-
-    1. Duplicate URL
-       -> JANGAN SIMPAN
-
-    2. Duplicate Title + Media
-       -> JANGAN SIMPAN
-
-    3. Duplicate Content + Media Sama
-       -> JANGAN SIMPAN
-
-    4. Event sama + Media berbeda
-       -> TETAP SIMPAN
-
-    Return:
-
-        (
-            should_save,
-            reason,
-            similarity,
-            matched_article
-        )
-    """
-
-    # ========================================================
-    # VALIDATE ARTICLE
-    # ========================================================
-
-    if not isinstance(article, dict):
-
-        return (
-            False,
-            "INVALID_ARTICLE",
-            0.0,
-            None,
-        )
-
-    # ========================================================
-    # VALIDATE LINK
-    # ========================================================
-
-    link = normalize_url(
-        article.get("link")
-    )
-
-    if not link:
-
-        return (
-            False,
-            "INVALID_LINK",
-            0.0,
-            None,
-        )
-
-    # ========================================================
-    # 1. DUPLICATE URL
-    # ========================================================
-
-    if link in existing_link_index:
-
-        return (
-            False,
-            "DUPLICATE_URL",
-            1.0,
-            None,
-        )
-
-    # ========================================================
-    # 2. DUPLICATE TITLE + SAME MEDIA
-    # ========================================================
-
-    title_key = build_title_key(
-        article
-    )
-
-    if (
-        title_key
-        and title_key in existing_title_index
-    ):
-
-        return (
-            False,
-            "DUPLICATE_TITLE_SAME_MEDIA",
-            1.0,
-            None,
-        )
-
-    # ========================================================
-    # 3. DUPLICATE CONTENT
-    #
-    # Fungsi is_duplicate_content()
-    # sekarang hanya membandingkan media yang sama.
-    # ========================================================
-
-    (
-        content_duplicate,
-        similarity,
-        matched_article,
-    ) = is_duplicate_content(
-
-        article,
-
-        existing_content_index,
-
-    )
-
-    if content_duplicate:
-
-        matched_media = (
-            get_media_source(
-                matched_article
-            )
-            if matched_article
-            else "Unknown"
-        )
-
-        candidate_media = (
-            get_media_source(
-                article
-            )
-        )
-
-        return (
-            False,
-
-            (
-                "DUPLICATE_CONTENT_SAME_MEDIA "
-                f"({similarity:.2%}) "
-                f"| media={candidate_media} "
-                f"| matched={matched_media}"
-            ),
-
-            similarity,
-
-            matched_article,
-        )
-
-    # ========================================================
-    # 4. ARTICLE IS NEW
-    #
-    # Event sama dari media berbeda
-    # TETAP BOLEH MASUK DATABASE.
-    #
-    # Event clustering hanya digunakan untuk:
-    #
-    # - audit
-    # - intelligence
-    # - analytics
-    #
-    # BUKAN untuk memblokir artikel.
-    # ========================================================
-
-    return (
-        True,
-        "NEW_ARTICLE",
-        similarity,
-        None,
-    )
-
-def register_saved_article(
-    article,
-    existing_link_index,
-    existing_title_index,
-    existing_content_index,
-):
-    """
-    Update seluruh index setelah artikel
-    berhasil disimpan ke database.
-
-    PENTING:
-    Fungsi ini hanya dipanggil SETELAH
-    upsert_article berhasil.
-    """
-
-    if not isinstance(article, dict):
-        return
-
-    # ========================================================
-    # REGISTER URL
-    # ========================================================
-
-    link = normalize_url(
-        article.get("link")
-    )
-
-    if link:
-
-        existing_link_index.add(
-            link
-        )
-
-    # ========================================================
-    # REGISTER TITLE + MEDIA
-    # ========================================================
-
-    title_key = build_title_key(
-        article
-    )
-
-    if title_key:
-
-        existing_title_index.add(
-            title_key
-        )
-
-    # ========================================================
-    # REGISTER CONTENT
-    # ========================================================
-
-    content = get_article_content(
-        article
-    )
-
-    normalized_content = (
-        normalize_content_for_duplicate(
-            content
-        )
-    )
-
-    if normalized_content:
-
-        existing_content_index.append(
-            {
-                "article": article,
-                "content": normalized_content,
-            }
-        )
 
 def count_duplicate_titles(titles):
     normalized_titles = [normalize_title(title) for title in titles if title]
@@ -9113,287 +7341,212 @@ def print_event_quality_summary(
     print()
     
     
+
+
 # ============================================================
-# READ-ONLY DATABASE AUDIT
+# EXISTING GOOGLE NEWS URL REPAIR
 # ============================================================
 
-def database_audit() -> Dict[str, Any]:
-    """
-    Audit komprehensif database lama TANPA INSERT/UPDATE/DELETE.
+def _is_google_news_url_repair(url: Any) -> bool:
+    try:
+        host = urllib.parse.urlparse(str(url or "")).netloc.lower().split(":")[0]
+        return host in {"news.google.com", "www.news.google.com"}
+    except Exception:
+        return False
 
-    Tujuan:
-      1. Menilai kesehatan seluruh record yang sudah ada.
-      2. Mengelompokkan kandidat KEEP / FIX / DELETE_REVIEW.
-      3. Tidak pernah mengubah database.
-      4. Menghasilkan database_audit.json dan database_audit.csv.
 
-    DELETE_REVIEW hanya rekomendasi. Penghapusan tidak dilakukan otomatis.
+def _clean_resolved_publisher_url(url: Any) -> str:
+    value = html.unescape(str(url or "")).strip()
+    value = value.replace(r"\\u0026", "&").replace(r"\\/", "/")
+    if not value.startswith(("http://", "https://")):
+        return ""
+    if _is_google_news_url_repair(value):
+        return ""
+    try:
+        host = urllib.parse.urlparse(value).netloc.lower()
+        if not host or host.endswith("google.com") or host.endswith("googleusercontent.com"):
+            return ""
+    except Exception:
+        return ""
+    return normalize_url(value)
+
+
+def resolve_existing_google_news_url(url: str) -> Tuple[str, str]:
+    """Resolve one stored Google News URL to the publisher URL.
+
+    Returns: (resolved_url, method). This function does not touch the database.
     """
-    print("=" * 70)
-    print("READ-ONLY DATABASE AUDIT")
-    print("TIDAK ADA INSERT / UPDATE / DELETE")
-    print("=" * 70)
+    if not _is_google_news_url_repair(url):
+        return "", "NOT_GOOGLE_NEWS"
 
     try:
-        articles = get_all_articles()
+        response = SESSION.get(url, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+        response.raise_for_status()
+        final_url = _clean_resolved_publisher_url(response.url)
+        if final_url:
+            return final_url, "HTTP_REDIRECT"
+        raw_html = response.text or ""
     except Exception as exc:
-        print(f"[DATABASE AUDIT ERROR] {type(exc).__name__}: {exc}")
-        return {"success": False, "error": str(exc)}
+        return "", f"GET_FAILED:{type(exc).__name__}"
 
-    total = len(articles)
-    print(f"[AUDIT] Total artikel: {total}")
+    # Canonical / OpenGraph are cheap and safe when present.
+    try:
+        soup = BeautifulSoup(raw_html, "html.parser")
+        canonical = soup.find("link", rel=lambda x: x and "canonical" in str(x).lower())
+        if canonical:
+            candidate = _clean_resolved_publisher_url(canonical.get("href"))
+            if candidate:
+                return candidate, "CANONICAL"
+        og = soup.find("meta", attrs={"property": "og:url"})
+        if og:
+            candidate = _clean_resolved_publisher_url(og.get("content"))
+            if candidate:
+                return candidate, "OG_URL"
+    except Exception:
+        soup = None
 
-    def norm(value: Any) -> str:
-        return normalize_text(value).strip()
-
-    def domain(value: Any) -> str:
-        try:
-            return urllib.parse.urlparse(str(value or "")).netloc.lower().replace("www.", "")
-        except Exception:
-            return ""
-
-    records = []
-    for article in articles:
-        link = normalize_url(article.get("link") or "")
-        title = norm(article.get("title"))
-        content = norm(article.get("content") or article.get("summary") or article.get("snippet"))
-        media = norm(get_media_source(article))
-        published = parse_date_safe(article.get("published_date"))
-        category = norm(article.get("category"))
-        risk_score = article.get("risk_score")
-        risk_level = norm(article.get("risk_level"))
-
-        issues = []
-        fixes = []
-        delete_reason = ""
-
-        if not link:
-            issues.append("EMPTY_LINK")
-            fixes.append("REVIEW_LINK")
-        elif _is_google_news_url(link):
-            issues.append("GOOGLE_NEWS_URL")
-            fixes.append("RESOLVE_PUBLISHER_URL")
-
-        if not title:
-            issues.append("EMPTY_TITLE")
-            fixes.append("REVIEW_TITLE")
-        if not content:
-            issues.append("EMPTY_CONTENT")
-            fixes.append("REVIEW_CONTENT")
-        elif len(content) < MIN_CONTENT_LENGTH:
-            issues.append("SHORT_CONTENT")
-            fixes.append("REVIEW_CONTENT")
-        if not media or media.lower() == "unknown":
-            issues.append("UNKNOWN_MEDIA")
-            fixes.append("REVIEW_MEDIA")
-        if not published:
-            issues.append("INVALID_OR_EMPTY_DATE")
-            fixes.append("REVIEW_DATE")
-        elif published.year != TAHUN_TARGET:
-            issues.append("OUTSIDE_TARGET_YEAR")
-            fixes.append("REVIEW_RETENTION")
-
-        allowed_categories = {"Negatif Kuat", "Perlu Penanganan", "Netral", "Positif"}
-        if category not in allowed_categories:
-            issues.append("INVALID_CATEGORY")
-            fixes.append("RECLASSIFY_CATEGORY")
-
-        if risk_score is not None:
+    # Current Google News pages commonly expose the garturl request in data-p.
+    try:
+        if soup is None:
+            soup = BeautifulSoup(raw_html, "html.parser")
+        node = soup.select_one("c-wiz[data-p]") or soup.select_one("c-wiz > div[data-p]")
+        data_p = node.get("data-p") if node else ""
+        if data_p:
+            decoded_data = html.unescape(data_p)
+            obj = json.loads(decoded_data.replace("%.@.", '["garturlreq",', 1))
+            garturl_obj = obj[:-6] + obj[-2:] if isinstance(obj, list) and len(obj) >= 6 else obj
+            rpc_payload = json.dumps([[['Fbv4je', json.dumps(garturl_obj, separators=(",", ":")), 'null', 'generic']]], separators=(",", ":"))
+            rpc = SESSION.post(
+                "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                params={"rpcids": "Fbv4je"},
+                data={"f.req": rpc_payload},
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                    "Referer": "https://news.google.com/",
+                    "User-Agent": SESSION.headers.get("User-Agent", "Mozilla/5.0"),
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+            rpc.raise_for_status()
+            text = rpc.text or ""
             try:
-                if not isinstance(risk_score, (int, float)) or not 0 <= float(risk_score) <= 100:
-                    issues.append("INVALID_RISK_SCORE")
-                    fixes.append("RECALCULATE_RISK")
+                outer = json.loads(text.replace(")]}'", "", 1))
+                inner = json.loads(outer[0][2])
+                if isinstance(inner, list) and len(inner) > 1:
+                    candidate = _clean_resolved_publisher_url(inner[1])
+                    if candidate:
+                        return candidate, "GARTURL_DATA_P"
             except Exception:
-                issues.append("INVALID_RISK_SCORE")
-                fixes.append("RECALCULATE_RISK")
-        if risk_level and risk_level not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
-            issues.append("INVALID_RISK_LEVEL")
-            fixes.append("RECALCULATE_RISK")
+                pass
+            pos = text.find("garturlres")
+            if pos >= 0:
+                tail = text[pos:pos + 20000]
+                for match in re.finditer(r'https?://[^\\"\\\'<>\\s]+', tail, flags=re.I):
+                    candidate = _clean_resolved_publisher_url(match.group(0))
+                    if candidate:
+                        return candidate, "GARTURL_RESPONSE"
+    except Exception as exc:
+        return "", f"GARTURL_FAILED:{type(exc).__name__}"
 
-        html_fields = []
-        for field in SANITIZE_FIELDS:
-            value = article.get(field)
-            if isinstance(value, str) and re.search(r"<\s*[a-z!/][^>]*>", value, flags=re.I):
-                html_fields.append(field)
-            elif isinstance(value, list) and any(
-                isinstance(item, str) and re.search(r"<\s*[a-z!/][^>]*>", item, flags=re.I)
-                for item in value
-            ):
-                html_fields.append(field)
-        if html_fields:
-            issues.append("HTML_PRESENT")
-            fixes.append("SANITIZE_HTML")
+    return "", "UNRESOLVED"
 
-        records.append({
-            "id": article.get("id"),
+
+def resolve_existing_urls(dry_run: bool = True) -> Dict[str, Any]:
+    """Audit/repair Google News links already stored in Supabase.
+
+    dry_run=True is strictly read-only. dry_run=False updates only the `link`
+    field after collision checks. It never inserts, deletes, or reclassifies.
+    """
+    mode = "DRY-RUN" if dry_run else "APPLY"
+    print("=" * 70)
+    print(f"EXISTING GOOGLE NEWS URL REPAIR - {mode}")
+    print("=" * 70)
+
+    articles = get_all_articles() or []
+    targets = [a for a in articles if _is_google_news_url_repair(a.get("link"))]
+    owner_by_url = {}
+    for article in articles:
+        normalized = normalize_url(article.get("link") or "")
+        if normalized:
+            owner_by_url.setdefault(normalized, article.get("id"))
+
+    report = []
+    counts = Counter()
+    supabase = None if dry_run else get_supabase()
+
+    for index, article in enumerate(targets, 1):
+        article_id = article.get("id")
+        old_url = str(article.get("link") or "")
+        title = str(article.get("title") or "")
+        print(f"[URL REPAIR] {index}/{len(targets)} ID={article_id}")
+        resolved, method = resolve_existing_google_news_url(old_url)
+        status = "UNRESOLVED"
+        error = ""
+
+        if resolved:
+            normalized_new = normalize_url(resolved)
+            other_owner = owner_by_url.get(normalized_new)
+            if other_owner is not None and str(other_owner) != str(article_id):
+                status = "COLLISION"
+                counts["collision"] += 1
+            elif dry_run:
+                status = "RESOLVED_DRY_RUN"
+                counts["resolved"] += 1
+            else:
+                try:
+                    result = supabase.table("articles").update({"link": normalized_new}).eq("id", article_id).execute()
+                    status = "UPDATED"
+                    counts["resolved"] += 1
+                    counts["updated"] += 1
+                    owner_by_url.pop(normalize_url(old_url), None)
+                    owner_by_url[normalized_new] = article_id
+                except Exception as exc:
+                    status = "UPDATE_FAILED"
+                    error = f"{type(exc).__name__}: {exc}"
+                    counts["failed"] += 1
+        else:
+            counts["unresolved"] += 1
+
+        report.append({
+            "id": article_id,
             "title": title,
-            "link": article.get("link") or "",
-            "normalized_link": link,
-            "media": media,
-            "domain": domain(link or article.get("link")),
-            "published_date": article.get("published_date"),
-            "category": category,
-            "risk_score": risk_score,
-            "risk_level": risk_level,
-            "content_length": len(content),
-            "issues": issues,
-            "fixes": list(dict.fromkeys(fixes)),
-            "action": "KEEP",
-            "delete_reason": delete_reason,
+            "old_url": old_url,
+            "resolved_url": resolved,
+            "method": method,
+            "status": status,
+            "error": error,
         })
+        if index < len(targets):
+            time.sleep(max(0.0, float(os.getenv("URL_REPAIR_DELAY") or "0.75")))
 
-    by_link = defaultdict(list)
-    by_title_media = defaultdict(list)
-    by_title_content_media = defaultdict(list)
-    by_content_media = defaultdict(list)
-
-    for rec, article in zip(records, articles):
-        if rec["normalized_link"]:
-            by_link[rec["normalized_link"]].append(rec)
-        title_key = build_title_key(article)
-        if title_key:
-            by_title_media[title_key].append(rec)
-        title = normalize_title(article.get("title") or "")
-        content = normalize_content_for_duplicate(get_article_content(article))
-        media = get_media_source(article).lower().strip()
-        if title and content and media:
-            by_title_content_media[(title, content, media)].append(rec)
-        if content and len(content) >= 100 and media:
-            by_content_media[media].append((rec, content))
-
-    duplicate_url_groups = [v for v in by_link.values() if len(v) > 1]
-    duplicate_title_media_groups = [v for v in by_title_media.values() if len(v) > 1]
-    exact_title_content_media_groups = [v for v in by_title_content_media.values() if len(v) > 1]
-
-    # Strong delete-review candidates: duplicate normalized URL.
-    for group in duplicate_url_groups:
-        ranked = sorted(group, key=lambda r: (
-            r["content_length"], bool(r["title"]), bool(r["published_date"]), -int(r["id"] or 10**18) if str(r["id"] or "").isdigit() else -10**18
-        ), reverse=True)
-        keeper = ranked[0]
-        for rec in ranked[1:]:
-            rec["action"] = "DELETE_REVIEW"
-            rec["delete_reason"] = "DUPLICATE_NORMALIZED_URL"
-        keeper["action"] = "KEEP"
-
-    # Production rule: same title + same media is duplicate.
-    for group in duplicate_title_media_groups:
-        if any(r["action"] == "DELETE_REVIEW" for r in group):
-            # URL duplicate already has priority; still mark remaining non-keeper records.
-            pass
-        ranked = sorted(group, key=lambda r: (
-            r["content_length"], bool(r["title"]), bool(r["published_date"]), -int(r["id"] or 10**18) if str(r["id"] or "").isdigit() else -10**18
-        ), reverse=True)
-        keeper = ranked[0]
-        for rec in ranked[1:]:
-            if rec["action"] != "DELETE_REVIEW":
-                rec["action"] = "DELETE_REVIEW"
-                rec["delete_reason"] = "DUPLICATE_TITLE_SAME_MEDIA"
-        if keeper["action"] != "DELETE_REVIEW":
-            keeper["action"] = "KEEP"
-
-    # Exact title+content+media is a stronger duplicate signal.
-    for group in exact_title_content_media_groups:
-        ranked = sorted(group, key=lambda r: r["content_length"], reverse=True)
-        for rec in ranked[1:]:
-            rec["action"] = "DELETE_REVIEW"
-            rec["delete_reason"] = "EXACT_TITLE_CONTENT_SAME_MEDIA"
-
-    # Same content + same media using the production threshold.
-    content_duplicate_groups = []
-    for media, items in by_content_media.items():
-        for i, (rec_a, content_a) in enumerate(items):
-            group = [rec_a]
-            for rec_b, content_b in items[i + 1:]:
-                similarity = calculate_content_similarity(content_a, content_b)
-                if similarity >= CONTENT_DUPLICATE_THRESHOLD:
-                    group.append(rec_b)
-            if len(group) > 1:
-                ids = tuple(sorted(str(r.get("id")) for r in group))
-                if not any(ids == old for old in content_duplicate_groups):
-                    content_duplicate_groups.append(ids)
-                for rec in group[1:]:
-                    if rec["action"] != "DELETE_REVIEW":
-                        rec["action"] = "DELETE_REVIEW"
-                        rec["delete_reason"] = "DUPLICATE_CONTENT_SAME_MEDIA"
-
-    # Non-destructive fixes are separate from deletion decisions.
-    for rec in records:
-        if rec["action"] == "KEEP" and rec["fixes"]:
-            rec["action"] = "FIX_REVIEW"
-
-    summary = {
-        "total_articles": total,
-        "keep": sum(r["action"] == "KEEP" for r in records),
-        "fix_review": sum(r["action"] == "FIX_REVIEW" for r in records),
-        "delete_review": sum(r["action"] == "DELETE_REVIEW" for r in records),
-        "empty_link": sum("EMPTY_LINK" in r["issues"] for r in records),
-        "google_news_url": sum("GOOGLE_NEWS_URL" in r["issues"] for r in records),
-        "empty_title": sum("EMPTY_TITLE" in r["issues"] for r in records),
-        "empty_content": sum("EMPTY_CONTENT" in r["issues"] for r in records),
-        "short_content": sum("SHORT_CONTENT" in r["issues"] for r in records),
-        "unknown_media": sum("UNKNOWN_MEDIA" in r["issues"] for r in records),
-        "invalid_date": sum("INVALID_OR_EMPTY_DATE" in r["issues"] for r in records),
-        "outside_target_year": sum("OUTSIDE_TARGET_YEAR" in r["issues"] for r in records),
-        "invalid_category": sum("INVALID_CATEGORY" in r["issues"] for r in records),
-        "invalid_risk": sum("INVALID_RISK_SCORE" in r["issues"] or "INVALID_RISK_LEVEL" in r["issues"] for r in records),
-        "html_present": sum("HTML_PRESENT" in r["issues"] for r in records),
-        "duplicate_url_groups": len(duplicate_url_groups),
-        "duplicate_title_media_groups": len(duplicate_title_media_groups),
-        "exact_title_content_media_groups": len(exact_title_content_media_groups),
-        "duplicate_content_media_groups": len(content_duplicate_groups),
-    }
-
-    issue_counter = Counter()
-    for rec in records:
-        issue_counter.update(rec["issues"])
-
-    report = {
-        "success": True,
-        "read_only": True,
-        "summary": summary,
-        "issue_counts": dict(issue_counter),
-        "records": records,
-    }
-
-    with open("database_audit.json", "w", encoding="utf-8") as fh:
+    json_path = "existing_url_repair.json"
+    csv_path = "existing_url_repair.csv"
+    with open(json_path, "w", encoding="utf-8") as fh:
         json.dump(report, fh, ensure_ascii=False, indent=2, default=str)
-
-    with open("database_audit.csv", "w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=[
-            "id", "title", "link", "normalized_link", "media", "domain",
-            "published_date", "category", "risk_score", "risk_level",
-            "content_length", "action", "delete_reason", "issues", "fixes"
-        ])
+    fields = ["id", "title", "old_url", "resolved_url", "method", "status", "error"]
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
-        for rec in records:
-            row = dict(rec)
-            row["issues"] = " | ".join(rec["issues"])
-            row["fixes"] = " | ".join(rec["fixes"])
-            writer.writerow(row)
+        writer.writerows(report)
 
-    print()
+    print("\n" + "=" * 70)
+    print("EXISTING URL REPAIR SUMMARY")
     print("=" * 70)
-    print("DATABASE AUDIT SUMMARY")
+    print(f"Google News targets : {len(targets)}")
+    print(f"Resolved            : {counts['resolved']}")
+    print(f"Updated             : {counts['updated']}")
+    print(f"Unresolved          : {counts['unresolved']}")
+    print(f"Collision           : {counts['collision']}")
+    print(f"Failed              : {counts['failed']}")
+    print(f"Report JSON         : {json_path}")
+    print(f"Report CSV          : {csv_path}")
+    if dry_run:
+        print("DRY-RUN: DATABASE TIDAK DIUBAH")
+    else:
+        print("APPLY: hanya field link yang di-update")
     print("=" * 70)
-    print(f"KEEP                  : {summary['keep']}")
-    print(f"FIX_REVIEW            : {summary['fix_review']}")
-    print(f"DELETE_REVIEW         : {summary['delete_review']}")
-    print(f"Duplicate URL groups  : {summary['duplicate_url_groups']}")
-    print(f"Title + media groups  : {summary['duplicate_title_media_groups']}")
-    print(f"Exact title+content   : {summary['exact_title_content_media_groups']}")
-    print(f"Content + media       : {summary['duplicate_content_media_groups']}")
-    print(f"Google News URL       : {summary['google_news_url']}")
-    print(f"HTML present          : {summary['html_present']}")
-    print(f"Invalid/empty date    : {summary['invalid_date']}")
-    print(f"Outside target year   : {summary['outside_target_year']}")
-    print()
-    print("[REPORT] database_audit.json")
-    print("[REPORT] database_audit.csv")
-    print("READ-ONLY: DATABASE TIDAK DIUBAH")
-    print("=" * 70)
+    return {"success": True, "dry_run": dry_run, "targets": len(targets), **dict(counts)}
 
-    return report
 
 # ============================================================
 # MAIN
@@ -9413,22 +7566,6 @@ def main() -> None:
         action="store_true",
         help=(
             "jalankan patroli satu kali"
-        ),
-    )
-
-    parser.add_argument(
-        "--production-audit",
-        action="store_true",
-        help=(
-            "jalankan patroli normal lalu validasi invariant production"
-        ),
-    )
-
-    parser.add_argument(
-        "--database-audit",
-        action="store_true",
-        help=(
-            "audit read-only seluruh database lama; tidak mengubah data"
         ),
     )
 
@@ -9516,26 +7653,30 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--resolve-existing-urls-dry-run",
+        action="store_true",
+        help="resolve URL Google News lama tanpa mengubah database",
+    )
+
+    parser.add_argument(
+        "--resolve-existing-urls",
+        action="store_true",
+        help="update URL Google News lama ke URL publisher setelah collision check",
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
-    # PRODUCTION AUDIT
+    # EXISTING GOOGLE NEWS URL REPAIR
     # --------------------------------------------------------
 
-    if args.production_audit:
-
-        production_audit()
-
+    if args.resolve_existing_urls_dry_run:
+        resolve_existing_urls(dry_run=True)
         return
 
-    # --------------------------------------------------------
-    # READ-ONLY DATABASE AUDIT
-    # --------------------------------------------------------
-
-    if args.database_audit:
-
-        database_audit()
-
+    if args.resolve_existing_urls:
+        resolve_existing_urls(dry_run=False)
         return
 
     # --------------------------------------------------------
