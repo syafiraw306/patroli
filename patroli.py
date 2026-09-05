@@ -1267,12 +1267,13 @@ def _domain_related(host: str, source_domain: str) -> bool:
 
 def decode_google_news_base64_url(url: str) -> str:
     """
-    Decode Google News /rss/articles/<token> URLs when the token contains
-    the publisher URL in its protobuf/base64 payload.
+    Resolve current Google News RSS article tokens.
 
-    This is an offline first-pass decoder. It does NOT replace the existing
-    canonical/redirect/HTML extraction logic; it only provides an earlier,
-    deterministic source-URL candidate.
+    Current Google News tokens (CBMi...) generally do NOT contain the
+    publisher URL as plain base64 anymore.  The token is sent to Google's
+    internal garturl/batchexecute endpoint (Fbv4je), which returns the
+    publisher URL.  Older tokens that directly contain a URL are still
+    supported as a cheap offline fallback.
     """
     if not _is_google_news_url(url):
         return ""
@@ -1280,27 +1281,91 @@ def decode_google_news_base64_url(url: str) -> str:
     try:
         parsed = urllib.parse.urlparse(str(url))
         parts = [p for p in parsed.path.split("/") if p]
-        if len(parts) < 3 or parts[-2] != "articles":
+        if len(parts) < 3 or parts[-2] not in {"articles", "read"}:
             return ""
-
         token = parts[-1]
-        # Google News article tokens are URL-safe base64-like strings.
         if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
             return ""
 
+        # --------------------------------------------------------
+        # 1. Legacy offline format
+        # --------------------------------------------------------
         padded = token + "=" * ((4 - len(token) % 4) % 4)
-        decoded = base64.urlsafe_b64decode(padded)
+        try:
+            decoded = base64.urlsafe_b64decode(padded)
+            matches = re.findall(
+                rb"https?://[^\x00\x0a\x0d\x22\x27<>]+",
+                decoded,
+            )
+            for raw in matches:
+                candidate = raw.decode("utf-8", errors="ignore").rstrip(".,;)]}")
+                candidate = _clean_candidate_url(candidate, url)
+                if candidate and _looks_like_media_url(candidate):
+                    return candidate
+        except Exception:
+            pass
 
-        # The payload contains one or more absolute URLs. Prefer the first
-        # http(s) URL, which is the publisher article in the known format.
-        matches = re.findall(rb"https?://[^\x00\x0a\x0d\x22\x27<>]+", decoded)
-        for raw in matches:
-            candidate = raw.decode("utf-8", errors="ignore").rstrip(".,;)]}")
-            candidate = _clean_candidate_url(candidate, url)
-            if candidate and _looks_like_media_url(candidate):
-                return candidate
-    except Exception:
-        return ""
+        # --------------------------------------------------------
+        # 2. Current Google News garturl RPC
+        # --------------------------------------------------------
+        rpc_payload = (
+            '[[["Fbv4je","[\\"garturlreq\\",[[\\"en-US\\",\\"US\\",'
+            '[\\"FINANCE_TOP_INDICES\\",\\"WEB_TEST_1_0_0\\"],null,null,1,1,'
+            '\\"US:en\\",null,180,null,null,null,null,null,0,null,null,'
+            '[1608992183,723341000]],\\"en-US\\",\\"US\\",1,[2,3,4,8],1,0,'
+            '\\"655000234\\",0,0,null,0],\\"'
+            + token
+            + '\\"]",null,"generic"]]]'
+        )
+
+        response = SESSION.post(
+            "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+            params={"rpcids": "Fbv4je"},
+            data={"f.req": rpc_payload},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "Referer": "https://news.google.com/",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        text = response.text
+
+        # The response contains an escaped JSON fragment:
+        # [\\"garturlres\\",\\"https://publisher/...\\", ...]
+        header = '[\\"garturlres\\",\\"'
+        footer = '\\",'
+        if header in text:
+            start_idx = text.find(header) + len(header)
+            tail = text[start_idx:]
+            end_idx = tail.find(footer)
+            if end_idx >= 0:
+                decoded_url = tail[:end_idx]
+                decoded_url = decoded_url.replace('\\u0026', '&')
+                decoded_url = decoded_url.replace('\\/', '/')
+                decoded_url = html.unescape(decoded_url)
+                decoded_url = _clean_candidate_url(decoded_url, url)
+                if decoded_url and _looks_like_media_url(decoded_url):
+                    return decoded_url
+
+        # More tolerant fallback: search the response for an absolute URL
+        # close to the garturlres marker.
+        marker_pos = text.find("garturlres")
+        if marker_pos >= 0:
+            tail = text[marker_pos:marker_pos + 10000]
+            for match in re.findall(r"https?://[^\\\"'<>\\s\\\\]+", tail):
+                candidate = _clean_candidate_url(
+                    match.replace('\\u0026', '&').replace('\\/', '/'),
+                    url,
+                )
+                if candidate and _looks_like_media_url(candidate):
+                    return candidate
+
+    except Exception as exc:
+        print(
+            "[GOOGLE NEWS DECODER WARNING] "
+            f"{type(exc).__name__}: {exc}"
+        )
 
     return ""
 
@@ -1452,6 +1517,11 @@ def resolve_article_url_details(
     resolved = _clean_candidate_url(response_url)
     if resolved and not _is_google_news_url(resolved):
         return resolved, "redirect"
+
+    decoded = decode_google_news_base64_url(rss_url)
+    if decoded:
+        print(f"[URL GOOGLE NEWS] Media asli via garturl: {decoded}")
+        return decoded, "base64_embedded"
 
     original = extract_google_news_original_url(
         raw_html=raw_html,
