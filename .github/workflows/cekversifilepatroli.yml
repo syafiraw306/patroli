@@ -8,41 +8,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: VERIFY PATROLI VERSION
-      run: |
-      echo "========================================"
-      echo "VERIFY PATROLI.PY"
-      echo "========================================"
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      echo "SHA256:"
-      sha256sum patroli.py
+      - name: VERIFY PATROLI VERSION
+        run: |
+          echo "========================================"
+          echo "VERIFY PATROLI.PY"
+          echo "========================================"
 
-      echo "LINE COUNT:"
-      wc -l patroli.py
+          echo "SHA256:"
+          sha256sum patroli.py
 
-      echo ""
-      echo "CHECK resolve_article_url:"
-      grep -n "def resolve_article_url" patroli.py
+          echo "LINE COUNT:"
+          wc -l patroli.py
 
-      echo ""
-      echo "CHECK CORRECT ARGUMENT:"
-      grep -n "rss_url=rss_link" patroli.py
+          echo ""
+          echo "CHECK resolve_article_url:"
+          grep -n "def resolve_article_url" patroli.py
 
-      echo ""
-      echo "CHECK WRONG ARGUMENT:"
-      grep -n "rss_link=rss_link" patroli.py || true
+          echo ""
+          echo "CHECK CORRECT ARGUMENT:"
+          grep -n "rss_url=rss_link" patroli.py
 
-      echo ""
-      echo "CHECK SAVE BLOCK:"
-      grep -n "Artikel valid setelah dedupe" patroli.py
+          echo ""
+          echo "CHECK WRONG ARGUMENT:"
+          grep -n "rss_link=rss_link" patroli.py || true
 
-      grep -n "\[SAVE\] NEW_ARTICLE" patroli.py
+          echo ""
+          echo "CHECK SAVE BLOCK:"
+          grep -n "Artikel valid setelah dedupe" patroli.py
 
-      grep -n "should_save_article(" patroli.py
+          grep -n "\[SAVE\] NEW_ARTICLE" patroli.py
 
-      echo ""
-      echo "========================================"
-      echo "VERIFY DATABASE.PY"
-      echo "========================================"
+          grep -n "should_save_article(" patroli.py
 
-      sha256sum database.py
+          echo ""
+          echo "========================================"
+          echo "VERIFY DATABASE.PY"
+          echo "========================================"
+
+          sha256sum database.py
