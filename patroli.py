@@ -3848,11 +3848,6 @@ def reclassify_all() -> Dict[str, int]:
 # RUN ONCE
 # ============================================================
 
-
-# ============================================================
-# RUN ONCE
-# ============================================================
-
 def run_once() -> Dict[str, Any]:
 
     started = time.perf_counter()
@@ -4372,22 +4367,41 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
 
     telegram_count = 0
+    telegram_skipped = 0
+
+    print(
+        f"[TELEGRAM] Total artikel baru: "
+        f"{len(new_articles)}"
+    )
 
     if telegram_enabled():
-
-        print(
-            f"[TELEGRAM] "
-            f"Kandidat artikel baru: "
-            f"{len(new_articles)}"
-        )
 
         for article in new_articles:
 
             try:
 
+                category = normalize_text(
+                    article.get("category")
+                ) or "Netral"
+
+                # Hanya Negatif Kuat dan Perlu Penanganan
+                # yang boleh dikirim ke Telegram.
+                if category not in {
+                    "Negatif Kuat",
+                    "Perlu Penanganan",
+                }:
+                    telegram_skipped += 1
+
+                    print(
+                        "[TELEGRAM SKIP] "
+                        f"Kategori tidak dikirim: {category}"
+                    )
+                    continue
+
                 if not send_alert_if_needed(
                     article
                 ):
+                    telegram_skipped += 1
                     continue
 
                 telegram_count += 1
@@ -4399,6 +4413,8 @@ def run_once() -> Dict[str, Any]:
 
             except Exception as exc:
 
+                telegram_skipped += 1
+
                 print(
                     f"[TELEGRAM ERROR] "
                     f"{type(exc).__name__}: "
@@ -4407,11 +4423,24 @@ def run_once() -> Dict[str, Any]:
 
     else:
 
-        print(
-            "[TELEGRAM] Tidak aktif. "
-            "Periksa TELEGRAM_BOT_TOKEN "
-            "dan TELEGRAM_CHAT_ID."
-        )
+        telegram_skipped = len(new_articles)
+
+        if new_articles:
+            print(
+                "[TELEGRAM] Tidak aktif. "
+                "Periksa TELEGRAM_BOT_TOKEN "
+                "dan TELEGRAM_CHAT_ID."
+            )
+
+    print(
+        f"[TELEGRAM] Berhasil dikirim: "
+        f"{telegram_count}"
+    )
+
+    print(
+        f"[TELEGRAM] Tidak dikirim/skipped: "
+        f"{telegram_skipped}"
+    )
 
     # ========================================================
     # FINAL DATABASE
@@ -4590,6 +4619,8 @@ def run_once() -> Dict[str, Any]:
     print("=" * 70)
 
     return log
+
+
 
 
 
