@@ -65,6 +65,18 @@ MAX_ARTICLES_PER_FEED = int(
     os.getenv("MAX_ARTICLES_PER_FEED") or "40"
 )
 
+RSS_MAX_RETRIES = int(
+    os.getenv("RSS_MAX_RETRIES") or "4"
+)
+
+RSS_BACKOFF_BASE = float(
+    os.getenv("RSS_BACKOFF_BASE") or "2"
+)
+
+RSS_QUERY_DELAY = float(
+    os.getenv("RSS_QUERY_DELAY") or "1.5"
+)
+
 MIN_CONTENT_LENGTH = int(
     os.getenv("MIN_CONTENT_LENGTH") or "180"
 )
@@ -2840,11 +2852,7 @@ def parse_google_news_feed(
     query: str,
 ) -> List[Dict[str, Any]]:
 
-    encoded = (
-        urllib.parse.quote_plus(
-            query
-        )
-    )
+    encoded = urllib.parse.quote_plus(query)
 
     url = (
         "https://news.google.com/rss/search?"
@@ -2854,151 +2862,167 @@ def parse_google_news_feed(
         "&ceid=ID:id"
     )
 
-    try:
+    last_error = None
 
-        response = SESSION.get(
-            url,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
+    for attempt in range(1, RSS_MAX_RETRIES + 1):
 
-        response.raise_for_status()
+        try:
 
-        feed = feedparser.parse(
-            response.content
-        )
+            response = SESSION.get(
+                url,
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=True,
+            )
 
-        print(
-            f"[RSS DEBUG] "
-            f"query={query} | "
-            f"status={response.status_code} | "
-            f"bytes={len(response.content)} | "
-            f"entries={len(feed.entries)} | "
-            f"bozo={getattr(feed, 'bozo', False)}"
-        )
+            status = response.status_code
 
-        if getattr(
-            feed,
-            "bozo",
-            False,
-        ):
+            # Retry khusus rate-limit / transient server errors.
+            if status in {429, 502, 503, 504}:
 
-            bozo_exception = (
-                getattr(
+                retry_after = response.headers.get(
+                    "Retry-After"
+                )
+
+                if retry_after:
+                    try:
+                        delay = max(0.0, float(retry_after))
+                    except (TypeError, ValueError):
+                        delay = RSS_BACKOFF_BASE * (2 ** (attempt - 1))
+                else:
+                    delay = RSS_BACKOFF_BASE * (2 ** (attempt - 1))
+
+                if attempt < RSS_MAX_RETRIES:
+
+                    print(
+                        f"[RSS RETRY] query={query} | "
+                        f"status={status} | "
+                        f"attempt={attempt}/{RSS_MAX_RETRIES} | "
+                        f"sleep={delay:.1f}s"
+                    )
+
+                    time.sleep(delay)
+                    continue
+
+                response.raise_for_status()
+
+            response.raise_for_status()
+
+            feed = feedparser.parse(response.content)
+
+            print(
+                f"[RSS DEBUG] query={query} | "
+                f"status={response.status_code} | "
+                f"bytes={len(response.content)} | "
+                f"entries={len(feed.entries)} | "
+                f"bozo={getattr(feed, 'bozo', False)}"
+            )
+
+            if getattr(feed, "bozo", False):
+
+                bozo_exception = getattr(
                     feed,
                     "bozo_exception",
                     None,
                 )
-            )
 
-            if bozo_exception:
+                if bozo_exception:
+
+                    print(
+                        f"[RSS BOZO ERROR] "
+                        f"{query} -> "
+                        f"{type(bozo_exception).__name__}: "
+                        f"{bozo_exception}"
+                    )
+
+            if not feed.entries:
 
                 print(
-                    f"[RSS BOZO ERROR] "
-                    f"{query} -> "
-                    f"{type(bozo_exception).__name__}: "
-                    f"{bozo_exception}"
+                    f"[RSS EMPTY] "
+                    f"Tidak ada entry untuk: {query}"
                 )
 
-        if not feed.entries:
+                return []
+
+            rows = []
+
+            for entry in feed.entries[:MAX_ARTICLES_PER_FEED]:
+
+                link = normalize_url(
+                    entry.get("link")
+                )
+
+                if not link:
+                    continue
+
+                published = extract_feed_date(entry)
+
+                source_value = entry.get("source")
+
+                if isinstance(source_value, dict):
+                    source = source_value.get("title", "")
+                else:
+                    source = source_value or ""
+
+                rows.append(
+                    {
+                        "title": normalize_text(
+                            entry.get("title")
+                        ),
+                        "link": link,
+                        "published_date": (
+                            published.isoformat()
+                            if published
+                            else None
+                        ),
+                        "source": normalize_text(source),
+                        "rss_description": normalize_text(
+                            entry.get("summary")
+                        ),
+                    }
+                )
 
             print(
-                f"[RSS EMPTY] "
-                f"Tidak ada entry untuk: "
-                f"{query}"
+                f"[RSS OK] "
+                f"{query} -> {len(rows)} kandidat"
             )
 
-            return []
+            return rows
 
-        rows = []
+        except requests.RequestException as exc:
 
-        for entry in feed.entries[
-            :MAX_ARTICLES_PER_FEED
-        ]:
+            last_error = exc
 
-            link = normalize_url(
-                entry.get("link")
-            )
+            if attempt < RSS_MAX_RETRIES:
 
-            if not link:
+                delay = RSS_BACKOFF_BASE * (
+                    2 ** (attempt - 1)
+                )
+
+                print(
+                    f"[RSS RETRY] query={query} | "
+                    f"error={type(exc).__name__}: {exc} | "
+                    f"attempt={attempt}/{RSS_MAX_RETRIES} | "
+                    f"sleep={delay:.1f}s"
+                )
+
+                time.sleep(delay)
                 continue
 
-            published = (
-                extract_feed_date(
-                    entry
-                )
-            )
+            break
 
-            source_value = (
-                entry.get("source")
-            )
+        except Exception as exc:
 
-            if isinstance(
-                source_value,
-                dict,
-            ):
+            last_error = exc
+            break
 
-                source = (
-                    source_value.get(
-                        "title",
-                        "",
-                    )
-                )
+    print(
+        f"[RSS ERROR] "
+        f"{query} -> "
+        f"{type(last_error).__name__ if last_error else 'UnknownError'}: "
+        f"{last_error}"
+    )
 
-            else:
-
-                source = (
-                    source_value
-                    or ""
-                )
-
-            rows.append(
-                {
-                    "title": normalize_text(
-                        entry.get(
-                            "title"
-                        )
-                    ),
-
-                    "link": link,
-
-                    "published_date": (
-                        published.isoformat()
-                        if published
-                        else None
-                    ),
-
-                    "source": normalize_text(
-                        source
-                    ),
-
-                    "rss_description": (
-                        normalize_text(
-                            entry.get(
-                                "summary"
-                            )
-                        )
-                    ),
-                }
-            )
-
-        print(
-            f"[RSS OK] "
-            f"{query} -> "
-            f"{len(rows)} kandidat"
-        )
-
-        return rows
-
-    except Exception as exc:
-
-        print(
-            f"[RSS ERROR] "
-            f"{query} -> "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return []
+    return []
 
 
 # ============================================================
@@ -3188,6 +3212,11 @@ def collect_candidates() -> List[Dict[str, Any]]:
                 replaced_with_better += 1
 
     # --------------------------------------------------------
+        # Jeda antar query RSS untuk mengurangi risiko 429/503.
+        # Delay diterapkan setelah setiap query kecuali query terakhir.
+        if RSS_QUERY_DELAY > 0 and query != SEARCH_TARGETS[-1]:
+            time.sleep(RSS_QUERY_DELAY)
+
     # HAPUS FIELD INTERNAL
     # --------------------------------------------------------
 
@@ -4088,26 +4117,53 @@ def telegram_text(
     )
 
 
+def is_current_month_year_article(
+    article: Dict[str, Any],
+) -> bool:
+    """
+    Telegram hanya untuk artikel pada bulan dan tahun berjalan.
+    Waktu pembanding menggunakan UTC agar konsisten di GitHub Actions.
+    """
+
+    published = _risk_published_datetime(article)
+
+    if published is None:
+        return False
+
+    now = datetime.now(timezone.utc)
+
+    return (
+        published.year == now.year
+        and published.month == now.month
+    )
+
+
 def send_alert_if_needed(
     article: Dict[str, Any],
 ) -> bool:
 
-    if (
-        article.get(
-            "category"
+    category = normalize_text(
+        article.get("category")
+    ) or "Netral"
+
+    if category not in {
+        "Negatif Kuat",
+        "Perlu Penanganan",
+    }:
+        return False
+
+    if not is_current_month_year_article(article):
+
+        print(
+            "[TELEGRAM SKIP] "
+            "Artikel bukan bulan/tahun berjalan: "
+            f"{article.get('title', '')[:100]}"
         )
-        not in {
-            "Negatif Kuat",
-            "Perlu Penanganan",
-        }
-    ):
 
         return False
 
     return send_telegram_message(
-        telegram_text(
-            article
-        )
+        telegram_text(article)
     )
 
 
