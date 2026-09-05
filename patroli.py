@@ -30,7 +30,6 @@ from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
 from database import (
-    normalize_url,
     get_all_articles,
     get_supabase,
     get_article_by_link,
@@ -39,6 +38,78 @@ from database import (
     update_article_classification_by_id,
     delete_article_by_id,
 )
+
+
+# ============================================================
+# URL NORMALIZATION
+# ============================================================
+# Lokal agar patroli.py tidak bergantung pada export
+# normalize_url dari database.py. database.py TIDAK diubah.
+def normalize_url(url: str) -> str:
+    """
+    Normalisasi URL untuk deduplikasi.
+
+    Google News: parameter regional (hl, gl, ceid, oc) diabaikan.
+    Domain lain: parameter tracking umum diabaikan.
+    """
+    if not url:
+        return ""
+
+    url = str(url).strip()
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        domain = parsed.netloc.lower().replace("www.", "")
+
+        if domain == "news.google.com":
+            query_params = urllib.parse.parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
+            important_params = [
+                (key, value)
+                for key, value in query_params
+                if key.lower() not in {"hl", "gl", "ceid", "oc"}
+            ]
+            normalized_query = urllib.parse.urlencode(
+                sorted(important_params)
+            )
+        else:
+            query_params = urllib.parse.parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
+            tracking_params = {
+                "utm_source",
+                "utm_medium",
+                "utm_campaign",
+                "utm_term",
+                "utm_content",
+                "fbclid",
+                "gclid",
+            }
+            clean_params = [
+                (key, value)
+                for key, value in query_params
+                if key.lower() not in tracking_params
+            ]
+            normalized_query = urllib.parse.urlencode(
+                sorted(clean_params)
+            )
+
+        return urllib.parse.urlunparse(
+            (
+                parsed.scheme.lower(),
+                domain,
+                parsed.path.rstrip("/"),
+                "",
+                normalized_query,
+                "",
+            )
+        )
+
+    except Exception:
+        return url.lower().strip()
 
 
 # ============================================================
