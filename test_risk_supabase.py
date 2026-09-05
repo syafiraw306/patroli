@@ -1,5 +1,5 @@
 from database import get_all_articles
-from patroli_risk_active import calculate_article_risk
+from patroli import calculate_article_risk
 
 
 def main():
