@@ -29,6 +29,8 @@ from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
+from risk_engine import calculate_risk_score
+
 from database import (
     normalize_url,
     get_all_articles,
@@ -39,12 +41,6 @@ from database import (
     update_article_classification_by_id,
     delete_article_by_id,
 )
-
-# ============================================================
-# RISK ENGINE
-# ============================================================
-# Risk dihitung di level aplikasi dan tidak mengubah database.py.
-from risk_engine import calculate_risk_score
 
 
 # ============================================================
@@ -3654,6 +3650,157 @@ candidate: Dict[str, Any],
 
 
 # ============================================================
+# RISK CONTEXT ENGINE
+# ============================================================
+# Mengaktifkan seluruh 5 faktor Risk Engine tanpa mengubah database.py.
+# Konteks dihitung READ-ONLY dari artikel yang sudah ada + artikel baru.
+# ============================================================
+
+RISK_EVENT_SIMILARITY_THRESHOLD = 0.55
+RISK_MAX_RELATED_ARTICLES = 100
+RISK_RECENT_DAYS = 7
+
+
+def _risk_tokens(value: Any) -> set:
+    text = normalize_text(value).lower()
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return {token for token in text.split() if len(token) >= 4}
+
+
+def _risk_event_similarity(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> float:
+    title_a = normalize_text(article_a.get("title"))
+    title_b = normalize_text(article_b.get("title"))
+    if not title_a or not title_b:
+        return 0.0
+
+    title_ratio = SequenceMatcher(None, title_a.lower(), title_b.lower()).ratio()
+    title_tokens_a = _risk_tokens(title_a)
+    title_tokens_b = _risk_tokens(title_b)
+    title_token_ratio = (
+        len(title_tokens_a & title_tokens_b) / len(title_tokens_a | title_tokens_b)
+        if (title_tokens_a and title_tokens_b)
+        else 0.0
+    )
+
+    # Content membantu menangkap event yang sama meskipun redaksi judul
+    # antar-media berbeda. Hanya sebagian awal konten yang dipakai agar
+    # biaya komputasi tetap rendah.
+    content_a = normalize_text(article_a.get("content") or article_a.get("summary"))[:2000]
+    content_b = normalize_text(article_b.get("content") or article_b.get("summary"))[:2000]
+    content_tokens_a = _risk_tokens(content_a)
+    content_tokens_b = _risk_tokens(content_b)
+    content_ratio = (
+        len(content_tokens_a & content_tokens_b) / len(content_tokens_a | content_tokens_b)
+        if (content_tokens_a and content_tokens_b)
+        else 0.0
+    )
+
+    return round(
+        (title_ratio * 0.50)
+        + (title_token_ratio * 0.25)
+        + (content_ratio * 0.25),
+        4,
+    )
+
+
+def _risk_published_datetime(article: Dict[str, Any]) -> Optional[datetime]:
+    value = article.get("published_date")
+    if not value:
+        return None
+    try:
+        parsed = date_parser.parse(str(value))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def build_risk_context(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Hitung media spread, recurrence, dan trend secara READ-ONLY."""
+    article_date = _risk_published_datetime(article)
+    related = []
+
+    for other in all_articles:
+        if other is article:
+            continue
+        similarity = _risk_event_similarity(article, other)
+        if similarity >= RISK_EVENT_SIMILARITY_THRESHOLD:
+            related.append((similarity, other))
+
+    related.sort(key=lambda item: item[0], reverse=True)
+    related = related[:RISK_MAX_RELATED_ARTICLES]
+    event_articles = [article] + [item[1] for item in related]
+
+    media_sources = set()
+    for item in event_articles:
+        source = normalize_text(get_media_source(item))
+        if source:
+            media_sources.add(source.lower())
+
+    recurrence_count = 0
+    recent_count = 0
+    previous_count = 0
+
+    if article_date is not None:
+        current_ts = article_date.timestamp()
+        recent_start = current_ts - (RISK_RECENT_DAYS * 86400)
+        previous_start = current_ts - (RISK_RECENT_DAYS * 2 * 86400)
+
+        for _, other in related:
+            other_date = _risk_published_datetime(other)
+            if other_date is None:
+                continue
+            ts = other_date.timestamp()
+            if ts < current_ts:
+                recurrence_count += 1
+            if recent_start <= ts <= current_ts:
+                recent_count += 1
+            elif previous_start <= ts < recent_start:
+                previous_count += 1
+
+    if recent_count <= 0:
+        trend_score = 0
+    elif previous_count <= 0:
+        trend_score = 15 if recent_count >= 3 else 10
+    else:
+        ratio = recent_count / previous_count
+        if ratio >= 3:
+            trend_score = 15
+        elif ratio >= 2:
+            trend_score = 12
+        elif ratio >= 1.5:
+            trend_score = 8
+        elif ratio > 1:
+            trend_score = 5
+        else:
+            trend_score = 0
+
+    return {
+        "media_count": max(1, len(media_sources)),
+        "media_sources": media_sources,
+        "recurrence_count": recurrence_count,
+        "trend_score": trend_score,
+        "related_count": len(related),
+        "recent_count": recent_count,
+        "previous_count": previous_count,
+    }
+
+
+def calculate_article_risk(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    context = build_risk_context(article, all_articles)
+    result = calculate_risk_score(
+        article,
+        media_count=context["media_count"],
+        media_sources=context["media_sources"],
+        recurrence_count=context["recurrence_count"],
+        trend_score=context["trend_score"],
+    )
+    result["context"] = context
+    return result
+
+
+# ============================================================
 # TELEGRAM
 # ============================================================
 
@@ -3752,6 +3899,9 @@ def telegram_text(
         f"{category}\n"
         f"<b>Prioritas:</b> "
         f"{priority}\n"
+        f"<b>Risk:</b> "
+        f"{html.escape(str(article.get('risk_score', 'N/A')))} / 100 "
+        f"({html.escape(str(article.get('risk_level', 'N/A')))})\n"
         f"<b>Satker:</b> "
         f"{html.escape(NAMA_SATKER)}\n\n"
         f"<b>{title}</b>\n"
@@ -4314,35 +4464,8 @@ def run_once() -> Dict[str, Any]:
             # ====================================================
     
             saved_count += 1
-
-            # ====================================================
-            # RISK SCORE
-            # ====================================================
-            # Risk hanya ditambahkan ke object artikel di memory.
-            # Tidak mengubah database.py dan tidak membutuhkan
-            # perubahan schema database.
-            try:
-                risk_result = calculate_risk_score(article)
-                article["risk_score"] = risk_result.get("risk_score", 0)
-                article["risk_level"] = risk_result.get("risk_level", "LOW")
-                article["risk_factors"] = risk_result.get("factors", {})
-                article["risk_reasons"] = risk_result.get("reasons", [])
-            
-                print(
-                    "[RISK] "
-                    f"Score={article['risk_score']}/100 | "
-                    f"Level={article['risk_level']}"
-                )
-            except Exception as exc:
-                article["risk_score"] = 0
-                article["risk_level"] = "LOW"
-                article["risk_factors"] = {}
-                article["risk_reasons"] = []
-                print(
-                    "[RISK ERROR] "
-                    f"{type(exc).__name__}: {exc}"
-                )
-
+    
+    
             # ====================================================
             # UPDATE DUPLICATE INDEX
             #
@@ -4367,6 +4490,33 @@ def run_once() -> Dict[str, Any]:
             )
     
     
+            # ====================================================
+            # RISK ANALYSIS — 5 FACTORS AKTIF
+            # ====================================================
+            # Tidak menulis risk fields ke database karena database.py
+            # harus tetap tidak berubah.
+            risk_pool = existing_articles + new_articles + [article]
+            try:
+                risk_result = calculate_article_risk(article, risk_pool)
+                article["risk_score"] = risk_result["risk_score"]
+                article["risk_level"] = risk_result["risk_level"]
+                article["risk_factors"] = risk_result["factors"]
+                article["risk_reasons"] = risk_result["reasons"]
+                article["risk_context"] = risk_result["context"]
+                print(
+                    f"[RISK] {risk_result['risk_score']}/100 "
+                    f"{risk_result['risk_level']} | "
+                    f"media={risk_result['context']['media_count']} | "
+                    f"recurrence={risk_result['context']['recurrence_count']} | "
+                    f"trend={risk_result['context']['trend_score']}"
+                )
+            except Exception as exc:
+                print(
+                    f"[RISK WARNING] Gagal menghitung risk: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+
             # ====================================================
             # NEW ARTICLE
             #
@@ -4395,6 +4545,25 @@ def run_once() -> Dict[str, Any]:
                 f"{type(exc).__name__}: "
                 f"{exc}"
             )
+    # ========================================================
+    # RISK SUMMARY
+    # ========================================================
+    risk_level_counts = Counter()
+    for item in new_articles:
+        level = normalize_text(item.get("risk_level"))
+        if level:
+            risk_level_counts[level] += 1
+
+    print()
+    print("[RISK] RINGKASAN ARTIKEL BARU")
+    print(
+        f"[RISK] Scored: {sum(risk_level_counts.values())} | "
+        f"CRITICAL={risk_level_counts.get('CRITICAL', 0)} | "
+        f"HIGH={risk_level_counts.get('HIGH', 0)} | "
+        f"MEDIUM={risk_level_counts.get('MEDIUM', 0)} | "
+        f"LOW={risk_level_counts.get('LOW', 0)}"
+    )
+
     # ========================================================
     # TELEGRAM
     # ========================================================
@@ -4474,29 +4643,6 @@ def run_once() -> Dict[str, Any]:
         f"[TELEGRAM] Tidak dikirim/skipped: "
         f"{telegram_skipped}"
     )
-
-    # ========================================================
-    # RISK SUMMARY
-    # ========================================================
-    risk_levels = Counter(
-        normalize_text(
-            article.get("risk_level")
-        ) or "LOW"
-        for article in new_articles
-        if article.get("risk_score") is not None
-    )
-
-    if new_articles:
-        print(
-            f"[RISK] Artikel baru dianalisis: "
-            f"{len(new_articles)}"
-        )
-        print(
-            f"[RISK] CRITICAL={risk_levels.get('CRITICAL', 0)} | "
-            f"HIGH={risk_levels.get('HIGH', 0)} | "
-            f"MEDIUM={risk_levels.get('MEDIUM', 0)} | "
-            f"LOW={risk_levels.get('LOW', 0)}"
-        )
 
     # ========================================================
     # FINAL DATABASE
