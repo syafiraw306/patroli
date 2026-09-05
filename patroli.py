@@ -1150,16 +1150,7 @@ def _clean_candidate_url(url: Any, base_url: str = "") -> str:
 
 
 def extract_canonical_article_url(raw_html: str, response_url: str = "") -> str:
-    """
-    Mengambil canonical URL artikel dari HTML.
-
-    Prioritas:
-    1. <link rel="canonical" href="...">
-    2. <meta property="og:url" content="...">
-    3. Tidak ada hasil -> string kosong.
-
-    URL Google News tidak dianggap sebagai canonical media.
-    """
+    """Ambil canonical/og:url artikel asli dari HTML."""
     if not raw_html:
         return ""
 
@@ -1169,13 +1160,11 @@ def extract_canonical_article_url(raw_html: str, response_url: str = "") -> str:
         return ""
 
     candidates = []
-
     for tag in soup.find_all("link"):
         rel = tag.get("rel") or []
         if isinstance(rel, str):
             rel = [rel]
-        rel_values = {str(item).lower().strip() for item in rel}
-        if "canonical" in rel_values:
+        if "canonical" in {str(item).lower().strip() for item in rel}:
             candidates.append(tag.get("href"))
 
     for tag in soup.find_all("meta"):
@@ -1187,7 +1176,117 @@ def extract_canonical_article_url(raw_html: str, response_url: str = "") -> str:
         cleaned = _clean_candidate_url(candidate, response_url)
         if cleaned and not _is_google_news_url(cleaned):
             return cleaned
+    return ""
 
+
+def _url_source_domain(url: str) -> str:
+    try:
+        host = urllib.parse.urlparse(str(url)).netloc.lower().split(":", 1)[0]
+        return host[4:] if host.startswith("www.") else host
+    except Exception:
+        return ""
+
+
+def _looks_like_media_url(url: str) -> bool:
+    """Menolak URL navigasi umum agar ekstraksi Google News tetap konservatif."""
+    if not url or _is_google_news_url(url):
+        return False
+    host = _url_source_domain(url)
+    if not host:
+        return False
+    blocked_hosts = {
+        "google.com", "google.co.id", "youtube.com", "youtu.be",
+        "facebook.com", "instagram.com", "twitter.com", "x.com",
+        "t.me", "linkedin.com",
+    }
+    if host in blocked_hosts or any(host.endswith("." + h) for h in blocked_hosts):
+        return False
+    return True
+
+
+def extract_google_news_original_url(
+    raw_html: str,
+    response_url: str = "",
+    source_url: str = "",
+    title: str = "",
+) -> str:
+    """
+    Mencari URL media asli ketika URL Google News tidak melakukan redirect.
+
+    Fungsi ini hanya mengembalikan URL jika ada sinyal yang cukup kuat:
+    - domain cocok dengan URL source RSS, atau
+    - anchor pada halaman sangat mirip dengan judul artikel.
+    Jika tidak yakin, dikembalikan kosong agar aturan duplicate URL tetap aman.
+    """
+    if not raw_html:
+        return ""
+
+    try:
+        soup = BeautifulSoup(raw_html, "html.parser")
+    except Exception:
+        return ""
+
+    source_domain = _url_source_domain(source_url)
+    title_tokens = {
+        token.lower()
+        for token in re.findall(r"[\w]{4,}", normalize_text(title))
+        if token.lower() not in {
+            "yang", "dengan", "dari", "untuk", "dalam", "pada", "oleh", "dan", "atau",
+        }
+    }
+    scored = {}
+
+    def add_candidate(value: Any, anchor_text: str = "") -> None:
+        cleaned = _clean_candidate_url(value, response_url)
+        if not _looks_like_media_url(cleaned):
+            return
+        host = _url_source_domain(cleaned)
+        score = 0
+        if source_domain and (
+            host == source_domain
+            or host.endswith("." + source_domain)
+            or source_domain.endswith("." + host)
+        ):
+            score += 100
+        if anchor_text and title_tokens:
+            anchor_tokens = {
+                token.lower()
+                for token in re.findall(r"[\w]{4,}", normalize_text(anchor_text))
+            }
+            score += min(len(title_tokens & anchor_tokens), 10) * 5
+        if urllib.parse.urlparse(cleaned).path not in {"", "/"}:
+            score += 2
+        if len(cleaned) < 300:
+            score += 1
+        scored[cleaned] = max(scored.get(cleaned, -1), score)
+
+    for tag in soup.find_all("a", href=True):
+        add_candidate(tag.get("href"), tag.get_text(" ", strip=True))
+
+    for tag in soup.find_all("meta"):
+        if str(tag.get("http-equiv") or "").lower().strip() == "refresh":
+            content = str(tag.get("content") or "")
+            match = re.search(r"url\s*=\s*(.+)$", content, flags=re.I)
+            if match:
+                add_candidate(match.group(1).strip(" \\\"'"))
+
+    if not scored:
+        for match in re.finditer(r"https?:(?:\\/\\/|//)[^\"'<>\s]+", raw_html):
+            add_candidate(match.group(0).replace("\\/", "/"))
+
+    if not scored:
+        return ""
+
+    best_url, best_score = max(scored.items(), key=lambda item: item[1])
+    best_domain = _url_source_domain(best_url)
+    if source_domain and (
+        best_domain == source_domain
+        or best_domain.endswith("." + source_domain)
+        or source_domain.endswith("." + best_domain)
+    ):
+        return best_url
+    if best_score >= 20:
+        return best_url
     return ""
 
 
@@ -1195,17 +1294,17 @@ def resolve_article_url(
     rss_url: str,
     response_url: str = "",
     raw_html: str = "",
+    source_url: str = "",
+    title: str = "",
 ) -> str:
     """
-    Menentukan URL artikel yang akan disimpan.
+    Menentukan URL artikel yang disimpan tanpa mengubah database.py.
 
-    Urutan prioritas:
-    1. canonical/og:url dari halaman artikel
+    Prioritas:
+    1. canonical/og:url
     2. URL akhir redirect HTTP jika bukan Google News
-    3. URL RSS sebagai fallback
-
-    Tidak mengubah database.py. Tujuannya agar kolom link menyimpan
-    URL media asli bila informasi tersebut tersedia.
+    3. URL media yang tertanam pada halaman Google News
+    4. URL RSS sebagai fallback
     """
     canonical = extract_canonical_article_url(raw_html, response_url)
     if canonical:
@@ -1214,6 +1313,16 @@ def resolve_article_url(
     resolved = _clean_candidate_url(response_url)
     if resolved and not _is_google_news_url(resolved):
         return resolved
+
+    original = extract_google_news_original_url(
+        raw_html=raw_html,
+        response_url=response_url,
+        source_url=source_url,
+        title=title,
+    )
+    if original:
+        print(f"[URL GOOGLE NEWS] Media asli ditemukan: {original}")
+        return original
 
     return normalize_url(rss_url) or _clean_candidate_url(rss_url)
 
@@ -3035,9 +3144,11 @@ def parse_google_news_feed(
                 published = extract_feed_date(entry)
 
                 source_value = entry.get("source")
+                source_url = ""
 
                 if isinstance(source_value, dict):
                     source = source_value.get("title", "")
+                    source_url = source_value.get("href", "") or source_value.get("url", "")
                 else:
                     source = source_value or ""
 
@@ -3053,6 +3164,7 @@ def parse_google_news_feed(
                             else None
                         ),
                         "source": normalize_text(source),
+                        "source_url": _clean_candidate_url(source_url),
                         "rss_description": normalize_text(
                             entry.get("summary")
                         ),
@@ -3446,6 +3558,8 @@ candidate: Dict[str, Any],
             rss_url=rss_link,
             response_url=fetched_url,
             raw_html=raw_html,
+            source_url=candidate.get("source_url", ""),
+            title=title,
         )
         print(
             f"[URL] RSS={rss_link} -> RESOLVED={final_url}"
