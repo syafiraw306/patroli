@@ -3656,15 +3656,58 @@ candidate: Dict[str, Any],
 # Konteks dihitung READ-ONLY dari artikel yang sudah ada + artikel baru.
 # ============================================================
 
-RISK_EVENT_SIMILARITY_THRESHOLD = 0.55
+RISK_EVENT_SIMILARITY_THRESHOLD = 0.62
+RISK_STRONG_TITLE_SIMILARITY = 0.82
 RISK_MAX_RELATED_ARTICLES = 100
 RISK_RECENT_DAYS = 7
+
+# Kata yang terlalu umum untuk menjadi penentu utama event.
+RISK_GENERIC_EVENT_TOKENS = {
+    "deli", "serdang", "kejari", "kejaksaan", "negeri", "kajari",
+    "cabang", "cabjari", "sumut", "sumatera", "utara", "terkait",
+    "dengan", "setelah", "resmi", "terhadap", "ungkap", "dalam",
+    "untuk", "yang", "dan", "atau", "ini", "itu", "jadi", "jadi",
+    "kini", "saat", "sebut", "kata", "menurut", "berikut", "diperiksa",
+}
+
+# Anchor event: kata yang biasanya menjelaskan kejadian inti.
+RISK_EVENT_ANCHOR_TOKENS = {
+    # Penegakan hukum / masalah
+    "korupsi", "narkotika", "narkoba", "tersangka", "terdakwa", "pidana",
+    "penyidikan", "penyelidikan", "penuntutan", "perkara", "pengadilan",
+    "sidang", "vonis", "dakwaan", "suap", "gratifikasi", "penggeledahan",
+    "penyitaan", "penangkapan", "ditangkap", "ditangkapnya", "diamankan",
+    "dicopot", "pencopotan", "dipanggil", "pelanggaran", "kode", "etik",
+    "diganti", "penggantinya", "pelantikan", "dilantik", "lantik", "plh",
+    # Kegiatan/kebijakan yang cukup spesifik
+    "sertifikasi", "wakaf", "tanah", "bunga", "pelakor", "bos", "dana",
+    "desa", "lubuk", "pakam", "batu", "lokong", "revanda", "sitepu",
+    "padang", "lawas", "sapta", "putra", "jamintel", "integritas",
+}
+
+_RISK_BLOCK_CACHE = {}
 
 
 def _risk_tokens(value: Any) -> set:
     text = normalize_text(value).lower()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
     return {token for token in text.split() if len(token) >= 4}
+
+
+def _risk_event_tokens(article: Dict[str, Any]) -> set:
+    """Token judul yang relevan untuk identitas event, tanpa kata institusi umum."""
+    title_tokens = _risk_tokens(article.get("title"))
+    return title_tokens - RISK_GENERIC_EVENT_TOKENS
+
+
+def _risk_event_anchors(article: Dict[str, Any]) -> set:
+    """Anchor event dari judul; fallback ke token judul non-generik yang cukup informatif."""
+    tokens = _risk_event_tokens(article)
+    anchors = tokens & RISK_EVENT_ANCHOR_TOKENS
+    if anchors:
+        return anchors
+    # Untuk event non-hukum, token non-generik tetap dapat menjadi anchor.
+    return {token for token in tokens if len(token) >= 6}
 
 
 def _risk_event_similarity(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> float:
@@ -3674,21 +3717,18 @@ def _risk_event_similarity(article_a: Dict[str, Any], article_b: Dict[str, Any])
         return 0.0
 
     title_ratio = SequenceMatcher(None, title_a.lower(), title_b.lower()).ratio()
-    title_tokens_a = _risk_tokens(title_a)
-    title_tokens_b = _risk_tokens(title_b)
+    title_tokens_a = _risk_event_tokens(article_a)
+    title_tokens_b = _risk_event_tokens(article_b)
     title_token_ratio = (
         len(title_tokens_a & title_tokens_b) / len(title_tokens_a | title_tokens_b)
         if (title_tokens_a and title_tokens_b)
         else 0.0
     )
 
-    # Content membantu menangkap event yang sama meskipun redaksi judul
-    # antar-media berbeda. Hanya sebagian awal konten yang dipakai agar
-    # biaya komputasi tetap rendah.
     content_a = normalize_text(article_a.get("content") or article_a.get("summary"))[:2000]
     content_b = normalize_text(article_b.get("content") or article_b.get("summary"))[:2000]
-    content_tokens_a = _risk_tokens(content_a)
-    content_tokens_b = _risk_tokens(content_b)
+    content_tokens_a = _risk_tokens(content_a) - RISK_GENERIC_EVENT_TOKENS
+    content_tokens_b = _risk_tokens(content_b) - RISK_GENERIC_EVENT_TOKENS
     content_ratio = (
         len(content_tokens_a & content_tokens_b) / len(content_tokens_a | content_tokens_b)
         if (content_tokens_a and content_tokens_b)
@@ -3696,11 +3736,91 @@ def _risk_event_similarity(article_a: Dict[str, Any], article_b: Dict[str, Any])
     )
 
     return round(
-        (title_ratio * 0.50)
-        + (title_token_ratio * 0.25)
-        + (content_ratio * 0.25),
+        (title_ratio * 0.55)
+        + (title_token_ratio * 0.30)
+        + (content_ratio * 0.15),
         4,
     )
+
+
+def _risk_same_url(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> bool:
+    url_a = normalize_url(article_a.get("link") or "")
+    url_b = normalize_url(article_b.get("link") or "")
+    return bool(url_a and url_b and url_a == url_b)
+
+
+def _risk_same_title_media(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> bool:
+    title_a = normalize_text(article_a.get("title")).lower()
+    title_b = normalize_text(article_b.get("title")).lower()
+    if not title_a or not title_b or title_a != title_b:
+        return False
+    media_a = normalize_text(get_media_source(article_a)).lower()
+    media_b = normalize_text(get_media_source(article_b)).lower()
+    return bool(media_a and media_b and media_a == media_b)
+
+
+def _risk_is_related_event(article: Dict[str, Any], other: Dict[str, Any]) -> Tuple[bool, float]:
+    """Validasi dua tahap agar institusi/lokasi umum tidak membuat false cluster."""
+    similarity = _risk_event_similarity(article, other)
+    if similarity < RISK_EVENT_SIMILARITY_THRESHOLD:
+        return False, similarity
+
+    anchors_a = _risk_event_anchors(article)
+    anchors_b = _risk_event_anchors(other)
+    anchor_overlap = anchors_a & anchors_b
+
+    # Judul yang sangat kuat boleh lolos tanpa anchor eksplisit.
+    title_a = normalize_text(article.get("title"))
+    title_b = normalize_text(other.get("title"))
+    title_ratio = SequenceMatcher(None, title_a.lower(), title_b.lower()).ratio()
+
+    if title_ratio >= RISK_STRONG_TITLE_SIMILARITY:
+        return True, similarity
+
+    # Untuk similarity normal, wajib ada anchor event yang sama.
+    if not anchor_overlap:
+        return False, similarity
+
+    # Minimal dua anchor yang sama untuk mencegah event berbeda yang hanya
+    # berbagi satu istilah umum seperti "dana", "desa", atau "korupsi".
+    # Satu anchor tetap boleh jika judul sudah cukup dekat.
+    if len(anchor_overlap) >= 2:
+        return True, similarity
+    if title_ratio >= 0.72:
+        return True, similarity
+    return False, similarity
+
+
+def _build_risk_block_index(all_articles: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Membuat inverted index sederhana agar pencarian kandidat tidak all-pairs."""
+    index = defaultdict(list)
+    for item in all_articles:
+        anchors = _risk_event_anchors(item)
+        for anchor in anchors:
+            index[anchor].append(item)
+    return index
+
+
+def _risk_candidate_articles(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ambil kandidat berdasarkan anchor event; fallback terbatas untuk judul sangat kuat."""
+    cache_key = (id(all_articles), len(all_articles))
+    index = _RISK_BLOCK_CACHE.get(cache_key)
+    if index is None:
+        index = _build_risk_block_index(all_articles)
+        _RISK_BLOCK_CACHE.clear()
+        _RISK_BLOCK_CACHE[cache_key] = index
+
+    candidates = []
+    seen = set()
+    for anchor in _risk_event_anchors(article):
+        for item in index.get(anchor, []):
+            marker = id(item)
+            if marker not in seen:
+                seen.add(marker)
+                candidates.append(item)
+
+    # Bila tidak ada anchor, jangan melakukan O(N) similarity scan.
+    return candidates
 
 
 def _risk_published_datetime(article: Dict[str, Any]) -> Optional[datetime]:
@@ -3721,11 +3841,14 @@ def build_risk_context(article: Dict[str, Any], all_articles: List[Dict[str, Any
     article_date = _risk_published_datetime(article)
     related = []
 
-    for other in all_articles:
+    candidates = _risk_candidate_articles(article, all_articles)
+    for other in candidates:
         if other is article:
             continue
-        similarity = _risk_event_similarity(article, other)
-        if similarity >= RISK_EVENT_SIMILARITY_THRESHOLD:
+        if _risk_same_url(article, other):
+            continue
+        is_related, similarity = _risk_is_related_event(article, other)
+        if is_related:
             related.append((similarity, other))
 
     related.sort(key=lambda item: item[0], reverse=True)
@@ -3741,6 +3864,7 @@ def build_risk_context(article: Dict[str, Any], all_articles: List[Dict[str, Any
     recurrence_count = 0
     recent_count = 0
     previous_count = 0
+    seen_recurrence = set()
 
     if article_date is not None:
         current_ts = article_date.timestamp()
@@ -3748,6 +3872,17 @@ def build_risk_context(article: Dict[str, Any], all_articles: List[Dict[str, Any
         previous_start = current_ts - (RISK_RECENT_DAYS * 2 * 86400)
 
         for _, other in related:
+            # Copy artikel dari media yang sama dengan judul sama tidak boleh
+            # dihitung sebagai recurrence kedua kali.
+            if _risk_same_title_media(article, other):
+                continue
+
+            other_link = normalize_url(other.get("link") or "")
+            marker = other_link or normalize_text(other.get("title")).lower()
+            if marker in seen_recurrence:
+                continue
+            seen_recurrence.add(marker)
+
             other_date = _risk_published_datetime(other)
             if other_date is None:
                 continue
@@ -3782,6 +3917,7 @@ def build_risk_context(article: Dict[str, Any], all_articles: List[Dict[str, Any
         "recurrence_count": recurrence_count,
         "trend_score": trend_score,
         "related_count": len(related),
+        "related_titles": [item.get("title", "") for _, item in related[:20]],
         "recent_count": recent_count,
         "previous_count": previous_count,
     }
