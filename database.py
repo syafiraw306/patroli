@@ -29,16 +29,7 @@ from bs4 import BeautifulSoup
 from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
-from database import (
-    normalize_url,
-    get_all_articles,
-    get_supabase,
-    get_article_by_link,
-    upsert_article,
-    save_run_log,
-    update_article_classification_by_id,
-    delete_article_by_id,
-)
+
 
 
 # ============================================================
