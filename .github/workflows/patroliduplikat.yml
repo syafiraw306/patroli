@@ -35,6 +35,8 @@ on:
           - test-new-article
           - test-telegram
           - database-audit
+          - resolve-existing-urls-dry-run
+          - resolve-existing-urls
 
 jobs:
   patroli:
@@ -147,6 +149,14 @@ jobs:
             elif [ "${{ inputs.mode }}" = "database-audit" ]; then
               echo "Menjalankan audit database..."
               python patroli.py --database-audit
+            
+            elif [ "${{ inputs.mode }}" = "resolve-existing-urls-dry-run" ]; then
+              echo "Menjalankan resolve-existing-urls-dry-run..."
+              python patroli.py --resolve-existing-urls-dry-run
+
+            elif [ "${{ inputs.mode }}" = "resolve-existing-urls" ]; then
+              echo "Menjalankan resolve-existing-urls..."
+              python patroli.py --resolve-existing-urls
               
             else
           
