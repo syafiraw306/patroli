@@ -3848,11 +3848,6 @@ def reclassify_all() -> Dict[str, int]:
 # RUN ONCE
 # ============================================================
 
-
-# ============================================================
-# RUN ONCE
-# ============================================================
-
 def run_once() -> Dict[str, Any]:
 
     started = time.perf_counter()
@@ -4250,7 +4245,7 @@ def run_once() -> Dict[str, Any]:
         else:
             other_skip_count += 1
 
-# ====================================================
+        # ====================================================
         # SKIP DUPLICATE
         # ====================================================
     
@@ -4574,16 +4569,18 @@ def run_once() -> Dict[str, Any]:
         f"{telegram_skip_count}"
     )
 
-    print()
-    print("=" * 70)
-    print("REKLASIFIKASI SELESAI")
-    print("=" * 70)
-
     # ========================================================
     # RECLASSIFICATION
     # ========================================================
-
-    counts = reclassify_all()
+    #
+    # PENTING:
+    # run_once() TIDAK melakukan reclassify.
+    # Reclassifikasi seluruh database hanya dijalankan
+    # ketika mode --reclassify dipilih di main().
+    #
+    # Untuk kebutuhan summary, ambil jumlah kategori
+    # dari data yang sudah tersimpan TANPA melakukan UPDATE.
+    # ========================================================
 
     # ========================================================
     # FINAL DATABASE
@@ -4602,6 +4599,17 @@ def run_once() -> Dict[str, Any]:
         )
 
         final_articles = []
+
+    # ========================================================
+    # CATEGORY COUNTS (READ ONLY)
+    # ========================================================
+    # Tidak melakukan klasifikasi ulang / UPDATE database.
+    counts = Counter(
+        normalize_text(
+            article.get("category")
+        ) or "Netral"
+        for article in final_articles
+    )
 
     duration = round(
         time.perf_counter()
