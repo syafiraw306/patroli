@@ -1265,15 +1265,19 @@ def _domain_related(host: str, source_domain: str) -> bool:
 
 
 
-def decode_google_news_base64_url(url: str) -> str:
+def decode_google_news_base64_url(url: str, raw_html: str = "") -> str:
     """
-    Resolve current Google News RSS article tokens.
+    Resolve Google News RSS article URLs to publisher URLs.
 
-    Current Google News tokens (CBMi...) generally do NOT contain the
-    publisher URL as plain base64 anymore.  The token is sent to Google's
-    internal garturl/batchexecute endpoint (Fbv4je), which returns the
-    publisher URL.  Older tokens that directly contain a URL are still
-    supported as a cheap offline fallback.
+    Google News currently uses an internal `garturl` RPC for many
+    /rss/articles/CBMi... links.  The most reliable flow is:
+
+    1. GET the Google News article/RSS URL.
+    2. Read c-wiz[data-p] from the returned HTML.
+    3. Build the Fbv4je/garturlreq request from that payload.
+    4. Parse garturlres from Google's response.
+
+    A legacy direct base64 URL extraction is retained as a fallback.
     """
     if not _is_google_news_url(url):
         return ""
@@ -1306,60 +1310,161 @@ def decode_google_news_base64_url(url: str) -> str:
             pass
 
         # --------------------------------------------------------
-        # 2. Current Google News garturl RPC
+        # 2. Preferred current Google News garturl flow.
         # --------------------------------------------------------
-        rpc_payload = (
-            '[[["Fbv4je","[\\"garturlreq\\",[[\\"en-US\\",\\"US\\",'
-            '[\\"FINANCE_TOP_INDICES\\",\\"WEB_TEST_1_0_0\\"],null,null,1,1,'
-            '\\"US:en\\",null,180,null,null,null,null,null,0,null,null,'
-            '[1608992183,723341000]],\\"en-US\\",\\"US\\",1,[2,3,4,8],1,0,'
-            '\\"655000234\\",0,0,null,0],\\"'
-            + token
-            + '\\"]",null,"generic"]]]'
-        )
+        # The Google News article page exposes a c-wiz[data-p] payload.
+        # Community-tested implementations use that payload to construct
+        # the Fbv4je request rather than guessing the protobuf structure.
+        html_text = raw_html or ""
+        if not html_text:
+            response = SESSION.get(
+                str(url),
+                timeout=REQUEST_TIMEOUT,
+                allow_redirects=True,
+            )
+            response.raise_for_status()
+            html_text = response.text
 
-        response = SESSION.post(
-            "https://news.google.com/_/DotsSplashUi/data/batchexecute",
-            params={"rpcids": "Fbv4je"},
-            data={"f.req": rpc_payload},
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                "Referer": "https://news.google.com/",
-            },
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        text = response.text
+        try:
+            soup = BeautifulSoup(html_text, "html.parser")
+            data_p = ""
+            node = soup.select_one("c-wiz[data-p]")
+            if node is not None:
+                data_p = node.get("data-p") or ""
+            if not data_p:
+                node = soup.select_one("c-wiz > div[data-p]")
+                if node is not None:
+                    data_p = node.get("data-p") or ""
+        except Exception:
+            data_p = ""
 
-        # The response contains an escaped JSON fragment:
-        # [\\"garturlres\\",\\"https://publisher/...\\", ...]
-        header = '[\\"garturlres\\",\\"'
-        footer = '\\",'
-        if header in text:
-            start_idx = text.find(header) + len(header)
-            tail = text[start_idx:]
-            end_idx = tail.find(footer)
-            if end_idx >= 0:
-                decoded_url = tail[:end_idx]
-                decoded_url = decoded_url.replace('\\u0026', '&')
-                decoded_url = decoded_url.replace('\\/', '/')
-                decoded_url = html.unescape(decoded_url)
-                decoded_url = _clean_candidate_url(decoded_url, url)
-                if decoded_url and _looks_like_media_url(decoded_url):
-                    return decoded_url
-
-        # More tolerant fallback: search the response for an absolute URL
-        # close to the garturlres marker.
-        marker_pos = text.find("garturlres")
-        if marker_pos >= 0:
-            tail = text[marker_pos:marker_pos + 10000]
-            for match in re.findall(r"https?://[^\\\"'<>\\s\\\\]+", tail):
-                candidate = _clean_candidate_url(
-                    match.replace('\\u0026', '&').replace('\\/', '/'),
-                    url,
+        if data_p:
+            try:
+                decoded_data = html.unescape(data_p)
+                obj = json.loads(
+                    decoded_data.replace("%.@.", '["garturlreq",', 1)
                 )
-                if candidate and _looks_like_media_url(candidate):
-                    return candidate
+
+                # Google currently expects the garturl request object with
+                # the last six metadata elements reduced to the final two.
+                if isinstance(obj, list) and len(obj) >= 6:
+                    garturl_obj = obj[:-6] + obj[-2:]
+                else:
+                    garturl_obj = obj
+
+                rpc_payload = json.dumps(
+                    [[
+                        [
+                            "Fbv4je",
+                            json.dumps(garturl_obj, separators=(",", ":")),
+                            "null",
+                            "generic",
+                        ]
+                    ]],
+                    separators=(",", ":"),
+                )
+
+                response = SESSION.post(
+                    "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                    params={"rpcids": "Fbv4je"},
+                    data={"f.req": rpc_payload},
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                        "Referer": "https://news.google.com/",
+                        "User-Agent": SESSION.headers.get("User-Agent", "Mozilla/5.0"),
+                    },
+                    timeout=REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+                text = response.text
+
+                # Primary parser used by known working Python implementations.
+                try:
+                    outer = json.loads(text.replace(")]}'", "", 1))
+                    array_string = outer[0][2]
+                    inner = json.loads(array_string)
+                    if isinstance(inner, list) and len(inner) > 1:
+                        candidate = inner[1]
+                        candidate = _clean_candidate_url(candidate, url)
+                        if candidate and _looks_like_media_url(candidate):
+                            return candidate
+                except Exception:
+                    pass
+
+                # Secondary parser for escaped garturlres responses.
+                marker = r'[\\"garturlres\\",\\"'
+                pos = text.find('garturlres')
+                if pos >= 0:
+                    tail = text[pos:pos + 20000]
+                    for match in re.finditer(
+                        r'https?://[^\\"\'<>\\s]+',
+                        tail,
+                        flags=re.I,
+                    ):
+                        candidate = match.group(0)
+                        candidate = candidate.replace(r'\\u0026', '&')
+                        candidate = candidate.replace(r'\\/', '/')
+                        candidate = html.unescape(candidate)
+                        candidate = _clean_candidate_url(candidate, url)
+                        if candidate and _looks_like_media_url(candidate):
+                            return candidate
+            except Exception as exc:
+                print(
+                    "[GOOGLE NEWS GARTURL WARNING] "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
+        # --------------------------------------------------------
+        # 3. Alternative current format using data-n-a-sg / data-n-a-ts.
+        # --------------------------------------------------------
+        try:
+            soup = BeautifulSoup(html_text, "html.parser")
+            node = soup.select_one("c-wiz > div[data-n-a-sg][data-n-a-ts]")
+            if node is not None:
+                signature = node.get("data-n-a-sg")
+                timestamp = node.get("data-n-a-ts")
+                if signature and timestamp:
+                    req = [
+                        "Fbv4je",
+                        (
+                            '["garturlreq",[["en-US","US",'
+                            '["FINANCE_TOP_INDICES","WEB_TEST_1_0_0"],'
+                            'null,null,1,1,"US:en",null,180,null,null,null,null,null,0,null,null,'
+                            '[1608992183,723341000]],"en-US","US",1,[2,3,4,8],1,0,"655000234",0,0,null,0],'
+                            f'"{token}",{timestamp},"{signature}"]'
+                        ),
+                        "null",
+                        "generic",
+                    ]
+                    rpc_payload = json.dumps([[req]], separators=(",", ":"))
+                    response = SESSION.post(
+                        "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                        params={"rpcids": "Fbv4je"},
+                        data={"f.req": rpc_payload},
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                            "Referer": "https://news.google.com/",
+                            "User-Agent": SESSION.headers.get("User-Agent", "Mozilla/5.0"),
+                        },
+                        timeout=REQUEST_TIMEOUT,
+                    )
+                    response.raise_for_status()
+                    text = response.text
+                    pos = text.find("garturlres")
+                    if pos >= 0:
+                        tail = text[pos:pos + 20000]
+                        for match in re.finditer(r'https?://[^\\"\'<>\\s]+', tail, flags=re.I):
+                            candidate = match.group(0)
+                            candidate = candidate.replace(r'\\u0026', '&').replace(r'\\/', '/')
+                            candidate = html.unescape(candidate)
+                            candidate = _clean_candidate_url(candidate, url)
+                            if candidate and _looks_like_media_url(candidate):
+                                return candidate
+        except Exception as exc:
+            print(
+                "[GOOGLE NEWS DECODER WARNING] "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     except Exception as exc:
         print(
@@ -1368,7 +1473,6 @@ def decode_google_news_base64_url(url: str) -> str:
         )
 
     return ""
-
 
 def extract_google_news_original_url(
     raw_html: str,
@@ -1506,7 +1610,7 @@ def resolve_article_url_details(
     # ------------------------------------------------------------
     # Untuk URL /rss/articles/CBMi..., token sering memuat URL publisher
     # secara langsung. Ini lebih stabil daripada mengandalkan HTML Google.
-    decoded = decode_google_news_base64_url(rss_url)
+    decoded = decode_google_news_base64_url(rss_url, raw_html=raw_html)
     if decoded and not _is_google_news_url(decoded):
         return decoded, "base64_embedded"
 
@@ -1518,7 +1622,7 @@ def resolve_article_url_details(
     if resolved and not _is_google_news_url(resolved):
         return resolved, "redirect"
 
-    decoded = decode_google_news_base64_url(rss_url)
+    decoded = decode_google_news_base64_url(rss_url, raw_html=raw_html)
     if decoded:
         print(f"[URL GOOGLE NEWS] Media asli via garturl: {decoded}")
         return decoded, "base64_embedded"
