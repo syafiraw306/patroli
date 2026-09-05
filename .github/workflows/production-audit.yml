@@ -1,0 +1,43 @@
+name: Patroli Siber - Production Audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+jobs:
+  production-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install feedparser requests beautifulsoup4 python-dateutil python-dotenv supabase
+          fi
+
+      - name: Verify Python syntax
+        run: |
+          python -m py_compile patroli.py
+          python -m py_compile database.py
+          python -m py_compile risk_engine.py
+
+      - name: Run production audit
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TAHUN_TARGET: "2026"
+        run: python patroli.py --production-audit
