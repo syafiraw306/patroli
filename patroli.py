@@ -3848,6 +3848,11 @@ def reclassify_all() -> Dict[str, int]:
 # RUN ONCE
 # ============================================================
 
+
+# ============================================================
+# RUN ONCE
+# ============================================================
+
 def run_once() -> Dict[str, Any]:
 
     started = time.perf_counter()
@@ -4149,25 +4154,8 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
     
     saved_count = 0
-    
     save_failed = 0
-
     
-    # ========================================================
-    
-    # DEDUPE SUMMARY COUNTERS
-    
-    # ========================================================
-    
-    duplicate_url_count = 0
-    
-    duplicate_title_count = 0
-    
-    duplicate_content_count = 0
-    
-    other_skip_count = 0
-    
-    passed_dedupe_count = 0
     new_articles = []
     
     
@@ -4220,31 +4208,6 @@ def run_once() -> Dict[str, Any]:
         )
     
     
-        
-        # ====================================================
-        # DEDUPE SUMMARY COUNTER
-        # ====================================================
-        reason_text = normalize_text(reason)
-
-        if should_save:
-            passed_dedupe_count += 1
-
-        elif reason_text == "DUPLICATE_URL":
-            duplicate_url_count += 1
-
-        elif reason_text.startswith(
-            "DUPLICATE_TITLE_SAME_MEDIA"
-        ):
-            duplicate_title_count += 1
-
-        elif reason_text.startswith(
-            "DUPLICATE_CONTENT_SAME_MEDIA"
-        ):
-            duplicate_content_count += 1
-
-        else:
-            other_skip_count += 1
-
         # ====================================================
         # SKIP DUPLICATE
         # ====================================================
@@ -4409,47 +4372,22 @@ def run_once() -> Dict[str, Any]:
     # ========================================================
 
     telegram_count = 0
-    telegram_skip_count = 0
-    telegram_skip_categories = Counter()
 
     if telegram_enabled():
 
+        print(
+            f"[TELEGRAM] "
+            f"Kandidat artikel baru: "
+            f"{len(new_articles)}"
+        )
+
         for article in new_articles:
-
-            category = normalize_text(
-                article.get("category")
-            ) or "Tidak diketahui"
-
-            if category not in {
-                "Negatif Kuat",
-                "Perlu Penanganan",
-            }:
-
-                telegram_skip_count += 1
-                telegram_skip_categories[category] += 1
-
-                print(
-                    "[TELEGRAM SKIP] "
-                    f"Kategori tidak dikirim: "
-                    f"{category}"
-                )
-
-                continue
 
             try:
 
                 if not send_alert_if_needed(
                     article
                 ):
-
-                    telegram_skip_count += 1
-
-                    print(
-                        "[TELEGRAM SKIP] "
-                        f"Tidak terkirim: "
-                        f"{article.get('title', '')[:100]}"
-                    )
-
                     continue
 
                 telegram_count += 1
@@ -4461,8 +4399,6 @@ def run_once() -> Dict[str, Any]:
 
             except Exception as exc:
 
-                telegram_skip_count += 1
-
                 print(
                     f"[TELEGRAM ERROR] "
                     f"{type(exc).__name__}: "
@@ -4471,8 +4407,6 @@ def run_once() -> Dict[str, Any]:
 
     else:
 
-        telegram_skip_count = len(new_articles)
-
         print(
             "[TELEGRAM] Tidak aktif. "
             "Periksa TELEGRAM_BOT_TOKEN "
@@ -4480,111 +4414,12 @@ def run_once() -> Dict[str, Any]:
         )
 
     # ========================================================
-    # DATABASE SUMMARY
-    # ========================================================
-
-    print()
-    print(
-        f"[DATABASE] Berhasil disimpan: "
-        f"{saved_count}"
-    )
-
-    print()
-    print(
-        f"[DATABASE] Gagal simpan: "
-        f"{save_failed}"
-    )
-
-    print()
-    print(
-        f"[DATABASE] Artikel baru: "
-        f"{len(new_articles)}"
-    )
-
-    # ========================================================
-    # DEDUPE SUMMARY
-    # ========================================================
-
-    print()
-    print("=" * 70)
-    print("DEDUPE SUMMARY")
-    print("=" * 70)
-
-    print(
-        f"[DEDUPE] Duplicate URL      : "
-        f"{duplicate_url_count}"
-    )
-
-    print(
-        f"[DEDUPE] Duplicate Title    : "
-        f"{duplicate_title_count}"
-    )
-
-    print(
-        f"[DEDUPE] Duplicate Content  : "
-        f"{duplicate_content_count}"
-    )
-
-    print(
-        f"[DEDUPE] Other Skip Reason  : "
-        f"{other_skip_count}"
-    )
-
-    print(
-        f"[DEDUPE] Lolos Dedupe       : "
-        f"{passed_dedupe_count}"
-    )
-
-    print(
-        f"[DEDUPE] Artikel Baru Saved : "
-        f"{saved_count}"
-    )
-
-    print("=" * 70)
-
-    print(
-        f"[TELEGRAM] Total artikel baru: "
-        f"{len(new_articles)}"
-    )
-
-    for category, count in sorted(
-        telegram_skip_categories.items()
-    ):
-
-        suffix = f" ({count})" if count > 1 else ""
-
-        print(
-            "[TELEGRAM SKIP] "
-            f"Kategori tidak dikirim: "
-            f"{category}{suffix}"
-        )
-
-    print(
-        f"[TELEGRAM] Berhasil dikirim: "
-        f"{telegram_count}"
-    )
-
-    print(
-        f"[TELEGRAM] Tidak dikirim/skipped: "
-        f"{telegram_skip_count}"
-    )
-
-    # ========================================================
-    # RECLASSIFICATION
-    # ========================================================
-    #
-    # PENTING:
-    # run_once() TIDAK melakukan reclassify.
-    # Reclassifikasi seluruh database hanya dijalankan
-    # ketika mode --reclassify dipilih di main().
-    #
-    # Untuk kebutuhan summary, ambil jumlah kategori
-    # dari data yang sudah tersimpan TANPA melakukan UPDATE.
-    # ========================================================
-
-    # ========================================================
     # FINAL DATABASE
     # ========================================================
+    # IMPORTANT:
+    # run_once() TIDAK melakukan reclassify seluruh database.
+    # Reklasifikasi hanya dijalankan oleh mode --reclassify
+    # di main().
 
     try:
 
@@ -4600,21 +4435,19 @@ def run_once() -> Dict[str, Any]:
 
         final_articles = []
 
-    # ========================================================
-    # CATEGORY COUNTS (READ ONLY)
-    # ========================================================
-    # Tidak melakukan klasifikasi ulang / UPDATE database.
+    duration = round(
+        time.perf_counter()
+        - started,
+        2,
+    )
+
+    # Hitung distribusi kategori secara READ-ONLY untuk summary/log.
+    # Ini bukan reclassification dan tidak mengubah database.
     counts = Counter(
         normalize_text(
             article.get("category")
         ) or "Netral"
         for article in final_articles
-    )
-
-    duration = round(
-        time.perf_counter()
-        - started,
-        2,
     )
 
     # ========================================================
@@ -4645,9 +4478,8 @@ def run_once() -> Dict[str, Any]:
             new_articles
         ),
 
-        "reclassified_count": len(
-            final_articles
-        ),
+        # Mode --once tidak melakukan reclassification.
+        "reclassified_count": 0,
 
         "negative_count": counts.get(
             "Negatif Kuat",
@@ -4675,8 +4507,6 @@ def run_once() -> Dict[str, Any]:
     }
 
     save_run_log(log)
-
-    print("[DB LOG] Run log berhasil disimpan.")
 
     # ========================================================
     # SUMMARY
@@ -4760,7 +4590,6 @@ def run_once() -> Dict[str, Any]:
     print("=" * 70)
 
     return log
-
 
 
 
