@@ -1,5 +1,6 @@
-- name: VERIFY PATROLI VERSION
-  run: |
+name: VERIFY PATROLI VERSION
+
+    run: |
     echo "===== VERIFY PATROLI.PY ====="
     sha256sum patroli.py
     wc -l patroli.py
