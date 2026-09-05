@@ -3685,6 +3685,35 @@ RISK_EVENT_ANCHOR_TOKENS = {
     "padang", "lawas", "sapta", "putra", "jamintel", "integritas",
 }
 
+# V3: proteksi context untuk kategori non-prioritas.
+# Netral/Positif tetap dapat context untuk observability, tetapi context
+# tidak boleh sendirian menaikkan risk ke MEDIUM/HIGH/CRITICAL.
+RISK_NONPRIORITY_MAX_SCORE = 30
+
+
+def _risk_article_fingerprint(article: Dict[str, Any]) -> str:
+    """Fingerprint ringan untuk menghindari duplicate internal saat context dihitung."""
+    url = normalize_url(article.get("link") or "")
+    if url:
+        return f"url:{url}"
+    title = normalize_text(article.get("title") or "").lower()
+    media = normalize_text(get_media_source(article)).lower()
+    return f"title_media:{title}|{media}"
+
+
+def _risk_unique_articles(all_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate context tanpa menggabungkan artikel berbeda media."""
+    unique = []
+    seen = set()
+    for item in all_articles:
+        marker = _risk_article_fingerprint(item)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(item)
+    return unique
+
+
 _RISK_BLOCK_CACHE = {}
 
 
@@ -3792,9 +3821,9 @@ def _risk_is_related_event(article: Dict[str, Any], other: Dict[str, Any]) -> Tu
 
 
 def _build_risk_block_index(all_articles: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-    """Membuat inverted index sederhana agar pencarian kandidat tidak all-pairs."""
+    """Membuat inverted index setelah dedup internal untuk mencegah recurrence palsu."""
     index = defaultdict(list)
-    for item in all_articles:
+    for item in _risk_unique_articles(all_articles):
         anchors = _risk_event_anchors(item)
         for anchor in anchors:
             index[anchor].append(item)
@@ -3803,7 +3832,7 @@ def _build_risk_block_index(all_articles: List[Dict[str, Any]]) -> Dict[str, Lis
 
 def _risk_candidate_articles(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Ambil kandidat berdasarkan anchor event; fallback terbatas untuk judul sangat kuat."""
-    cache_key = (id(all_articles), len(all_articles))
+    cache_key = (id(all_articles), len(all_articles), "v3")
     index = _RISK_BLOCK_CACHE.get(cache_key)
     if index is None:
         index = _build_risk_block_index(all_articles)
@@ -3932,7 +3961,21 @@ def calculate_article_risk(article: Dict[str, Any], all_articles: List[Dict[str,
         recurrence_count=context["recurrence_count"],
         trend_score=context["trend_score"],
     )
+
+    # V3 business guard: Netral/Positif tidak menjadi MEDIUM hanya karena
+    # context amplification. Scoring engine tetap unchanged; guard berada
+    # di application layer.
+    category = str(article.get("category") or "Netral").strip()
+    if category in {"Netral", "Positif"} and result["risk_score"] > RISK_NONPRIORITY_MAX_SCORE:
+        result["risk_score"] = RISK_NONPRIORITY_MAX_SCORE
+        result["risk_level"] = "LOW"
+        result["reasons"] = list(result.get("reasons") or [])
+        result["reasons"].append(
+            "Proteksi V3: kategori Netral/Positif dibatasi LOW; context tidak boleh menjadi satu-satunya dasar prioritas."
+        )
+
     result["context"] = context
+    result["context"]["v3_nonpriority_guard"] = category in {"Netral", "Positif"}
     return result
 
 
