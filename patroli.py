@@ -5689,6 +5689,24 @@ def run_once() -> Dict[str, Any]:
     save_run_log(log)
 
     # ========================================================
+    # INTERNAL PRODUCTION-AUDIT PAYLOAD
+    # Tidak disimpan ke database/run_logs. Hanya dikembalikan
+    # ke caller --production-audit untuk validasi otomatis.
+    # ========================================================
+    log["_audit_new_articles"] = [
+        {
+            "id": item.get("id"),
+            "title": item.get("title", ""),
+            "link": item.get("link", ""),
+            "category": item.get("category", ""),
+            "published_date": item.get("published_date", ""),
+            "risk_score": item.get("risk_score"),
+            "risk_level": item.get("risk_level", ""),
+        }
+        for item in new_articles
+    ]
+
+    # ========================================================
     # SUMMARY
     # ========================================================
 
@@ -5773,6 +5791,110 @@ def run_once() -> Dict[str, Any]:
 
 
 
+
+
+# ============================================================
+# PRODUCTION AUDIT
+# ============================================================
+
+def production_audit() -> Dict[str, Any]:
+    """Jalankan patroli normal lalu validasi invariant production."""
+    print("=" * 70)
+    print("PRODUCTION AUDIT")
+    print("=" * 70)
+    print("Menjalankan patroli normal + validasi invariant...")
+
+    result = run_once()
+    failures = []
+
+    def check(condition: bool, name: str, detail: str) -> None:
+        if condition:
+            print(f"[AUDIT PASS] {name}: {detail}")
+        else:
+            print(f"[AUDIT FAIL] {name}: {detail}")
+            failures.append(f"{name}: {detail}")
+
+    check(result.get("status") == "Selesai", "RUN_STATUS", f"status={result.get('status')!r}")
+    check(int(result.get("worker_error_count", 0) or 0) == 0, "WORKER_ERRORS", f"count={result.get('worker_error_count', 0)}")
+    check(int(result.get("save_failed_count", 0) or 0) == 0, "SAVE_FAILURES", f"count={result.get('save_failed_count', 0)}")
+
+    saved = int(result.get("saved_count", 0) or 0)
+    new_count = int(result.get("new_article_count", 0) or 0)
+    valid = int(result.get("valid_count", 0) or 0)
+    telegram = int(result.get("telegram_count", 0) or 0)
+
+    check(saved == new_count, "SAVE_NEW_ACCOUNTING", f"saved={saved}, new={new_count}")
+    check(0 <= new_count <= valid, "NEW_COUNT_BOUND", f"new={new_count}, valid={valid}")
+    check(0 <= telegram <= new_count, "TELEGRAM_BOUND", f"telegram={telegram}, new={new_count}")
+
+    new_items = result.get("_audit_new_articles") or []
+    check(len(new_items) == new_count, "NEW_ARTICLE_PAYLOAD", f"payload={len(new_items)}, reported={new_count}")
+
+    allowed_categories = {"Negatif Kuat", "Perlu Penanganan", "Netral", "Positif"}
+    telegram_categories = {"Negatif Kuat", "Perlu Penanganan"}
+    normalized_new_links = []
+    invalid_category = []
+    google_links = []
+    invalid_risk = []
+
+    for item in new_items:
+        link = normalize_url(item.get("link") or "")
+        normalized_new_links.append(link)
+        domain = urllib.parse.urlparse(link).netloc.lower().replace("www.", "") if link else ""
+        if not link or domain == "news.google.com":
+            google_links.append(link or "<EMPTY>")
+
+        category = item.get("category") or ""
+        if category not in allowed_categories:
+            invalid_category.append(category)
+
+        score = item.get("risk_score")
+        level = item.get("risk_level")
+        if score is None or not isinstance(score, (int, float)) or not 0 <= float(score) <= 100:
+            invalid_risk.append({"title": item.get("title", ""), "risk_score": score})
+        if level not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            invalid_risk.append({"title": item.get("title", ""), "risk_level": level})
+
+    nonempty_links = [x for x in normalized_new_links if x]
+    check(len(nonempty_links) == len(set(nonempty_links)), "NEW_ARTICLE_URL_UNIQUENESS", f"duplicates={len(nonempty_links) - len(set(nonempty_links))}")
+    check(not google_links, "NEW_URLS_ARE_PUBLISHER_URLS", f"google_news_or_empty={len(google_links)}")
+    check(not invalid_category, "CATEGORY_VALIDITY", f"invalid={invalid_category[:5]}")
+    check(not invalid_risk, "RISK_FIELDS_VALID", f"invalid={invalid_risk[:5]}")
+
+    try:
+        final_articles = get_all_articles()
+        final_link_counts = Counter(
+            normalize_url(article.get("link") or "")
+            for article in final_articles
+            if normalize_url(article.get("link") or "")
+        )
+        missing_after_save = [
+            link for link in normalized_new_links
+            if link and final_link_counts.get(link, 0) != 1
+        ]
+        check(not missing_after_save, "DATABASE_READBACK_NEW_ARTICLES", f"missing_or_nonunique={len(missing_after_save)}")
+    except Exception as exc:
+        check(False, "DATABASE_READBACK", f"{type(exc).__name__}: {exc}")
+
+    expected_telegram_upper_bound = sum(
+        1 for item in new_items
+        if item.get("category") in telegram_categories
+        and is_current_month_year_article(item)
+    )
+    check(telegram <= expected_telegram_upper_bound, "TELEGRAM_CATEGORY_DATE_RULE", f"sent={telegram}, eligible={expected_telegram_upper_bound}")
+
+    print("=" * 70)
+    if failures:
+        print("PRODUCTION AUDIT: FAILED")
+        for failure in failures:
+            print(f" - {failure}")
+        print("=" * 70)
+        raise RuntimeError(f"Production audit gagal pada {len(failures)} invariant(s).")
+
+    print("PRODUCTION AUDIT: PASSED")
+    print("Semua invariant production terpenuhi.")
+    print("=" * 70)
+    return result
 
 
 # ============================================================
@@ -9013,6 +9135,14 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--production-audit",
+        action="store_true",
+        help=(
+            "jalankan patroli normal lalu validasi invariant production"
+        ),
+    )
+
+    parser.add_argument(
         "--reclassify",
         action="store_true",
         help=(
@@ -9097,6 +9227,16 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    # --------------------------------------------------------
+    # PRODUCTION AUDIT
+    # --------------------------------------------------------
+
+    if args.production_audit:
+
+        production_audit()
+
+        return
 
     # --------------------------------------------------------
     # SANITIZE DATABASE
