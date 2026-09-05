@@ -3443,7 +3443,7 @@ candidate: Dict[str, Any],
     try:
         fetched_url, raw_html = fetch_webpage_content(rss_link)
         final_url = resolve_article_url(
-            rss_link=rss_link,
+            rss_url=rss_link,
             response_url=fetched_url,
             raw_html=raw_html,
         )
