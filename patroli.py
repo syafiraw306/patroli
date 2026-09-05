@@ -1,4 +1,5 @@
 import argparse
+import base64
 import csv
 import html
 import json
@@ -1263,6 +1264,47 @@ def _domain_related(host: str, source_domain: str) -> bool:
     )
 
 
+
+def decode_google_news_base64_url(url: str) -> str:
+    """
+    Decode Google News /rss/articles/<token> URLs when the token contains
+    the publisher URL in its protobuf/base64 payload.
+
+    This is an offline first-pass decoder. It does NOT replace the existing
+    canonical/redirect/HTML extraction logic; it only provides an earlier,
+    deterministic source-URL candidate.
+    """
+    if not _is_google_news_url(url):
+        return ""
+
+    try:
+        parsed = urllib.parse.urlparse(str(url))
+        parts = [p for p in parsed.path.split("/") if p]
+        if len(parts) < 3 or parts[-2] != "articles":
+            return ""
+
+        token = parts[-1]
+        # Google News article tokens are URL-safe base64-like strings.
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", token):
+            return ""
+
+        padded = token + "=" * ((4 - len(token) % 4) % 4)
+        decoded = base64.urlsafe_b64decode(padded)
+
+        # The payload contains one or more absolute URLs. Prefer the first
+        # http(s) URL, which is the publisher article in the known format.
+        matches = re.findall(rb"https?://[^\x00\x0a\x0d\x22\x27<>]+", decoded)
+        for raw in matches:
+            candidate = raw.decode("utf-8", errors="ignore").rstrip(".,;)]}")
+            candidate = _clean_candidate_url(candidate, url)
+            if candidate and _looks_like_media_url(candidate):
+                return candidate
+    except Exception:
+        return ""
+
+    return ""
+
+
 def extract_google_news_original_url(
     raw_html: str,
     response_url: str = "",
@@ -1394,6 +1436,15 @@ def resolve_article_url_details(
     title: str = "",
 ) -> Tuple[str, str]:
     """Resolve URL sekaligus mengembalikan metode resolusinya."""
+    # ------------------------------------------------------------
+    # 0. Offline Google News token decoding
+    # ------------------------------------------------------------
+    # Untuk URL /rss/articles/CBMi..., token sering memuat URL publisher
+    # secara langsung. Ini lebih stabil daripada mengandalkan HTML Google.
+    decoded = decode_google_news_base64_url(rss_url)
+    if decoded and not _is_google_news_url(decoded):
+        return decoded, "base64_embedded"
+
     canonical = extract_canonical_article_url(raw_html, response_url)
     if canonical:
         return canonical, "canonical"
@@ -4875,7 +4926,10 @@ def run_once() -> Dict[str, Any]:
     )
     print(
         f"Resolved to media URL      : "
-        f"{sum(url_resolution_counts[k] for k in ('canonical', 'redirect', 'embedded_original'))}"
+        f"{sum(url_resolution_counts[k] for k in ('base64_embedded', 'canonical', 'redirect', 'embedded_original'))}"
+    )
+    print(
+        f"Base64 embedded URL        : {url_resolution_counts.get('base64_embedded', 0)}"
     )
     print(
         f"Canonical URL              : {url_resolution_counts.get('canonical', 0)}"
