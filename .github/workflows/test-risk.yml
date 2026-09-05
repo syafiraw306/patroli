@@ -1,10 +1,10 @@
-name: Test Risk Engine
+name: Test Risk Engine V2
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-risk:
+  risk-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,9 +20,9 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run Risk Engine Test
+      - name: Run Risk Engine 5-factor test
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          python test_risk_supabase.py
+          python test_risk_supabase_v2.py
