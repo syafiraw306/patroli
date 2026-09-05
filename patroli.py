@@ -43,6 +43,8 @@ from database import (
 )
 
 
+PATROLI_DIAGNOSTIC_VERSION = "V5.1"
+
 # ============================================================
 # ENVIRONMENT
 # ============================================================
@@ -4464,6 +4466,19 @@ def run_once() -> Dict[str, Any]:
         }
         
         
+        # Diagnostic-only lookup: normalized URL -> full DB article.
+        # This does NOT change the duplicate decision rule.
+        existing_article_by_link = {}
+        for existing_article in existing_articles:
+            existing_link = normalize_url(
+                existing_article.get("link")
+            )
+            if existing_link:
+                existing_article_by_link.setdefault(
+                    existing_link,
+                    existing_article,
+                )
+
         existing_title_index = (
             build_existing_title_index(
                 existing_articles
@@ -4805,6 +4820,12 @@ def run_once() -> Dict[str, Any]:
         )
     
     
+        # Diagnostic-only: identify the existing DB row for URL duplicates.
+        matched_url_article = None
+        if reason == "DUPLICATE_URL":
+            matched_url_article = existing_article_by_link.get(link)
+
+
         # ====================================================
         # SKIP DUPLICATE
         # ====================================================
@@ -4830,6 +4851,84 @@ def run_once() -> Dict[str, Any]:
                 f"MEDIA: "
                 f"{get_media_source(article)}"
             )
+
+            if reason == "DUPLICATE_URL":
+                print("[DUPLICATE URL DIAGNOSTIC]")
+
+                if matched_url_article:
+                    print(
+                        f"MATCHED DB ID: "
+                        f"{matched_url_article.get('id', 'Unknown')}"
+                    )
+                    print(
+                        f"MATCHED DB TITLE: "
+                        f"{matched_url_article.get('title', '')}"
+                    )
+                    print(
+                        f"MATCHED DB MEDIA: "
+                        f"{get_media_source(matched_url_article)}"
+                    )
+                    print(
+                        f"MATCHED DB SOURCE: "
+                        f"{normalize_text(matched_url_article.get('source', ''))}"
+                    )
+                    print(
+                        f"MATCHED DB PUBLISHER: "
+                        f"{normalize_text(matched_url_article.get('publisher', ''))}"
+                    )
+                    print(
+                        f"MATCHED DB LINK: "
+                        f"{matched_url_article.get('link', '')}"
+                    )
+                    print(
+                        f"CANDIDATE LINK NORMALIZED: {link}"
+                    )
+                    print(
+                        "MATCHED DB LINK NORMALIZED: "
+                        f"{normalize_url(matched_url_article.get('link'))}"
+                    )
+                    print(
+                        "TITLE+MEDIA MATCH: "
+                        f"{build_title_key(article) == build_title_key(matched_url_article)}"
+                    )
+                    print(
+                        "MEDIA MATCH: "
+                        f"{get_media_source(article).lower().strip() == get_media_source(matched_url_article).lower().strip()}"
+                    )
+
+                    candidate_content = normalize_content_for_duplicate(
+                        get_article_content(article)
+                    )
+                    matched_content = normalize_content_for_duplicate(
+                        get_article_content(matched_url_article)
+                    )
+
+                    if candidate_content and matched_content:
+                        try:
+                            similarity_url = calculate_content_similarity(
+                                candidate_content,
+                                matched_content,
+                            )
+                            print(
+                                f"CONTENT SIMILARITY: {similarity_url:.2%}"
+                            )
+                        except Exception as exc:
+                            print(
+                                "CONTENT SIMILARITY: ERROR "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                    else:
+                        print(
+                            "CONTENT SIMILARITY: "
+                            "Tidak dapat dihitung (content kosong)"
+                        )
+                else:
+                    print(
+                        "[DUPLICATE URL DIAGNOSTIC] "
+                        "Matched database article tidak ditemukan "
+                        "meskipun URL ada di index."
+                    )
+
     
             if matched_article:
     
