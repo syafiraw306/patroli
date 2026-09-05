@@ -6,7 +6,6 @@ import os
 import re
 import time
 import urllib.parse
-import random
 from itertools import combinations
 from difflib import SequenceMatcher
 from collections import defaultdict, Counter
@@ -23,7 +22,7 @@ from audit_event_duplicates import (
     jaccard_similarity
 )
 
-import uuid
+
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -35,8 +34,7 @@ from database import (
     get_all_articles,
     get_supabase,
     get_article_by_link,
-    clean_article_payload,
-    now_iso,
+    upsert_article,
     save_run_log,
     update_article_classification_by_id,
     delete_article_by_id,
@@ -60,18 +58,6 @@ MAX_WORKERS = int(
 REQUEST_TIMEOUT = int(
     os.getenv("REQUEST_TIMEOUT") or "15"
 )
-
-# ========================================================
-# RSS RETRY CONFIGURATION
-# ========================================================
-
-RSS_MAX_RETRIES = 4
-
-RSS_RETRY_BASE_DELAY = 2.0
-
-RSS_QUERY_DELAY = 2.0
-
-MAX_CONSECUTIVE_RSS_FAILURES = 3
 
 MAX_ARTICLES_PER_FEED = int(
     os.getenv("MAX_ARTICLES_PER_FEED") or "40"
@@ -962,80 +948,6 @@ def is_duplicate_link(link, existing_link_index):
         return False
 
     return normalized in existing_link_index
-
-def is_duplicate_title(
-    article,
-    existing_title_index,
-):
-    """
-    Mengecek duplicate berdasarkan:
-
-    - Judul yang sama
-    - Media/publisher yang sama
-
-    Artikel dari media berbeda tetap boleh disimpan.
-    """
-
-    if not isinstance(article, dict):
-
-        return False
-
-
-    # ========================================================
-    # NORMALIZE TITLE
-    # ========================================================
-
-    title = normalize_title(
-        article.get("title")
-    )
-
-    if not title:
-
-        return False
-
-
-    # ========================================================
-    # GET MEDIA SOURCE
-    # ========================================================
-
-    media = get_media_source(
-        article
-    )
-
-    if not media:
-
-        return False
-
-
-    # ========================================================
-    # NORMALIZE MEDIA
-    # ========================================================
-
-    media = normalize_text(
-        media
-    ).lower().strip()
-
-
-    if not media:
-
-        return False
-
-
-    # ========================================================
-    # CREATE INDEX KEY
-    # ========================================================
-
-    key = (
-        title,
-        media,
-    )
-
-
-    # ========================================================
-    # CHECK INDEX
-    # ========================================================
-
-    return key in existing_title_index
 
 
 def register_new_link(link, existing_link_index):
@@ -2925,21 +2837,11 @@ def extract_feed_date(
 def parse_google_news_feed(
     query: str,
 ) -> List[Dict[str, Any]]:
-    """
-    Mengambil artikel dari Google News RSS berdasarkan query.
 
-    Memiliki retry untuk transient error seperti:
-    - 429
-    - 500
-    - 502
-    - 503
-    - 504
-
-    Menggunakan exponential backoff + jitter.
-    """
-
-    encoded = urllib.parse.quote_plus(
-        query
+    encoded = (
+        urllib.parse.quote_plus(
+            query
+        )
     )
 
     url = (
@@ -2950,416 +2852,170 @@ def parse_google_news_feed(
         "&ceid=ID:id"
     )
 
-    retryable_statuses = {
-        429,
-        500,
-        502,
-        503,
-        504,
-    }
+    try:
 
-    # ========================================================
-    # RETRY LOOP
-    # ========================================================
+        response = SESSION.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
 
-    for attempt in range(
-        1,
-        RSS_MAX_RETRIES + 1,
-    ):
+        response.raise_for_status()
 
-        response = None
+        feed = feedparser.parse(
+            response.content
+        )
 
-        try:
+        print(
+            f"[RSS DEBUG] "
+            f"query={query} | "
+            f"status={response.status_code} | "
+            f"bytes={len(response.content)} | "
+            f"entries={len(feed.entries)} | "
+            f"bozo={getattr(feed, 'bozo', False)}"
+        )
 
-            # ====================================================
-            # REQUEST
-            # ====================================================
+        if getattr(
+            feed,
+            "bozo",
+            False,
+        ):
 
-            response = SESSION.get(
-                url,
-                timeout=REQUEST_TIMEOUT,
-                allow_redirects=True,
-            )
-
-            status = response.status_code
-
-            # ====================================================
-            # RETRYABLE HTTP ERROR
-            # ====================================================
-
-            if status in retryable_statuses:
-
-                # ------------------------------------------------
-                # JIKA MASIH ADA KESEMPATAN RETRY
-                # ------------------------------------------------
-
-                if attempt < RSS_MAX_RETRIES:
-
-                    # Base exponential backoff
-                    base_delay = (
-                        RSS_RETRY_BASE_DELAY
-                        * (2 ** (attempt - 1))
-                    )
-
-                    # ------------------------------------------------
-                    # RETRY-AFTER
-                    # ------------------------------------------------
-
-                    retry_after_delay = None
-
-                    retry_after = (
-                        response.headers.get(
-                            "Retry-After"
-                        )
-                    )
-
-                    if retry_after:
-
-                        try:
-
-                            retry_after_delay = float(
-                                retry_after
-                            )
-
-                        except (
-                            TypeError,
-                            ValueError,
-                        ):
-
-                            retry_after_delay = None
-
-                    # ------------------------------------------------
-                    # JITTER
-                    #
-                    # Random tambahan agar pola retry
-                    # tidak selalu identik.
-                    # ------------------------------------------------
-
-                    jitter = random.uniform(
-                        0.0,
-                        1.0,
-                    )
-
-                    delay = (
-                        base_delay + jitter
-                    )
-
-                    # Jika server memberikan Retry-After,
-                    # gunakan nilai yang lebih besar.
-                    if retry_after_delay is not None:
-
-                        delay = max(
-                            delay,
-                            retry_after_delay,
-                        )
-
-                    print(
-                        f"[RSS RETRY] "
-                        f'"{query}" -> HTTP {status}. '
-                        f"Percobaan "
-                        f"{attempt}/{RSS_MAX_RETRIES}. "
-                        f"Menunggu "
-                        f"{delay:.1f} detik..."
-                    )
-
-                    time.sleep(
-                        delay
-                    )
-
-                    continue
-
-                # ------------------------------------------------
-                # RETRY SUDAH HABIS
-                # ------------------------------------------------
-
-                print(
-                    f"[RSS ERROR] "
-                    f'"{query}" -> HTTP {status}. '
-                    f"Retry habis "
-                    f"({RSS_MAX_RETRIES} percobaan)."
-                )
-
-                return []
-
-            # ====================================================
-            # NON-RETRYABLE HTTP ERROR
-            # ====================================================
-
-            if status >= 400:
-
-                print(
-                    f"[RSS ERROR] "
-                    f'"{query}" -> HTTP {status}. '
-                    f"Error tidak akan di-retry."
-                )
-
-                return []
-
-            # ====================================================
-            # VALIDASI RESPONSE
-            # ====================================================
-
-            if not response.content:
-
-                print(
-                    f"[RSS EMPTY RESPONSE] "
-                    f'"{query}" -> '
-                    f"response kosong."
-                )
-
-                return []
-
-            # ====================================================
-            # PARSE RSS
-            # ====================================================
-
-            feed = feedparser.parse(
-                response.content
-            )
-
-            print(
-                f"[RSS DEBUG] "
-                f'query="{query}" | '
-                f"status={status} | "
-                f"bytes={len(response.content)} | "
-                f"entries={len(feed.entries)} | "
-                f"bozo={getattr(feed, 'bozo', False)}"
-            )
-
-            # ====================================================
-            # BOZO CHECK
-            # ====================================================
-
-            if getattr(
-                feed,
-                "bozo",
-                False,
-            ):
-
-                bozo_exception = getattr(
+            bozo_exception = (
+                getattr(
                     feed,
                     "bozo_exception",
                     None,
                 )
+            )
 
-                if bozo_exception:
-
-                    print(
-                        f"[RSS BOZO WARNING] "
-                        f'"{query}" -> '
-                        f"{type(bozo_exception).__name__}: "
-                        f"{bozo_exception}"
-                    )
-
-            # ====================================================
-            # EMPTY FEED
-            # ====================================================
-
-            if not feed.entries:
+            if bozo_exception:
 
                 print(
-                    f"[RSS EMPTY] "
-                    f'Tidak ada entry untuk: "{query}"'
+                    f"[RSS BOZO ERROR] "
+                    f"{query} -> "
+                    f"{type(bozo_exception).__name__}: "
+                    f"{bozo_exception}"
                 )
 
-                return []
+        if not feed.entries:
 
-            # ====================================================
-            # PROCESS RSS ENTRY
-            # ====================================================
+            print(
+                f"[RSS EMPTY] "
+                f"Tidak ada entry untuk: "
+                f"{query}"
+            )
 
-            rows: List[
-                Dict[str, Any]
-            ] = []
+            return []
 
-            for entry in feed.entries[
-                :MAX_ARTICLES_PER_FEED
-            ]:
+        rows = []
 
-                # ------------------------------------------------
-                # LINK
-                # ------------------------------------------------
+        for entry in feed.entries[
+            :MAX_ARTICLES_PER_FEED
+        ]:
 
-                link = normalize_url(
-                    entry.get(
-                        "link"
-                    )
-                )
+            link = normalize_url(
+                entry.get("link")
+            )
 
-                if not link:
-                    continue
+            if not link:
+                continue
 
-                # ------------------------------------------------
-                # DATE
-                # ------------------------------------------------
-
-                published = extract_feed_date(
+            published = (
+                extract_feed_date(
                     entry
                 )
+            )
 
-                # ------------------------------------------------
-                # SOURCE
-                # ------------------------------------------------
+            source_value = (
+                entry.get("source")
+            )
 
-                source_value = entry.get(
-                    "source"
-                )
+            if isinstance(
+                source_value,
+                dict,
+            ):
 
-                if isinstance(
-                    source_value,
-                    dict,
-                ):
-
-                    source = source_value.get(
+                source = (
+                    source_value.get(
                         "title",
                         "",
                     )
+                )
 
-                else:
+            else:
 
-                    source = (
-                        source_value
-                        or ""
-                    )
+                source = (
+                    source_value
+                    or ""
+                )
 
-                # ------------------------------------------------
-                # ROW
-                # ------------------------------------------------
+            rows.append(
+                {
+                    "title": normalize_text(
+                        entry.get(
+                            "title"
+                        )
+                    ),
 
-                rows.append(
-                    {
-                        "title": normalize_text(
+                    "link": link,
+
+                    "published_date": (
+                        published.isoformat()
+                        if published
+                        else None
+                    ),
+
+                    "source": normalize_text(
+                        source
+                    ),
+
+                    "rss_description": (
+                        normalize_text(
                             entry.get(
-                                "title"
+                                "summary"
                             )
-                        ),
-
-                        "link": link,
-
-                        "published_date": (
-                            published.isoformat()
-                            if published
-                            else None
-                        ),
-
-                        "source": normalize_text(
-                            source
-                        ),
-
-                        "rss_description": (
-                            normalize_text(
-                                entry.get(
-                                    "summary"
-                                )
-                            )
-                        ),
-                    }
-                )
-
-            # ====================================================
-            # RESULT
-            # ====================================================
-
-            if not rows:
-
-                print(
-                    f"[RSS EMPTY] "
-                    f'"{query}" -> '
-                    f"tidak ada kandidat valid."
-                )
-
-                return []
-
-            print(
-                f"[RSS OK] "
-                f'"{query}" -> '
-                f"{len(rows)} kandidat"
+                        )
+                    ),
+                }
             )
 
-            return rows
+        print(
+            f"[RSS OK] "
+            f"{query} -> "
+            f"{len(rows)} kandidat"
+        )
 
-        # ========================================================
-        # NETWORK / REQUEST ERROR
-        # ========================================================
+        return rows
 
-        except requests.RequestException as exc:
+    except Exception as exc:
 
-            if attempt < RSS_MAX_RETRIES:
+        print(
+            f"[RSS ERROR] "
+            f"{query} -> "
+            f"{type(exc).__name__}: {exc}"
+        )
 
-                base_delay = (
-                    RSS_RETRY_BASE_DELAY
-                    * (2 ** (attempt - 1))
-                )
+        return []
 
-                jitter = random.uniform(
-                    0.0,
-                    1.0,
-                )
 
-                delay = (
-                    base_delay + jitter
-                )
-
-                print(
-                    f"[RSS RETRY] "
-                    f'"{query}" -> '
-                    f"{type(exc).__name__}: "
-                    f"{exc}. "
-                    f"Percobaan "
-                    f"{attempt}/{RSS_MAX_RETRIES}. "
-                    f"Menunggu "
-                    f"{delay:.1f} detik..."
-                )
-
-                time.sleep(
-                    delay
-                )
-
-                continue
-
-            print(
-                f"[RSS ERROR] "
-                f'"{query}" -> '
-                f"{type(exc).__name__}: "
-                f"{exc}. "
-                f"Retry habis."
-            )
-
-            return []
-
-        # ========================================================
-        # UNEXPECTED ERROR
-        # ========================================================
-
-        except Exception as exc:
-
-            print(
-                f"[RSS ERROR] "
-                f'"{query}" -> '
-                f"{type(exc).__name__}: "
-                f"{exc}"
-            )
-
-            return []
-
-    return []
 # ============================================================
 # COLLECT
 # ============================================================
+
+
 def collect_candidates() -> List[Dict[str, Any]]:
     """
     Mengumpulkan kandidat artikel dari seluruh SEARCH_TARGETS.
 
-    Tugas fungsi:
-    - Mengambil hasil dari Google News RSS.
-    - Memberikan jeda antar query.
-    - Menormalisasi data kandidat.
-    - Melakukan dedupe berdasarkan URL.
-    - Mempertahankan kandidat dengan metadata paling lengkap.
+    Fungsi ini hanya bertugas:
+    - mengambil hasil RSS
+    - normalisasi URL
+    - dedupe kandidat berdasarkan URL RSS
+    - mempertahankan kandidat dengan metadata/deskripsi paling lengkap
 
-    Filter tahun, relevansi satker, scraping konten,
-    klasifikasi, dan dedupe database dilakukan
-    pada proses berikutnya.
+    Filter tahun, relevansi satker, konten, dan klasifikasi
+    dilakukan di process_candidate().
     """
 
     all_rows: Dict[str, Dict[str, Any]] = {}
@@ -3368,139 +3024,44 @@ def collect_candidates() -> List[Dict[str, Any]]:
     skipped_empty_link = 0
     replaced_with_better = 0
 
-    successful_queries = 0
-    empty_queries = 0
-    failed_queries = 0
-
-    total_queries = len(
-        SEARCH_TARGETS
-    )
-
-    print()
-    print("=" * 70)
-    print(
-        f"[RSS] Memulai pengambilan "
-        f"{total_queries} search target"
-    )
-    print("=" * 70)
-
-    # ========================================================
-    # LOOP SELURUH SEARCH TARGETS
-    # ========================================================
-
-    for query_index, query in enumerate(
-        SEARCH_TARGETS,
-        start=1,
-    ):
-
-        # ====================================================
-        # DELAY ANTAR QUERY
-        #
-        # Query pertama langsung.
-        # Query berikutnya diberi jeda.
-        # ====================================================
-
-        if (
-            query_index > 1
-            and RSS_QUERY_DELAY > 0
-        ):
-
-            print(
-                f"[RSS] Menunggu "
-                f"{RSS_QUERY_DELAY:.1f} detik "
-                f"sebelum query berikutnya..."
-            )
-
-            time.sleep(
-                RSS_QUERY_DELAY
-            )
-
-        # ====================================================
-        # LOG QUERY
-        # ====================================================
-
-        print()
-        print(
-            f"[RSS] Query "
-            f"{query_index}/{total_queries}"
-        )
+    for query in SEARCH_TARGETS:
 
         print(
-            f'[RSS] Mencari: "{query}"'
+            f"[RSS] Mencari: {query}"
         )
-
-        # ====================================================
-        # REQUEST RSS
-        # ====================================================
 
         try:
-
-            rows = parse_google_news_feed(
-                query
-            )
+            rows = parse_google_news_feed(query)
 
         except Exception as exc:
 
-            failed_queries += 1
-
             print(
-                f"[RSS COLLECT ERROR] "
-                f'"{query}" -> '
+                f"[RSS ERROR] "
+                f"{query} -> "
                 f"{type(exc).__name__}: "
                 f"{exc}"
             )
 
             continue
 
-        # ====================================================
-        # VALIDASI HASIL
-        # ====================================================
-
         if not rows:
-
-            empty_queries += 1
-
-            print(
-                f'[RSS] Tidak ada kandidat '
-                f'untuk "{query}"'
-            )
-
             continue
 
-        successful_queries += 1
         total_raw += len(rows)
 
-        print(
-            f'[RSS] "{query}" '
-            f"menghasilkan {len(rows)} kandidat"
-        )
+        for row in rows:
 
-        # ====================================================
-        # PROCESS SETIAP ROW
-        # ====================================================
-
-        for raw_row in rows:
-
-            if not isinstance(
-                raw_row,
-                dict,
-            ):
+            if not isinstance(row, dict):
                 continue
-
-            # Buat copy agar tidak mengubah
-            # object asli dari parser.
-            row = dict(
-                raw_row
-            )
 
             # ------------------------------------------------
             # NORMALISASI LINK
             # ------------------------------------------------
 
+            raw_link = row.get("link")
+
             link = normalize_url(
-                row.get(
-                    "link"
-                )
+                raw_link
             )
 
             if not link:
@@ -3509,150 +3070,91 @@ def collect_candidates() -> List[Dict[str, Any]]:
 
                 continue
 
+            # Simpan URL yang sudah dinormalisasi.
             row["link"] = link
 
             # ------------------------------------------------
-            # NORMALISASI TITLE
+            # NORMALISASI DATA DASAR
             # ------------------------------------------------
 
             row["title"] = normalize_text(
-                row.get(
-                    "title"
-                )
+                row.get("title")
             )
 
-            # ------------------------------------------------
-            # NORMALISASI RSS DESCRIPTION
-            # ------------------------------------------------
-
-            row["rss_description"] = (
-                normalize_text(
-                    row.get(
-                        "rss_description"
-                    )
-                )
+            row["rss_description"] = normalize_text(
+                row.get("rss_description")
             )
-
-            # ------------------------------------------------
-            # NORMALISASI SOURCE
-            # ------------------------------------------------
 
             row["source"] = (
                 normalize_text(
-                    row.get(
-                        "source"
-                    )
+                    row.get("source")
                 )
                 or "Google News"
             )
 
             # ------------------------------------------------
-            # NORMALISASI PUBLISHED DATE
+            # HITUNG KELENGKAPAN KANDIDAT
             # ------------------------------------------------
-
-            published_date = row.get(
-                "published_date"
-            )
-
-            if published_date is not None:
-
-                published_date = str(
-                    published_date
-                ).strip()
-
-                row["published_date"] = (
-                    published_date
-                    or None
-                )
-
-            # ------------------------------------------------
-            # HITUNG KELENGKAPAN DATA
             #
-            # Score:
-            # title
-            # rss_description
-            # published_date
-            # source
+            # Kandidat yang mempunyai:
+            # - title
+            # - description
+            # - published_date
+            # - source
+            #
+            # dianggap lebih lengkap.
             # ------------------------------------------------
 
-            current_score = sum(
-                [
-                    bool(
-                        row.get(
-                            "title"
-                        )
-                    ),
-                    bool(
-                        row.get(
-                            "rss_description"
-                        )
-                    ),
-                    bool(
-                        row.get(
-                            "published_date"
-                        )
-                    ),
-                    bool(
-                        row.get(
-                            "source"
-                        )
-                    ),
-                ]
+            current_score = (
+                bool(row.get("title"))
+                + bool(row.get("rss_description"))
+                + bool(row.get("published_date"))
+                + bool(row.get("source"))
             )
 
             current_description_length = len(
                 row.get(
-                    "rss_description"
+                    "rss_description",
+                    ""
                 )
-                or ""
             )
 
             # ------------------------------------------------
-            # DEDUPE RSS BERDASARKAN URL
+            # DEDUPE DALAM HASIL RSS
             # ------------------------------------------------
 
             if link not in all_rows:
 
-                row[
-                    "_candidate_score"
-                ] = current_score
+                row["_candidate_score"] = (
+                    current_score
+                )
 
-                row[
-                    "_description_length"
-                ] = (
+                row["_description_length"] = (
                     current_description_length
                 )
 
-                all_rows[
-                    link
-                ] = row
+                all_rows[link] = row
 
                 continue
 
-            # ------------------------------------------------
-            # DATA EXISTING
-            # ------------------------------------------------
-
-            existing = all_rows[
-                link
-            ]
+            existing = all_rows[link]
 
             existing_score = (
                 existing.get(
                     "_candidate_score",
-                    0,
+                    0
                 )
             )
 
             existing_description_length = (
                 existing.get(
                     "_description_length",
-                    0,
+                    0
                 )
             )
 
             # ------------------------------------------------
-            # PILIH DATA PALING LENGKAP
+            # PILIH DATA YANG LEBIH LENGKAP
             # ------------------------------------------------
 
             replace = False
@@ -3662,92 +3164,52 @@ def collect_candidates() -> List[Dict[str, Any]]:
                 replace = True
 
             elif (
-                current_score
-                == existing_score
+                current_score == existing_score
                 and current_description_length
                 > existing_description_length
             ):
 
                 replace = True
 
-            # ------------------------------------------------
-            # REPLACE JIKA DATA BARU LEBIH BAIK
-            # ------------------------------------------------
-
             if replace:
 
-                row[
-                    "_candidate_score"
-                ] = current_score
+                row["_candidate_score"] = (
+                    current_score
+                )
 
-                row[
-                    "_description_length"
-                ] = (
+                row["_description_length"] = (
                     current_description_length
                 )
 
-                all_rows[
-                    link
-                ] = row
+                all_rows[link] = row
 
                 replaced_with_better += 1
 
-    # ========================================================
+    # --------------------------------------------------------
     # HAPUS FIELD INTERNAL
-    # ========================================================
+    # --------------------------------------------------------
 
-    candidates: List[
-        Dict[str, Any]
-    ] = []
+    candidates = []
 
     for row in all_rows.values():
 
-        clean_row = dict(
-            row
-        )
-
-        clean_row.pop(
+        row.pop(
             "_candidate_score",
-            None,
+            None
         )
 
-        clean_row.pop(
+        row.pop(
             "_description_length",
-            None,
+            None
         )
 
         candidates.append(
-            clean_row
+            row
         )
 
-    # ========================================================
+    # --------------------------------------------------------
     # SUMMARY
-    # ========================================================
-
-    print()
-    print("=" * 70)
-    print("RSS COLLECTION SUMMARY")
-    print("=" * 70)
-
-    print(
-        f"[RSS] Total query             : "
-        f"{total_queries}"
-    )
-
-    print(
-        f"[RSS] Query berhasil         : "
-        f"{successful_queries}"
-    )
-
-    print(
-        f"[RSS] Query kosong/gagal     : "
-        f"{empty_queries}"
-    )
-
-    print(
-        f"[RSS] Query exception        : "
-        f"{failed_queries}"
-    )
+    # --------------------------------------------------------
 
     print(
         f"[RSS] Total hasil mentah     : "
@@ -3765,37 +3227,15 @@ def collect_candidates() -> List[Dict[str, Any]]:
     )
 
     print(
-        f"[RSS] Kandidat diganti "
+        f"[RSS] Kandidat diganti data "
         f"lebih lengkap               : "
         f"{replaced_with_better}"
     )
 
-    print("=" * 70)
-
-    # ========================================================
-    # WARNING JIKA SEMUA QUERY GAGAL
-    # ========================================================
-
-    if (
-        total_queries > 0
-        and successful_queries == 0
-        and len(candidates) == 0
-    ):
-
-        print(
-            "[RSS WARNING] Tidak ada "
-            "query RSS yang berhasil "
-            "menghasilkan kandidat."
-        )
-
-        print(
-            "[RSS WARNING] Patroli akan "
-            "tetap melanjutkan proses, "
-            "tetapi tidak ada artikel "
-            "baru dari RSS."
-        )
-
     return candidates
+
+
+
 # ============================================================
 # PROCESS CANDIDATE
 # ============================================================
@@ -3912,25 +3352,13 @@ candidate: Dict[str, Any],
         final_url = rss_link
         raw_html = ""
     
-    
-    # ========================================================
-    # NORMALIZE FINAL URL
-    # ========================================================
-    
     final_url = normalize_url(
         final_url or rss_link
     )
     
-    
-    # ========================================================
-    # FALLBACK
-    # ========================================================
-    
     if not final_url:
     
-        final_url = normalize_url(
-            rss_link
-        )
+        final_url = rss_link
     
     # ========================================================
     # CONTENT
@@ -4324,194 +3752,30 @@ def telegram_text(
         f"{link}"
     )
 
+
 def send_alert_if_needed(
     article: Dict[str, Any],
 ) -> bool:
-    """
-    Mengirim alert Telegram hanya jika:
 
-    1. Artikel adalah artikel baru
-       (fungsi ini dipanggil hanya untuk new_articles).
-
-    2. Kategori artikel adalah:
-       - Negatif Kuat
-       - Perlu Penanganan
-
-    3. Tanggal artikel berada dalam bulan
-       dan tahun berjalan.
-
-    Artikel yang tidak memenuhi syarat
-    tidak akan dikirim ke Telegram.
-    """
-
-    # ========================================================
-    # TELEGRAM ENABLED CHECK
-    # ========================================================
-
-    if not telegram_enabled():
-
-        print(
-            "[TELEGRAM] Telegram tidak aktif. "
-            "Periksa TELEGRAM_BOT_TOKEN dan "
-            "TELEGRAM_CHAT_ID."
-        )
-
-        return False
-
-    # ========================================================
-    # CATEGORY CHECK
-    # ========================================================
-
-    allowed_categories = {
-        "Negatif Kuat",
-        "Perlu Penanganan",
-    }
-
-    category = normalize_text(
+    if (
         article.get(
             "category"
         )
-    )
-
-    if category not in allowed_categories:
-
-        print(
-            "[TELEGRAM SKIP] "
-            f"Kategori tidak dikirim: "
-            f"{category or 'Unknown'}"
-        )
-
-        return False
-
-    # ========================================================
-    # DATE CHECK
-    #
-    # Hanya artikel dalam bulan berjalan.
-    # ========================================================
-
-    published_value = article.get(
-        "published_date"
-    )
-
-    if not published_value:
-
-        print(
-            "[TELEGRAM SKIP] "
-            "published_date kosong."
-        )
-
-        return False
-
-    try:
-
-        # Jika sudah datetime
-        if isinstance(
-            published_value,
-            datetime,
-        ):
-
-            published_date = (
-                published_value
-            )
-
-        else:
-
-            published_text = str(
-                published_value
-            ).strip()
-
-            # Handle ISO format dengan Z
-            published_text = (
-                published_text.replace(
-                    "Z",
-                    "+00:00",
-                )
-            )
-
-            published_date = (
-                datetime.fromisoformat(
-                    published_text
-                )
-            )
-
-    except (
-        TypeError,
-        ValueError,
+        not in {
+            "Negatif Kuat",
+            "Perlu Penanganan",
+        }
     ):
 
-        print(
-            "[TELEGRAM SKIP] "
-            f"Format tanggal tidak valid: "
-            f"{published_value}"
-        )
-
         return False
 
-    # ========================================================
-    # CURRENT MONTH CHECK
-    # ========================================================
-
-    now = datetime.now()
-
-    if (
-        published_date.year != now.year
-        or published_date.month != now.month
-    ):
-
-        print(
-            "[TELEGRAM SKIP] "
-            "Artikel bukan dari bulan berjalan. "
-            f"published={published_date.strftime('%Y-%m-%d')} "
-            f"current={now.strftime('%Y-%m')}"
-        )
-
-        return False
-
-    # ========================================================
-    # SEND TELEGRAM
-    # ========================================================
-
-    print(
-        "[TELEGRAM] Mengirim artikel baru..."
-    )
-
-    print(
-        f"[TELEGRAM] TITLE: "
-        f"{article.get('title')}"
-    )
-
-    print(
-        f"[TELEGRAM] CATEGORY: "
-        f"{category}"
-    )
-
-    print(
-        f"[TELEGRAM] DATE: "
-        f"{published_date.strftime('%Y-%m-%d')}"
-    )
-
-    result = send_telegram_message(
+    return send_telegram_message(
         telegram_text(
             article
         )
     )
 
-    if result:
 
-        print(
-            "[TELEGRAM SUCCESS] "
-            f"{article.get('title')}"
-        )
-
-    else:
-
-        print(
-            "[TELEGRAM FAILED] "
-            f"{article.get('title')}"
-        )
-
-    return result
-    
 # ============================================================
 # RECLASSIFY ALL
 # ============================================================
@@ -4593,38 +3857,78 @@ def run_once() -> Dict[str, Any]:
 
     started = time.perf_counter()
 
-    print()
     print("=" * 70)
     print("MEMULAI PATROLI SIBER")
     print("=" * 70)
 
     # ========================================================
-    # COUNTERS
-    # ========================================================
-
-    saved_count = 0
-    save_failed = 0
-    worker_errors = 0
-    filtered_count = 0
-    telegram_count = 0
-
-    new_articles = []
-    valid_articles = []
-
-    filter_reasons: Dict[str, int] = {}
-
-    # ========================================================
-    # GET DATABASE ONCE
+    # DATABASE AWAL
     # ========================================================
 
     try:
-
         existing_articles = get_all_articles()
+
+        # ========================================================
+        # BUILD DUPLICATE INDEXES
+        # ========================================================
+        
+        existing_link_index = {
+        
+            normalize_url(
+                article.get("link")
+            )
+        
+            for article in existing_articles
+        
+            if normalize_url(
+                article.get("link")
+            )
+        }
+        
+        
+        existing_title_index = (
+            build_existing_title_index(
+                existing_articles
+            )
+        )
+        
+        
+        existing_content_index = (
+            build_existing_content_index(
+                existing_articles
+            )
+        )
+        
+        
+        print(
+            f"[DATABASE] "
+            f"Total artikel sebelum run: "
+            f"{len(existing_articles)}"
+        )
+        
+        print(
+            f"[DEDUPE] "
+            f"Unique URL index: "
+            f"{len(existing_link_index)}"
+        )
+        
+        print(
+            f"[DEDUPE] "
+            f"Title + media index: "
+            f"{len(existing_title_index)}"
+        )
+        
+        print(
+            f"[DEDUPE] "
+            f"Content index: "
+            f"{len(existing_content_index)}"
+        )
 
     except Exception as exc:
 
         print(
             f"[DATABASE ERROR] "
+            f"Gagal mengambil database: "
             f"{type(exc).__name__}: {exc}"
         )
 
@@ -4633,58 +3937,11 @@ def run_once() -> Dict[str, Any]:
             "error": str(exc),
         }
 
-    database_before = len(
-        existing_articles
-    )
-
     # ========================================================
-    # BUILD DUPLICATE INDEXES
-    # ========================================================
-
-    existing_link_index = {
-        normalize_url(article.get("link"))
-        for article in existing_articles
-        if normalize_url(article.get("link"))
-    }
-
-    existing_title_index = (
-        build_existing_title_index(
-            existing_articles
-        )
-    )
-
-    existing_content_index = (
-        build_existing_content_index(
-            existing_articles
-        )
-    )
-
-    print(
-        f"[DATABASE] Total artikel sebelum run: "
-        f"{database_before}"
-    )
-
-    print(
-        f"[DEDUPE] Unique URL index: "
-        f"{len(existing_link_index)}"
-    )
-
-    print(
-        f"[DEDUPE] Title + media index: "
-        f"{len(existing_title_index)}"
-    )
-
-    print(
-        f"[DEDUPE] Content index: "
-        f"{len(existing_content_index)}"
-    )
-
-    # ========================================================
-    # COLLECT RSS
+    # COLLECT CANDIDATES
     # ========================================================
 
     try:
-
         candidates = collect_candidates()
 
     except Exception as exc:
@@ -4700,110 +3957,103 @@ def run_once() -> Dict[str, Any]:
         }
 
     # ========================================================
-    # PROCESS CANDIDATES IN PARALLEL
+    # PROCESS CANDIDATES
     # ========================================================
 
-    if candidates:
+    valid_articles = []
 
-        max_workers = min(
-            max(
-                1,
-                MAX_WORKERS,
-            ),
-            len(candidates),
+    filtered_count = 0
+
+    worker_errors = 0
+
+    filter_reasons: Dict[str, int] = {}
+
+    with ThreadPoolExecutor(
+        max_workers=max(
+            1,
+            MAX_WORKERS,
         )
+    ) as executor:
 
-        with ThreadPoolExecutor(
-            max_workers=max_workers
-        ) as executor:
+        futures = [
+            executor.submit(
+                process_candidate,
+                candidate,
+            )
+            for candidate in candidates
+        ]
 
-            futures = [
-                executor.submit(
-                    process_candidate,
-                    candidate,
-                )
-                for candidate in candidates
-            ]
+        for future in as_completed(futures):
 
-            for future in as_completed(
-                futures
-            ):
+            try:
 
-                try:
+                result = future.result()
 
-                    result = future.result()
+                if result.get("ok"):
 
-                    if not result:
-                        worker_errors += 1
-                        continue
+                    article = result.get("article")
 
-                    if result.get("ok"):
+                    if article:
+                        valid_articles.append(article)
 
-                        article = result.get(
-                            "article"
+                else:
+
+                    filtered_count += 1
+
+                    reason = normalize_text(
+                        result.get(
+                            "reason",
+                            "",
                         )
-
-                        if article:
-
-                            valid_articles.append(
-                                article
-                            )
-
-                    else:
-
-                        filtered_count += 1
-
-                        reason = normalize_text(
-                            result.get(
-                                "reason",
-                                "",
-                            )
-                        )
-
-                        if reason:
-
-                            filter_reasons[
-                                reason
-                            ] = (
-                                filter_reasons.get(
-                                    reason,
-                                    0,
-                                )
-                                + 1
-                            )
-
-                except Exception as exc:
-
-                    worker_errors += 1
-
-                    print(
-                        f"[WORKER ERROR] "
-                        f"{type(exc).__name__}: "
-                        f"{exc}"
                     )
 
-    # ========================================================
-    # PROCESS SUMMARY
-    # ========================================================
+                    if reason:
+
+                        filter_reasons[reason] = (
+                            filter_reasons.get(
+                                reason,
+                                0,
+                            )
+                            + 1
+                        )
+
+                        print(
+                            f"[FILTER] "
+                            f"{reason}"
+                        )
+
+            except Exception as exc:
+
+                worker_errors += 1
+
+                print(
+                    f"[WORKER ERROR] "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
 
     print()
     print(
-        f"[PATROLI] Kandidat: "
+        f"[PATROLI] "
+        f"Kandidat: "
         f"{len(candidates)}"
     )
 
     print(
-        f"[PATROLI] Artikel valid: "
+        f"[PATROLI] "
+        f"Artikel valid: "
         f"{len(valid_articles)}"
     )
 
     print(
-        f"[PATROLI] Tidak lolos filter: "
+        f"[PATROLI] "
+        f"Tidak lolos filter: "
         f"{filtered_count}"
     )
 
     print(
-        f"[PATROLI] Worker error: "
+        f"[PATROLI] "
+        f"Worker error: "
         f"{worker_errors}"
     )
 
@@ -4817,7 +4067,6 @@ def run_once() -> Dict[str, Any]:
         print(
             "[PATROLI] RINGKASAN FILTER"
         )
-
         print("-" * 70)
 
         for reason, count in sorted(
@@ -4831,7 +4080,7 @@ def run_once() -> Dict[str, Any]:
             )
 
     # ========================================================
-    # LOCAL DEDUPE VALID ARTICLES
+    # DEDUPE HASIL RUN
     # ========================================================
 
     unique_articles: Dict[
@@ -4839,23 +4088,82 @@ def run_once() -> Dict[str, Any]:
         Dict[str, Any],
     ] = {}
 
+    for article in valid_articles:
+
+        link = normalize_url(
+            article.get("link")
+        )
+
+        if not link:
+            continue
+
+        if link not in unique_articles:
+
+            unique_articles[link] = article
+
+        else:
+
+            existing = unique_articles[link]
+
+            current_content_length = len(
+                normalize_text(
+                    article.get("content")
+                )
+            )
+
+            existing_content_length = len(
+                normalize_text(
+                    existing.get("content")
+                )
+            )
+
+            if (
+                current_content_length
+                > existing_content_length
+            ):
+
+                unique_articles[link] = article
+
+    valid_articles = list(
+        unique_articles.values()
+    )
+
+    print(
+        f"[PATROLI] "
+        f"Artikel valid setelah dedupe: "
+        f"{len(valid_articles)}"
+    )
+
     # ========================================================
-    # CENTRAL DEDUPE + SAVE
+    # SAVE
+    # ========================================================
+    # ========================================================
+    # SAVE
+    #
+    # Semua keputusan duplicate hanya melalui:
+    #
+    # should_save_article()
+    #
+    # Tidak ada lagi:
+    #
+    # - is_duplicate_article()
+    # - existing_links tambahan
+    # - was_existing
+    # - get_article_by_link()
+    #
     # ========================================================
     
-    # --------------------------------------------------------
-    # DEDUPE STATISTICS
-    # --------------------------------------------------------
+    saved_count = 0
+    save_failed = 0
     
-    duplicate_url_count = 0
-    duplicate_title_count = 0
-    duplicate_content_count = 0
-    other_duplicate_count = 0
-    
-    valid_new_article_count = 0
+    new_articles = []
     
     
     for article in valid_articles:
+    
+        # ====================================================
+        # VALIDATE LINK
+        # ====================================================
     
         link = normalize_url(
             article.get("link")
@@ -4864,18 +4172,162 @@ def run_once() -> Dict[str, Any]:
         if not link:
     
             print(
-                "[SKIP] invalid_link"
+                "[SKIP] INVALID_LINK"
             )
     
             continue
     
+    
+        # ====================================================
+        # CENTRAL DUPLICATE DECISION
+        #
+        # Hanya fungsi ini yang menentukan:
+        #
+        # - Duplicate URL
+        # - Duplicate Title + Media
+        # - Duplicate Content + Media
+        #
+        # Event sama dari media berbeda
+        # TETAP BOLEH DISIMPAN.
+        # ====================================================
+    
+        (
+            should_save,
+            reason,
+            similarity,
+            matched_article,
+        ) = should_save_article(
+    
+            article,
+    
+            existing_link_index,
+    
+            existing_title_index,
+    
+            existing_content_index,
+        )
+    
+    
+        # ====================================================
+        # SKIP DUPLICATE
+        # ====================================================
+    
+        if not should_save:
+    
+            print()
+            print(
+                f"[SKIP] {reason}"
+            )
+    
+            print(
+                f"TITLE: "
+                f"{article.get('title', '')}"
+            )
+    
+            print(
+                f"LINK: "
+                f"{article.get('link', '')}"
+            )
+    
+            print(
+                f"MEDIA: "
+                f"{get_media_source(article)}"
+            )
+    
+            if matched_article:
+    
+                print(
+                    f"MATCHED ID: "
+                    f"{matched_article.get('id', 'Unknown')}"
+                )
+    
+                print(
+                    f"MATCHED TITLE: "
+                    f"{matched_article.get('title', '')}"
+                )
+    
+                print(
+                    f"MATCHED MEDIA: "
+                    f"{get_media_source(matched_article)}"
+                )
+    
+                print(
+                    f"SIMILARITY: "
+                    f"{similarity:.2%}"
+                )
+    
+            continue
+    
+    
+        # ====================================================
+        # ARTICLE APPROVED
+        # ====================================================
+    
+        print()
+    
+        print(
+            "[SAVE] NEW_ARTICLE"
+        )
+    
+        print(
+            f"TITLE: "
+            f"{article.get('title', '')}"
+        )
+    
+        print(
+            f"MEDIA: "
+            f"{get_media_source(article)}"
+        )
+    
+    
+        # ====================================================
+        # UPSERT ARTICLE
+        # ====================================================
+    
         try:
     
+            saved = upsert_article(
+                article
+            )
+    
+    
             # ====================================================
-            # CENTRAL DUPLICATE DECISION
+            # SAVE FAILED
             # ====================================================
     
-            result = should_save_article(
+            if saved is None:
+    
+                save_failed += 1
+    
+                print(
+                    f"[SAVE ERROR] "
+                    f"Gagal menyimpan: "
+                    f"{link}"
+                )
+    
+                continue
+    
+    
+            # ====================================================
+            # SAVE SUCCESS
+            # ====================================================
+    
+            saved_count += 1
+    
+    
+            # ====================================================
+            # UPDATE DUPLICATE INDEX
+            #
+            # SANGAT PENTING.
+            #
+            # Artikel yang baru saja disimpan harus langsung
+            # dimasukkan ke index.
+            #
+            # Dengan demikian artikel berikutnya dalam satu
+            # GitHub Actions run juga bisa terdeteksi duplicate.
+            # ====================================================
+    
+            register_saved_article(
     
                 article,
     
@@ -4884,277 +4336,26 @@ def run_once() -> Dict[str, Any]:
                 existing_title_index,
     
                 existing_content_index,
-    
             )
     
-            # ====================================================
-            # SUPPORT RETURN 2 ATAU 4 VALUE
-            # ====================================================
-    
-            should_save = False
-            reason = "unknown"
-            similarity = None
-            matched_article = None
-    
-            if isinstance(
-                result,
-                tuple,
-            ):
-    
-                if len(result) >= 1:
-    
-                    should_save = bool(
-                        result[0]
-                    )
-    
-                if len(result) >= 2:
-    
-                    reason = (
-                        result[1]
-                        or "unknown"
-                    )
-    
-                if len(result) >= 3:
-    
-                    similarity = result[2]
-    
-                if len(result) >= 4:
-    
-                    matched_article = result[3]
-    
-            else:
-    
-                print(
-                    "[DEDUPE ERROR] "
-                    "Return should_save_article "
-                    "bukan tuple."
-                )
-    
-                save_failed += 1
-    
-                continue
     
             # ====================================================
-            # DUPLICATE STATISTICS
+            # NEW ARTICLE
+            #
+            # Artikel hanya masuk Telegram jika benar-benar
+            # lolos duplicate prevention dan berhasil disimpan.
             # ====================================================
     
-            if not should_save:
-    
-                # -----------------------------------------------
-                # DUPLICATE URL
-                # -----------------------------------------------
-    
-                if reason == "duplicate_url":
-    
-                    duplicate_url_count += 1
-    
-                # -----------------------------------------------
-                # DUPLICATE TITLE
-                # -----------------------------------------------
-    
-                elif reason in {
-    
-                    "duplicate_title",
-                    "duplicate_title_media",
-    
-                }:
-    
-                    duplicate_title_count += 1
-    
-                # -----------------------------------------------
-                # DUPLICATE CONTENT
-                # -----------------------------------------------
-    
-                elif reason in {
-    
-                    "duplicate_content",
-                    "duplicate_content_media",
-    
-                }:
-    
-                    duplicate_content_count += 1
-    
-                # -----------------------------------------------
-                # OTHER REASON
-                # -----------------------------------------------
-    
-                else:
-    
-                    other_duplicate_count += 1
-    
-                # -----------------------------------------------
-                # DEBUG OUTPUT
-                # -----------------------------------------------
-    
-                print()
-    
-                print(
-                    f"[SKIP] {reason}"
-                )
-    
-                print(
-                    f"TITLE: "
-                    f"{article.get('title', '')}"
-                )
-    
-                print(
-                    f"LINK: "
-                    f"{link}"
-                )
-    
-                if similarity is not None:
-    
-                    print(
-                        f"SIMILARITY: "
-                        f"{similarity}"
-                    )
-    
-                if (
-                    isinstance(
-                        matched_article,
-                        dict,
-                    )
-                ):
-    
-                    print(
-                        "[MATCHED] "
-                        f"{matched_article.get('title', '')}"
-                    )
-    
-                continue
-    
-            # ====================================================
-            # ARTICLE PASSED DEDUPE
-            # ====================================================
-    
-            valid_new_article_count += 1
-    
-            print()
-    
-            print(
-                "[DEDUPE PASS] "
-                f"{article.get('title', '')[:100]}"
-            )
-    
-            # ====================================================
-            # SAVE ARTICLE
-            # ====================================================
-    
-            saved = upsert_article(
+            new_articles.append(
                 article
             )
     
-            if saved is None:
-    
-                save_failed += 1
-    
-                print(
-                    f"[SAVE ERROR] "
-                    f"{link}"
-                )
-    
-                continue
-    
-            saved_count += 1
-    
-            # ====================================================
-            # ADD TO NEW ARTICLES
-            #
-            # Hanya artikel yang BERHASIL disimpan
-            # yang masuk ke new_articles.
-            # ====================================================
-    
-            saved_article = (
-    
-                saved
-    
-                if isinstance(
-                    saved,
-                    dict,
-                )
-    
-                else article
-            )
-    
-            new_articles.append(
-                saved_article
-            )
-    
-            # ====================================================
-            # UPDATE DUPLICATE INDEX IMMEDIATELY
-            #
-            # Supaya artikel berikutnya dalam run yang sama
-            # tidak bisa disimpan sebagai duplicate.
-            # ====================================================
-    
-            existing_link_index.add(
-                link
-            )
-    
-            # ------------------------------------------------
-            # UPDATE TITLE INDEX
-            # ------------------------------------------------
-    
-            try:
-    
-                temp_title_index = (
-                    build_existing_title_index(
-                        [saved_article]
-                    )
-                )
-    
-                for key, value in (
-                    temp_title_index.items()
-                ):
-    
-                    existing_title_index[
-                        key
-                    ] = value
-    
-            except Exception as exc:
-    
-                print(
-                    "[DEDUPE INDEX WARNING] "
-                    f"Title index: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-    
-            # ------------------------------------------------
-            # UPDATE CONTENT INDEX
-            # ------------------------------------------------
-    
-            try:
-    
-                temp_content_index = (
-                    build_existing_content_index(
-                        [saved_article]
-                    )
-                )
-    
-                for key, value in (
-                    temp_content_index.items()
-                ):
-    
-                    existing_content_index[
-                        key
-                    ] = value
-    
-            except Exception as exc:
-    
-                print(
-                    "[DEDUPE INDEX WARNING] "
-                    f"Content index: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-    
-            # ====================================================
-            # SUCCESS
-            # ====================================================
     
             print(
                 f"[SAVE SUCCESS] "
-                f"{saved_article.get('title', '')[:100]}"
+                f"{article.get('title', '')[:100]}"
             )
+    
     
         except Exception as exc:
     
@@ -5162,169 +4363,79 @@ def run_once() -> Dict[str, Any]:
     
             print(
                 f"[SAVE ERROR] "
-                f"{link} -> "
+                f"{link}: "
                 f"{type(exc).__name__}: "
                 f"{exc}"
             )
     # ========================================================
-    # SAVE SUMMARY
+    # TELEGRAM
     # ========================================================
 
-    print()
-    print(
-        f"[DATABASE] Berhasil disimpan: "
-        f"{saved_count}"
-    )
-
-    print(
-        f"[DATABASE] Gagal simpan: "
-        f"{save_failed}"
-    )
-
-    print(
-        f"[DATABASE] Artikel baru: "
-        f"{len(new_articles)}"
-    )
-    
-    # ========================================================
-    # DEDUPE SUMMARY
-    # ========================================================
-    
-    print()
-    
-    print("=" * 70)
-    print("DEDUPE SUMMARY")
-    print("=" * 70)
-    
-    print(
-        f"[DEDUPE] Duplicate URL      : "
-        f"{duplicate_url_count}"
-    )
-    
-    print(
-        f"[DEDUPE] Duplicate Title    : "
-        f"{duplicate_title_count}"
-    )
-    
-    print(
-        f"[DEDUPE] Duplicate Content  : "
-        f"{duplicate_content_count}"
-    )
-    
-    print(
-        f"[DEDUPE] Other Skip Reason  : "
-        f"{other_duplicate_count}"
-    )
-    
-    print(
-        f"[DEDUPE] Lolos Dedupe       : "
-        f"{valid_new_article_count}"
-    )
-    
-    print(
-        f"[DEDUPE] Artikel Baru Saved : "
-        f"{len(new_articles)}"
-    )
-    
-    print("=" * 70)
-
-    # ========================================================
-    # TELEGRAM NOTIFICATION
-    # ========================================================
-    
     telegram_count = 0
-    telegram_skipped = 0
-    
-    if not new_articles:
-    
+
+    if telegram_enabled():
+
         print(
-            "[TELEGRAM] Tidak ada artikel baru "
-            "untuk diproses."
-        )
-    
-    else:
-    
-        print(
-            f"[TELEGRAM] Total artikel baru: "
+            f"[TELEGRAM] "
+            f"Kandidat artikel baru: "
             f"{len(new_articles)}"
         )
-    
+
         for article in new_articles:
-    
-            sent = send_alert_if_needed(
-                article
-            )
-    
-            if sent:
-    
+
+            try:
+
+                if not send_alert_if_needed(
+                    article
+                ):
+                    continue
+
                 telegram_count += 1
-    
-            else:
-    
-                telegram_skipped += 1
-    
-    print(
-        f"[TELEGRAM] Berhasil dikirim: "
-        f"{telegram_count}"
-    )
-    
-    print(
-        f"[TELEGRAM] Tidak dikirim/skipped: "
-        f"{telegram_skipped}"
-    )
-    # ========================================================
-    # FAST CLASSIFICATION COUNT
-    #
-    # TIDAK RECLASSIFY SELURUH DATABASE
-    # ========================================================
 
-    counts = {
-        "Negatif Kuat": 0,
-        "Perlu Penanganan": 0,
-        "Netral": 0,
-        "Positif": 0,
-    }
+                print(
+                    "[TELEGRAM] Terkirim: "
+                    f"{article.get('title', '')[:100]}"
+                )
 
-    # ========================================================
-    # HITUNG DATABASE EXISTING
-    # ========================================================
+            except Exception as exc:
 
-    for article in existing_articles:
+                print(
+                    f"[TELEGRAM ERROR] "
+                    f"{type(exc).__name__}: "
+                    f"{exc}"
+                )
 
-        category = article.get(
-            "category",
-            "Netral",
+    else:
+
+        print(
+            "[TELEGRAM] Tidak aktif. "
+            "Periksa TELEGRAM_BOT_TOKEN "
+            "dan TELEGRAM_CHAT_ID."
         )
 
-        if category not in counts:
-            category = "Netral"
-
-        counts[category] += 1
-
     # ========================================================
-    # HITUNG ARTIKEL BARU
+    # RECLASSIFICATION
     # ========================================================
 
-    for article in new_articles:
+    counts = reclassify_all()
 
-        category = article.get(
-            "category",
-            "Netral",
+    # ========================================================
+    # FINAL DATABASE
+    # ========================================================
+
+    try:
+
+        final_articles = get_all_articles()
+
+    except Exception as exc:
+
+        print(
+            f"[DATABASE ERROR] "
+            f"Gagal mengambil database akhir: "
+            f"{type(exc).__name__}: {exc}"
         )
 
-        if category not in counts:
-            category = "Netral"
-
-        counts[category] += 1
-
-    # ========================================================
-    # FINAL DATABASE COUNT
-    # ========================================================
-
-    database_after = (
-        database_before
-        + len(new_articles)
-    )
+        final_articles = []
 
     duration = round(
         time.perf_counter()
@@ -5360,45 +4471,39 @@ def run_once() -> Dict[str, Any]:
             new_articles
         ),
 
-        "reclassified_count": 0,
+        "reclassified_count": len(
+            final_articles
+        ),
 
-        "negative_count": counts[
-            "Negatif Kuat"
-        ],
+        "negative_count": counts.get(
+            "Negatif Kuat",
+            0,
+        ),
 
-        "handling_count": counts[
-            "Perlu Penanganan"
-        ],
+        "handling_count": counts.get(
+            "Perlu Penanganan",
+            0,
+        ),
 
-        "neutral_count": counts[
-            "Netral"
-        ],
+        "neutral_count": counts.get(
+            "Netral",
+            0,
+        ),
 
-        "positive_count": counts[
-            "Positif"
-        ],
+        "positive_count": counts.get(
+            "Positif",
+            0,
+        ),
 
         "telegram_count": telegram_count,
 
         "status": "Selesai",
     }
 
-    try:
-
-        save_run_log(
-            log
-        )
-
-    except Exception as exc:
-
-        print(
-            f"[DB LOG ERROR] "
-            f"{type(exc).__name__}: "
-            f"{exc}"
-        )
+    save_run_log(log)
 
     # ========================================================
-    # FINAL SUMMARY
+    # SUMMARY
     # ========================================================
 
     print()
@@ -5422,7 +4527,7 @@ def run_once() -> Dict[str, Any]:
     )
 
     print(
-        f"Tidak lolos filter     : "
+        f"Tidak lolos filter    : "
         f"{filtered_count}"
     )
 
@@ -5448,27 +4553,27 @@ def run_once() -> Dict[str, Any]:
 
     print(
         f"Database               : "
-        f"{database_after}"
+        f"{len(final_articles)}"
     )
 
     print(
         f"Negatif Kuat           : "
-        f"{counts['Negatif Kuat']}"
+        f"{counts.get('Negatif Kuat', 0)}"
     )
 
     print(
         f"Perlu Penanganan       : "
-        f"{counts['Perlu Penanganan']}"
+        f"{counts.get('Perlu Penanganan', 0)}"
     )
 
     print(
         f"Netral                 : "
-        f"{counts['Netral']}"
+        f"{counts.get('Netral', 0)}"
     )
 
     print(
         f"Positif                : "
-        f"{counts['Positif']}"
+        f"{counts.get('Positif', 0)}"
     )
 
     print(
@@ -5479,6 +4584,8 @@ def run_once() -> Dict[str, Any]:
     print("=" * 70)
 
     return log
+
+
 
 # ============================================================
 # DEDUPE DRY RUN
@@ -6817,383 +5924,68 @@ def audit_negative_articles() -> Dict[str, Any]:
     }
 
 def audit_content_duplicates() -> None:
-    """
-    Audit duplicate content.
-
-    Mendeteksi:
-
-    1. Exact content duplicates
-    2. Near content duplicates
-
-    Tidak mengubah database.
-    """
-
+    """Audit duplicate sesuai aturan produksi; tidak mengubah database."""
     print("=" * 70)
     print("AUDIT CONTENT DUPLICATES")
     print("=" * 70)
+    articles = get_all_articles()
+    print(f"[AUDIT] Total artikel: {len(articles)}")
 
-    try:
-
-        articles = get_all_articles()
-
-    except Exception as exc:
-
-        print(
-            f"[AUDIT ERROR] "
-            f"Gagal mengambil artikel: {exc}"
-        )
-
-        return
-
-    print(
-        f"[AUDIT] Total artikel: "
-        f"{len(articles)}"
-    )
-
-    # ========================================================
-    # PREPARE CONTENT
-    # ========================================================
-
-    valid_articles = []
-
+    title_groups = defaultdict(list)
     for article in articles:
+        key = build_title_key(article)
+        if key:
+            title_groups[key].append(article)
+    duplicate_titles = {k:v for k,v in title_groups.items() if len(v) > 1}
 
-        content = normalize_text(
-            article.get("content")
-            or article.get("summary")
-            or ""
-        )
+    content_items = []
+    for article in articles:
+        content = normalize_content_for_duplicate(get_article_content(article))
+        if len(content) >= 100:
+            content_items.append((article, content))
 
-        content = content.lower().strip()
+    content_groups = []
+    seen = set()
+    for i, (article_a, content_a) in enumerate(content_items):
+        media_a = get_media_source(article_a).lower().strip()
+        group = [article_a]
+        for j in range(i + 1, len(content_items)):
+            article_b, content_b = content_items[j]
+            if get_media_source(article_b).lower().strip() != media_a:
+                continue
+            similarity = calculate_content_similarity(content_a, content_b)
+            if similarity >= CONTENT_DUPLICATE_THRESHOLD:
+                group.append(article_b)
+        if len(group) > 1:
+            ids = tuple(sorted(str(a.get("id", "")) for a in group))
+            if ids not in seen:
+                seen.add(ids)
+                content_groups.append(group)
 
-        # Abaikan content kosong
-
-        if not content:
-            continue
-
-        # Abaikan content terlalu pendek
-
-        if len(content) < 100:
-            continue
-
-        valid_articles.append(
-            {
-                "article": article,
-                "content": content,
-            }
-        )
-
-    print(
-        f"[AUDIT] Artikel dengan content valid: "
-        f"{len(valid_articles)}"
-    )
-
-    # ========================================================
-    # EXACT CONTENT DUPLICATES
-    # ========================================================
-
-    content_groups = {}
-
-    for item in valid_articles:
-
-        content = item["content"]
-
-        if content not in content_groups:
-
-            content_groups[
-                content
-            ] = []
-
-        content_groups[
-            content
-        ].append(
-            item["article"]
-        )
-
-    exact_duplicates = {
-
-        content: items
-
-        for content, items
-        in content_groups.items()
-
-        if len(items) > 1
-    }
-
-    print()
+    print("\n" + "=" * 70)
+    print(f"DUPLIKAT TITLE + MEDIA: {len(duplicate_titles)} KELOMPOK")
     print("=" * 70)
-    print(
-        f"EXACT CONTENT DUPLICATES: "
-        f"{len(exact_duplicates)} KELOMPOK"
-    )
+    for key, items in duplicate_titles.items():
+        print("\n" + "-" * 70)
+        print(f"KEY: {key}")
+        for item in items:
+            print(f"ID={item.get('id')} | {item.get('title')} | MEDIA={get_media_source(item)}")
+
+    print("\n" + "=" * 70)
+    print(f"DUPLIKAT CONTENT + MEDIA: {len(content_groups)} KELOMPOK")
     print("=" * 70)
+    for number, items in enumerate(content_groups, 1):
+        print(f"\nCONTENT DUPLICATE #{number} | MEDIA={get_media_source(items[0])}")
+        for item in items:
+            print(f"ID={item.get('id')} | {item.get('title')}")
 
-    for number, (
-        content,
-        items
-    ) in enumerate(
-        exact_duplicates.items(),
-        start=1,
-    ):
-
-        print()
-
-        print(
-            f"EXACT DUPLICATE #{number}"
-        )
-
-        print("-" * 70)
-
-        print(
-            f"Content Length : "
-            f"{len(content)}"
-        )
-
-        print(
-            f"Jumlah Artikel : "
-            f"{len(items)}"
-        )
-
-        print()
-
-        print(
-            "CONTENT PREVIEW:"
-        )
-
-        print(
-            content[:300]
-        )
-
-        print()
-
-        for article in items:
-
-            print(
-                f"ID      : "
-                f"{article.get('id')}"
-            )
-
-            print(
-                f"TITLE   : "
-                f"{article.get('title')}"
-            )
-
-            print(
-                f"MEDIA   : "
-                f"{get_media_source(article)}"
-            )
-
-            print(
-                f"LINK    : "
-                f"{article.get('link')}"
-            )
-
-            print()
-
-    # ========================================================
-    # NEAR CONTENT DUPLICATES
-    # ========================================================
-
-    print()
+    print("\n" + "=" * 70)
+    print("AUDIT CONTENT DUPLICATES SELESAI")
     print("=" * 70)
-    print(
-        "MENCARI NEAR CONTENT DUPLICATES..."
-    )
-    print("=" * 70)
+    print(f"Total artikel              : {len(articles)}")
+    print(f"Duplicate title + media    : {len(duplicate_titles)} kelompok")
+    print(f"Duplicate content + media  : {len(content_groups)} kelompok")
 
-    near_duplicates = []
-
-    NEAR_DUPLICATE_THRESHOLD = 90.0
-
-    # --------------------------------------------------------
-    # COMPARE EACH ARTICLE
-    # --------------------------------------------------------
-
-    for item_a, item_b in combinations(
-        valid_articles,
-        2,
-    ):
-
-        article_a = item_a["article"]
-        article_b = item_b["article"]
-
-        content_a = item_a["content"]
-        content_b = item_b["content"]
-
-        # ----------------------------------------------------
-        # Skip exact duplicate
-        #
-        # Exact duplicate sudah ditampilkan sebelumnya
-        # ----------------------------------------------------
-
-        if content_a == content_b:
-            continue
-
-        similarity = calculate_content_similarity(
-            content_a,
-            content_b,
-        )
-
-        if similarity >= NEAR_DUPLICATE_THRESHOLD:
-
-            near_duplicates.append(
-                {
-                    "article_a": article_a,
-                    "article_b": article_b,
-                    "similarity": similarity,
-                }
-            )
-
-    # --------------------------------------------------------
-    # SORT
-    # --------------------------------------------------------
-
-    near_duplicates.sort(
-        key=lambda item: item[
-            "similarity"
-        ],
-        reverse=True,
-    )
-
-    # ========================================================
-    # DISPLAY NEAR DUPLICATES
-    # ========================================================
-
-    print()
-
-    print("=" * 70)
-
-    print(
-        f"NEAR CONTENT DUPLICATES: "
-        f"{len(near_duplicates)} PASANGAN"
-    )
-
-    print("=" * 70)
-
-    for number, item in enumerate(
-        near_duplicates,
-        start=1,
-    ):
-
-        article_a = item[
-            "article_a"
-        ]
-
-        article_b = item[
-            "article_b"
-        ]
-
-        similarity = item[
-            "similarity"
-        ]
-
-        print()
-
-        print(
-            f"NEAR DUPLICATE #{number}"
-        )
-
-        print("-" * 70)
-
-        print(
-            f"Similarity: "
-            f"{similarity:.2f}%"
-        )
-
-        print()
-
-        print(
-            "ARTICLE A"
-        )
-
-        print(
-            f"ID      : "
-            f"{article_a.get('id')}"
-        )
-
-        print(
-            f"TITLE   : "
-            f"{article_a.get('title')}"
-        )
-
-        print(
-            f"MEDIA   : "
-            f"{extract_media_name(article_a)}"
-        )
-
-        print(
-            f"LINK    : "
-            f"{article_a.get('link')}"
-        )
-
-        print()
-
-        print(
-            "ARTICLE B"
-        )
-
-        print(
-            f"ID      : "
-            f"{article_b.get('id')}"
-        )
-
-        print(
-            f"TITLE   : "
-            f"{article_b.get('title')}"
-        )
-
-        print(
-            f"MEDIA   : "
-            f"{extract_media_name(article_b)}"
-        )
-
-        print(
-            f"LINK    : "
-            f"{article_b.get('link')}"
-        )
-
-        print()
-
-    # ========================================================
-    # SUMMARY
-    # ========================================================
-
-    print()
-
-    print("=" * 70)
-
-    print(
-        "AUDIT CONTENT DUPLICATES SELESAI"
-    )
-
-    print("=" * 70)
-
-    print(
-        f"Total artikel                  : "
-        f"{len(articles)}"
-    )
-
-    print(
-        f"Artikel dengan content valid   : "
-        f"{len(valid_articles)}"
-    )
-
-    print(
-        f"Exact duplicate groups         : "
-        f"{len(exact_duplicates)}"
-    )
-
-    print(
-        f"Near duplicate pairs           : "
-        f"{len(near_duplicates)}"
-    )
-
-    print(
-        f"Near duplicate threshold       : "
-        f"{NEAR_DUPLICATE_THRESHOLD}%"
-    )
-
-    print("=" * 70)
 def audit_exact_duplicates() -> None:
     """
     Audit artikel yang merupakan duplicate kuat.
@@ -8161,6 +6953,9 @@ def normalize_title(title):
 # DUPLICATE PREVENTION
 # ============================================================
 
+CONTENT_DUPLICATE_THRESHOLD = 0.95
+
+
 def normalize_content_for_duplicate(value):
     """
     Normalisasi content untuk perbandingan duplicate.
@@ -8226,130 +7021,30 @@ def calculate_content_similarity(
 
 
 def get_media_source(article):
-    """
-    Mengembalikan identitas publisher/media yang stabil.
-
-    Prioritas:
-    1. Field publisher/media eksplisit
-    2. Publisher dari judul
-    3. Domain URL artikel
-    4. Field source
-    5. unknown
-    """
-
+    """Mengembalikan identitas publisher yang stabil untuk dedupe."""
     if not isinstance(article, dict):
         return "unknown"
 
+    for field in ("publisher", "media_name", "media", "source_name", "nama_media"):
+        value = normalize_text(article.get(field))
+        if value and value.lower() not in {"google news", "google news rss", "unknown"}:
+            return value.strip()
 
-    # ========================================================
-    # PRIORITAS 1
-    # FIELD MEDIA / PUBLISHER
-    # ========================================================
-
-    for field in (
-        "publisher",
-        "media_name",
-        "media",
-        "source_name",
-        "nama_media",
-    ):
-
-        value = normalize_text(
-            article.get(field)
-        )
-
-        if (
-            value
-            and value.lower().strip()
-            not in {
-                "google news",
-                "google news rss",
-                "unknown",
-            }
-        ):
-
-            return value.lower().strip()
-
-
-    # ========================================================
-    # PRIORITAS 2
-    # AMBIL PUBLISHER DARI TITLE
-    # ========================================================
-
-    publisher = get_publisher_from_title(
-        article.get("title", "")
-    )
-
+    publisher = get_publisher_from_title(article.get("title", ""))
     if publisher:
+        return publisher.strip()
 
-        publisher = normalize_text(
-            publisher
-        )
-
-        if publisher:
-
-            return publisher.lower().strip()
-
-
-    # ========================================================
-    # PRIORITAS 3
-    # AMBIL DOMAIN DARI URL
-    # ========================================================
-
-    link = (
-        article.get("link")
-        or article.get("url")
-        or ""
-    )
-
+    link = article.get("link") or article.get("url") or ""
     try:
-
-        domain = urllib.parse.urlparse(
-            str(link)
-        ).netloc.lower()
-
-        domain = domain.replace(
-            "www.",
-            ""
-        )
-
-        if (
-            domain
-            and domain != "news.google.com"
-        ):
-
+        domain = urllib.parse.urlparse(str(link)).netloc.lower().replace("www.", "")
+        if domain and domain != "news.google.com":
             return domain
-
     except Exception:
-
         pass
 
-
-    # ========================================================
-    # PRIORITAS 4
-    # SOURCE
-    # ========================================================
-
-    source = normalize_text(
-        article.get("source")
-    )
-
-    if (
-        source
-        and source.lower().strip()
-        not in {
-            "google news",
-            "google news rss",
-            "unknown",
-        }
-    ):
-
-        return source.lower().strip()
-
-
-    # ========================================================
-    # FALLBACK
-    # ========================================================
+    source = normalize_text(article.get("source"))
+    if source and source.lower() not in {"google news", "google news rss"}:
+        return source.strip()
 
     return "unknown"
 
@@ -8379,36 +7074,46 @@ def build_title_key(article):
     return f"{title}|{media}"
 
 
-def build_existing_title_index(articles):
+def build_existing_title_index(
+    articles,
+):
+    """
+    Membuat index duplicate title.
 
-    index = set()
+    Duplicate title dicek berdasarkan:
+
+        TITLE + MEDIA
+
+    Jadi:
+
+    Media A:
+        "Kejari Deli Serdang Raih Penghargaan"
+
+    Media B:
+        "Kejari Deli Serdang Raih Penghargaan"
+
+    Tetap boleh disimpan.
+
+    Tetapi jika judul identik dari media yang sama,
+    artikel dianggap duplicate.
+    """
+
+    title_index = set()
 
     for article in articles:
 
-        title = normalize_title(
-            article.get("title")
-        )
-
-        media = get_media_source(
+        key = build_title_key(
             article
         )
 
-        if not title:
-            continue
+        if key:
 
-        if not media:
-            continue
+            title_index.add(
+                key
+            )
 
-        key = (
-            title,
-            media,
-        )
+    return title_index
 
-        index.add(
-            key
-        )
-
-    return index
 
 def build_existing_content_index(
     articles,
@@ -8623,67 +7328,170 @@ def should_save_article(
     existing_title_index,
     existing_content_index,
 ):
+    """
+    CENTRAL DECISION FUNCTION.
+
+    Menentukan apakah artikel boleh disimpan.
+
+    PRIORITAS:
+
+    1. Duplicate URL
+       -> JANGAN SIMPAN
+
+    2. Duplicate Title + Media
+       -> JANGAN SIMPAN
+
+    3. Duplicate Content + Media Sama
+       -> JANGAN SIMPAN
+
+    4. Event sama + Media berbeda
+       -> TETAP SIMPAN
+
+    Return:
+
+        (
+            should_save,
+            reason,
+            similarity,
+            matched_article
+        )
+    """
+
+    # ========================================================
+    # VALIDATE ARTICLE
+    # ========================================================
+
+    if not isinstance(article, dict):
+
+        return (
+            False,
+            "INVALID_ARTICLE",
+            0.0,
+            None,
+        )
+
+    # ========================================================
+    # VALIDATE LINK
+    # ========================================================
+
+    link = normalize_url(
+        article.get("link")
+    )
+
+    if not link:
+
+        return (
+            False,
+            "INVALID_LINK",
+            0.0,
+            None,
+        )
 
     # ========================================================
     # 1. DUPLICATE URL
     # ========================================================
 
-    link = article.get("link")
-
-    if is_duplicate_link(
-        link,
-        existing_link_index,
-    ):
+    if link in existing_link_index:
 
         return (
             False,
-            "duplicate_url",
+            "DUPLICATE_URL",
+            1.0,
+            None,
         )
-
 
     # ========================================================
     # 2. DUPLICATE TITLE + SAME MEDIA
     # ========================================================
 
-    if is_duplicate_title(
-        article,
-        existing_title_index,
+    title_key = build_title_key(
+        article
+    )
+
+    if (
+        title_key
+        and title_key in existing_title_index
     ):
 
         return (
             False,
-            "duplicate_title_same_media",
+            "DUPLICATE_TITLE_SAME_MEDIA",
+            1.0,
+            None,
         )
-
 
     # ========================================================
     # 3. DUPLICATE CONTENT
+    #
+    # Fungsi is_duplicate_content()
+    # sekarang hanya membandingkan media yang sama.
     # ========================================================
 
-    content_result = is_duplicate_content(
+    (
+        content_duplicate,
+        similarity,
+        matched_article,
+    ) = is_duplicate_content(
+
         article,
+
         existing_content_index,
+
     )
 
-    is_duplicate = content_result[0]
+    if content_duplicate:
 
-    if is_duplicate:
+        matched_media = (
+            get_media_source(
+                matched_article
+            )
+            if matched_article
+            else "Unknown"
+        )
+
+        candidate_media = (
+            get_media_source(
+                article
+            )
+        )
 
         return (
             False,
-            "duplicate_content",
+
+            (
+                "DUPLICATE_CONTENT_SAME_MEDIA "
+                f"({similarity:.2%}) "
+                f"| media={candidate_media} "
+                f"| matched={matched_media}"
+            ),
+
+            similarity,
+
+            matched_article,
         )
 
-
     # ========================================================
-    # 4. VALID ARTICLE
+    # 4. ARTICLE IS NEW
+    #
+    # Event sama dari media berbeda
+    # TETAP BOLEH MASUK DATABASE.
+    #
+    # Event clustering hanya digunakan untuk:
+    #
+    # - audit
+    # - intelligence
+    # - analytics
+    #
+    # BUKAN untuk memblokir artikel.
     # ========================================================
 
     return (
         True,
-        "valid",
+        "NEW_ARTICLE",
+        similarity,
+        None,
     )
-    
+
 def register_saved_article(
     article,
     existing_link_index,
@@ -8720,14 +7528,8 @@ def register_saved_article(
     # REGISTER TITLE + MEDIA
     # ========================================================
 
-    title_key = (
-        normalize_text(
-            article.get("source", "")
-        ).lower(),
-
-        normalize_text(
-            article.get("title", "")
-        ).lower()
+    title_key = build_title_key(
+        article
     )
 
     if title_key:
@@ -8869,9 +7671,9 @@ def audit_event_quality(articles):
 
         # PENTING: counter ini di-reset untuk SETIAP cluster.
         title_counter = Counter(
-            build_title_key(article)
+            normalize_title(article.get("title", ""))
             for article in cluster
-            if build_title_key(article)
+            if normalize_title(article.get("title", ""))
         )
 
         cluster_duplicate_titles = sum(
@@ -9000,776 +7802,6 @@ def print_event_quality_summary(
 
     print()
     
-# ============================================================
-# END-TO-END TEST NEW ARTICLE
-# ============================================================
-
-def test_new_article():
-
-    """
-    Test end-to-end pipeline:
-
-    1. Ambil database
-    2. Build duplicate index
-    3. Buat artikel test unik
-    4. Check duplicate
-    5. Simpan artikel
-    6. Update duplicate index
-    7. Tambahkan ke new_articles
-    8. Verifikasi database akhir
-    """
-
-    print()
-    print("=" * 70)
-    print("END-TO-END TEST NEW ARTICLE")
-    print("=" * 70)
-
-    started = time.perf_counter()
-
-    # ========================================================
-    # COUNTERS
-    # ========================================================
-
-    saved_count = 0
-    save_failed = 0
-
-    new_articles = []
-
-    # ========================================================
-    # GET DATABASE BEFORE TEST
-    # ========================================================
-
-    try:
-
-        existing_articles = get_all_articles()
-
-    except Exception as exc:
-
-        print(
-            f"[TEST DATABASE ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "error": str(exc),
-        }
-
-    database_before = len(
-        existing_articles
-    )
-
-    print(
-        f"[TEST] Database sebelum: "
-        f"{database_before}"
-    )
-
-    # ========================================================
-    # BUILD DUPLICATE INDEX
-    # ========================================================
-
-    existing_link_index = set()
-
-    for article in existing_articles:
-
-        link = normalize_url(
-            article.get("link")
-        )
-
-        if link:
-
-            existing_link_index.add(
-                link
-            )
-
-    existing_title_index = (
-        build_existing_title_index(
-            existing_articles
-        )
-    )
-
-    existing_content_index = (
-        build_existing_content_index(
-            existing_articles
-        )
-    )
-
-    # ========================================================
-    # CREATE UNIQUE TEST ARTICLE
-    # ========================================================
-
-    test_timestamp = datetime.now().strftime(
-        "%Y%m%d%H%M%S"
-    )
-
-    test_article = {
-
-        "title": (
-            f"TEST PATROLI SIBER "
-            f"END TO END {test_timestamp}"
-        ),
-
-        "link": (
-            f"https://example.com/"
-            f"patroli-test-{test_timestamp}"
-        ),
-
-        "source": "Patroli Siber Test",
-
-        "published_date": (
-            datetime.now().isoformat()
-        ),
-
-        "content": (
-            f"END TO END TEST ARTICLE UNIQUE ID {test_timestamp}. "
-            f"Pipeline verification for Patroli Siber. "
-            f"Random test marker: TEST-{test_timestamp}-"
-            f"{uuid.uuid4().hex}."
-        ),
-
-        # Field ini boleh digunakan selama pipeline,
-        # tetapi upsert_article() jangan mengirimnya
-        # ke Supabase jika kolom tidak tersedia.
-        "rss_description": (
-            f"Testing pipeline Patroli Siber "
-            f"{test_timestamp}"
-        ),
-    }
-
-    print()
-
-    print(
-        "[TEST] Artikel test dibuat:"
-    )
-
-    print(
-        f"[TEST] TITLE: "
-        f"{test_article['title']}"
-    )
-
-    print(
-        f"[TEST] LINK : "
-        f"{test_article['link']}"
-    )
-
-    # ========================================================
-    # DUPLICATE CHECK
-    # ========================================================
-
-    try:
-
-        result = should_save_article(
-            test_article,
-            existing_link_index,
-            existing_title_index,
-            existing_content_index,
-        )
-
-        print(
-            f"[TEST DEBUG] Dedupe result: "
-            f"{result}"
-        )
-
-        should_save = result[0]
-        reason = result[1]
-
-        print(
-            f"[TEST] Should save: "
-            f"{should_save}"
-        )
-
-        print(
-            f"[TEST] Reason: "
-            f"{reason}"
-        )
-
-    except Exception as exc:
-
-        print(
-            f"[TEST DEDUPE ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "error": str(exc),
-        }
-
-    # ========================================================
-    # VALIDATE TEST ARTICLE
-    # ========================================================
-
-    if not should_save:
-
-        print(
-            f"[TEST FAILED] Artikel test "
-            f"ditolak oleh dedupe: {reason}"
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": reason,
-        }
-
-    print(
-        "[TEST] Duplicate check berhasil."
-    )
-
-    # ========================================================
-    # SAVE TEST ARTICLE
-    # ========================================================
-
-    print()
-
-    print(
-        "[TEST] Menyimpan artikel test..."
-    )
-
-    try:
-
-        save_result = upsert_article(
-            test_article
-        )
-
-        # ----------------------------------------------------
-        # CHECK SAVE RESULT
-        # ----------------------------------------------------
-
-        print(
-            f"[TEST DEBUG] Save result: "
-            f"{save_result}"
-        )
-
-        # Jika fungsi mengembalikan False
-        if save_result is False:
-
-            save_failed += 1
-
-            print(
-                "[TEST SAVE FAILED] "
-                "upsert_article() mengembalikan False."
-            )
-
-            return {
-                "status": "Gagal",
-                "reason": "save_failed",
-            }
-
-        saved_count += 1
-
-        print(
-            "[TEST SAVE SUCCESS] "
-            f"{test_article['title']}"
-        )
-
-    except Exception as exc:
-
-        save_failed += 1
-
-        print(
-            f"[TEST SAVE ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "error": str(exc),
-        }
-
-    # ========================================================
-    # UPDATE DUPLICATE INDEX
-    # ========================================================
-
-    saved_link = normalize_url(
-        test_article.get("link")
-    )
-
-    if saved_link:
-
-        existing_link_index.add(
-            saved_link
-        )
-
-    updated_articles = (
-        existing_articles
-        + [test_article]
-    )
-
-    existing_title_index = (
-        build_existing_title_index(
-            updated_articles
-        )
-    )
-
-    existing_content_index = (
-        build_existing_content_index(
-            updated_articles
-        )
-    )
-
-    print(
-        "[TEST] Duplicate index berhasil diperbarui."
-    )
-
-    # ========================================================
-    # ADD TO NEW ARTICLES
-    # ========================================================
-
-    new_articles.append(
-        test_article
-    )
-
-    print(
-        "[TEST] Artikel berhasil ditambahkan "
-        "ke new_articles."
-    )
-
-    # ========================================================
-    # VERIFY DATABASE AFTER TEST
-    # ========================================================
-
-    print()
-
-    print(
-        "[TEST] Verifikasi database akhir..."
-    )
-
-    try:
-
-        final_articles = get_all_articles()
-
-    except Exception as exc:
-
-        print(
-            f"[TEST VERIFY ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "error": str(exc),
-        }
-
-    database_after = len(
-        final_articles
-    )
-
-    article_found = False
-
-    for article in final_articles:
-
-        article_link = normalize_url(
-            article.get("link")
-        )
-
-        if article_link == saved_link:
-
-            article_found = True
-
-            break
-
-    duration = round(
-        time.perf_counter()
-        - started,
-        2,
-    )
-
-    # ========================================================
-    # TEST SUMMARY
-    # ========================================================
-
-    print()
-    print("=" * 70)
-    print("END-TO-END TEST SUMMARY")
-    print("=" * 70)
-
-    print(
-        f"Database sebelum      : "
-        f"{database_before}"
-    )
-
-    print(
-        f"Database sesudah      : "
-        f"{database_after}"
-    )
-
-    print(
-        f"Artikel tersimpan     : "
-        f"{article_found}"
-    )
-
-    print(
-        f"Saved count           : "
-        f"{saved_count}"
-    )
-
-    print(
-        f"Save failed           : "
-        f"{save_failed}"
-    )
-
-    print(
-        f"New articles          : "
-        f"{len(new_articles)}"
-    )
-
-    print(
-        f"Durasi                : "
-        f"{duration} detik"
-    )
-
-    print("=" * 70)
-
-    # ========================================================
-    # FINAL DECISION
-    # ========================================================
-
-    if not article_found:
-
-        print(
-            "[TEST FAILED] Artikel tidak ditemukan "
-            "di database setelah upsert."
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": "article_not_found_after_save",
-            "database_before": database_before,
-            "database_after": database_after,
-        }
-
-    if database_after < database_before:
-
-        print(
-            "[TEST FAILED] Jumlah database "
-            "berkurang secara tidak normal."
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": "database_count_decreased",
-        }
-
-    print(
-        "[TEST SUCCESS] END-TO-END TEST BERHASIL."
-    )
-
-    return {
-        "status": "Sukses",
-        "database_before": database_before,
-        "database_after": database_after,
-        "article_found": article_found,
-        "saved_count": saved_count,
-        "save_failed": save_failed,
-        "new_article_count": len(
-            new_articles
-        ),
-        "duration_seconds": duration,
-    }
-
-def test_telegram_alert() -> Dict[str, Any]:
-    """
-    Test end-to-end Telegram alert.
-
-    Test ini memastikan:
-
-    1. Telegram configuration tersedia
-    2. Artikel test dibuat unik
-    3. Tanggal artikel berada dalam bulan berjalan
-    4. Kategori memenuhi aturan alert
-    5. Pesan Telegram berhasil dibuat
-    6. Pesan berhasil dikirim ke Telegram
-
-    Artikel test TIDAK disimpan ke database.
-    """
-
-    print()
-    print("=" * 70)
-    print("END-TO-END TEST TELEGRAM ALERT")
-    print("=" * 70)
-
-    started = time.perf_counter()
-
-    # ========================================================
-    # CHECK TELEGRAM CONFIGURATION
-    # ========================================================
-
-    if not telegram_enabled():
-
-        print(
-            "[TEST TELEGRAM FAILED] "
-            "Telegram tidak aktif."
-        )
-
-        print(
-            "[TEST TELEGRAM] Periksa "
-            "TELEGRAM_BOT_TOKEN dan "
-            "TELEGRAM_CHAT_ID."
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": "telegram_not_enabled",
-        }
-
-    print(
-        "[TEST TELEGRAM] Telegram configuration aktif."
-    )
-
-    # ========================================================
-    # CREATE UNIQUE TEST ARTICLE
-    # ========================================================
-
-    test_timestamp = datetime.now().strftime(
-        "%Y%m%d%H%M%S"
-    )
-
-    unique_id = uuid.uuid4().hex
-
-    current_time = datetime.now()
-
-    test_article = {
-
-        "title": (
-            "TEST TELEGRAM PATROLI SIBER "
-            f"{test_timestamp}"
-        ),
-
-        "link": (
-            "https://example.com/"
-            f"telegram-test-{unique_id}"
-        ),
-
-        "source": (
-            "Patroli Siber Telegram Test"
-        ),
-
-        "published_date": (
-            current_time.isoformat()
-        ),
-
-        "content": (
-            "TEST TELEGRAM ARTICLE. "
-            f"Unique ID: {unique_id}"
-        ),
-
-        "category": (
-            "Negatif Kuat"
-        ),
-
-        "priority": (
-            "Tinggi"
-        ),
-    }
-
-    print()
-    print(
-        "[TEST TELEGRAM] Artikel test dibuat."
-    )
-
-    print(
-        f"[TEST TELEGRAM] TITLE: "
-        f"{test_article['title']}"
-    )
-
-    print(
-        f"[TEST TELEGRAM] CATEGORY: "
-        f"{test_article['category']}"
-    )
-
-    print(
-        f"[TEST TELEGRAM] PRIORITY: "
-        f"{test_article['priority']}"
-    )
-
-    print(
-        f"[TEST TELEGRAM] DATE: "
-        f"{test_article['published_date']}"
-    )
-
-    # ========================================================
-    # CHECK CATEGORY
-    # ========================================================
-
-    allowed_categories = {
-        "Negatif Kuat",
-        "Perlu Penanganan",
-    }
-
-    category = test_article.get(
-        "category"
-    )
-
-    if category not in allowed_categories:
-
-        print(
-            "[TEST TELEGRAM FAILED] "
-            f"Kategori tidak lolos: {category}"
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": "invalid_category",
-        }
-
-    print(
-        "[TEST TELEGRAM] Category check berhasil."
-    )
-
-    # ========================================================
-    # CHECK CURRENT MONTH
-    # ========================================================
-
-    article_date = current_time
-
-    if (
-        article_date.year
-        != current_time.year
-        or article_date.month
-        != current_time.month
-    ):
-
-        print(
-            "[TEST TELEGRAM FAILED] "
-            "Artikel bukan bulan berjalan."
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": "not_current_month",
-        }
-
-    print(
-        "[TEST TELEGRAM] Current month check berhasil."
-    )
-
-    # ========================================================
-    # GENERATE TELEGRAM MESSAGE
-    # ========================================================
-
-    try:
-
-        message = telegram_text(
-            test_article
-        )
-
-        print()
-        print(
-            "[TEST TELEGRAM] Message berhasil dibuat."
-        )
-
-        print("-" * 70)
-
-        print(message)
-
-        print("-" * 70)
-
-    except Exception as exc:
-
-        print(
-            "[TEST TELEGRAM MESSAGE ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": "message_generation_error",
-            "error": str(exc),
-        }
-
-    # ========================================================
-    # SEND TELEGRAM
-    # ========================================================
-
-    print()
-
-    print(
-        "[TEST TELEGRAM] Mengirim pesan..."
-    )
-
-    try:
-
-        success = send_alert_if_needed(
-            test_article
-        )
-
-    except Exception as exc:
-
-        print(
-            "[TEST TELEGRAM ERROR] "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return {
-            "status": "Gagal",
-            "reason": "telegram_exception",
-            "error": str(exc),
-        }
-
-    # ========================================================
-    # SUMMARY
-    # ========================================================
-
-    duration = (
-        time.perf_counter()
-        - started
-    )
-
-    print()
-    print("=" * 70)
-    print("TEST TELEGRAM SUMMARY")
-    print("=" * 70)
-
-    print(
-        f"Telegram aktif       : "
-        f"{telegram_enabled()}"
-    )
-
-    print(
-        f"Kategori             : "
-        f"{category}"
-    )
-
-    print(
-        f"Bulan berjalan       : "
-        f"True"
-    )
-
-    print(
-        f"Telegram terkirim    : "
-        f"{success}"
-    )
-
-    print(
-        f"Durasi               : "
-        f"{duration:.2f} detik"
-    )
-
-    print("=" * 70)
-
-    if success:
-
-        print(
-            "[TEST TELEGRAM SUCCESS] "
-            "Pesan berhasil dikirim."
-        )
-
-        return {
-            "status": "Berhasil",
-            "telegram_sent": True,
-            "duration": duration,
-        }
-
-    print(
-        "[TEST TELEGRAM FAILED] "
-        "Pesan gagal dikirim."
-    )
-
-    return {
-        "status": "Gagal",
-        "telegram_sent": False,
-        "duration": duration,
-    }
     
 # ============================================================
 # MAIN
@@ -9876,23 +7908,6 @@ def main() -> None:
         ),
     )
 
-    parser.add_argument(
-        "--test-new-article",
-        action="store_true",
-        help=(
-            "tes artikel baru"
-        ),
-    )
-
-    parser.add_argument(
-        "--test-telegram",
-        action="store_true",
-        help=(
-            "tes alert telegram"
-        )
-    )
-
-
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -9957,18 +7972,6 @@ def main() -> None:
 
         return
 
-    if args.test_new_article:
-        
-        test_new_article()
-
-        return
-
-    if args.test_telegram:
-        
-        test_telegram_alert()
-
-        return
-
 
     # --------------------------------------------------------
     # AUDIT EXACT DUPLICATES
@@ -10014,4 +8017,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
