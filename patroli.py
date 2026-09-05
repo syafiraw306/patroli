@@ -9114,6 +9114,288 @@ def print_event_quality_summary(
     
     
 # ============================================================
+# READ-ONLY DATABASE AUDIT
+# ============================================================
+
+def database_audit() -> Dict[str, Any]:
+    """
+    Audit komprehensif database lama TANPA INSERT/UPDATE/DELETE.
+
+    Tujuan:
+      1. Menilai kesehatan seluruh record yang sudah ada.
+      2. Mengelompokkan kandidat KEEP / FIX / DELETE_REVIEW.
+      3. Tidak pernah mengubah database.
+      4. Menghasilkan database_audit.json dan database_audit.csv.
+
+    DELETE_REVIEW hanya rekomendasi. Penghapusan tidak dilakukan otomatis.
+    """
+    print("=" * 70)
+    print("READ-ONLY DATABASE AUDIT")
+    print("TIDAK ADA INSERT / UPDATE / DELETE")
+    print("=" * 70)
+
+    try:
+        articles = get_all_articles()
+    except Exception as exc:
+        print(f"[DATABASE AUDIT ERROR] {type(exc).__name__}: {exc}")
+        return {"success": False, "error": str(exc)}
+
+    total = len(articles)
+    print(f"[AUDIT] Total artikel: {total}")
+
+    def norm(value: Any) -> str:
+        return normalize_text(value).strip()
+
+    def domain(value: Any) -> str:
+        try:
+            return urllib.parse.urlparse(str(value or "")).netloc.lower().replace("www.", "")
+        except Exception:
+            return ""
+
+    records = []
+    for article in articles:
+        link = normalize_url(article.get("link") or "")
+        title = norm(article.get("title"))
+        content = norm(article.get("content") or article.get("summary") or article.get("snippet"))
+        media = norm(get_media_source(article))
+        published = parse_date_safe(article.get("published_date"))
+        category = norm(article.get("category"))
+        risk_score = article.get("risk_score")
+        risk_level = norm(article.get("risk_level"))
+
+        issues = []
+        fixes = []
+        delete_reason = ""
+
+        if not link:
+            issues.append("EMPTY_LINK")
+            fixes.append("REVIEW_LINK")
+        elif _is_google_news_url(link):
+            issues.append("GOOGLE_NEWS_URL")
+            fixes.append("RESOLVE_PUBLISHER_URL")
+
+        if not title:
+            issues.append("EMPTY_TITLE")
+            fixes.append("REVIEW_TITLE")
+        if not content:
+            issues.append("EMPTY_CONTENT")
+            fixes.append("REVIEW_CONTENT")
+        elif len(content) < MIN_CONTENT_LENGTH:
+            issues.append("SHORT_CONTENT")
+            fixes.append("REVIEW_CONTENT")
+        if not media or media.lower() == "unknown":
+            issues.append("UNKNOWN_MEDIA")
+            fixes.append("REVIEW_MEDIA")
+        if not published:
+            issues.append("INVALID_OR_EMPTY_DATE")
+            fixes.append("REVIEW_DATE")
+        elif published.year != TAHUN_TARGET:
+            issues.append("OUTSIDE_TARGET_YEAR")
+            fixes.append("REVIEW_RETENTION")
+
+        allowed_categories = {"Negatif Kuat", "Perlu Penanganan", "Netral", "Positif"}
+        if category not in allowed_categories:
+            issues.append("INVALID_CATEGORY")
+            fixes.append("RECLASSIFY_CATEGORY")
+
+        if risk_score is not None:
+            try:
+                if not isinstance(risk_score, (int, float)) or not 0 <= float(risk_score) <= 100:
+                    issues.append("INVALID_RISK_SCORE")
+                    fixes.append("RECALCULATE_RISK")
+            except Exception:
+                issues.append("INVALID_RISK_SCORE")
+                fixes.append("RECALCULATE_RISK")
+        if risk_level and risk_level not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            issues.append("INVALID_RISK_LEVEL")
+            fixes.append("RECALCULATE_RISK")
+
+        html_fields = []
+        for field in SANITIZE_FIELDS:
+            value = article.get(field)
+            if isinstance(value, str) and re.search(r"<\s*[a-z!/][^>]*>", value, flags=re.I):
+                html_fields.append(field)
+            elif isinstance(value, list) and any(
+                isinstance(item, str) and re.search(r"<\s*[a-z!/][^>]*>", item, flags=re.I)
+                for item in value
+            ):
+                html_fields.append(field)
+        if html_fields:
+            issues.append("HTML_PRESENT")
+            fixes.append("SANITIZE_HTML")
+
+        records.append({
+            "id": article.get("id"),
+            "title": title,
+            "link": article.get("link") or "",
+            "normalized_link": link,
+            "media": media,
+            "domain": domain(link or article.get("link")),
+            "published_date": article.get("published_date"),
+            "category": category,
+            "risk_score": risk_score,
+            "risk_level": risk_level,
+            "content_length": len(content),
+            "issues": issues,
+            "fixes": list(dict.fromkeys(fixes)),
+            "action": "KEEP",
+            "delete_reason": delete_reason,
+        })
+
+    by_link = defaultdict(list)
+    by_title_media = defaultdict(list)
+    by_title_content_media = defaultdict(list)
+    by_content_media = defaultdict(list)
+
+    for rec, article in zip(records, articles):
+        if rec["normalized_link"]:
+            by_link[rec["normalized_link"]].append(rec)
+        title_key = build_title_key(article)
+        if title_key:
+            by_title_media[title_key].append(rec)
+        title = normalize_title(article.get("title") or "")
+        content = normalize_content_for_duplicate(get_article_content(article))
+        media = get_media_source(article).lower().strip()
+        if title and content and media:
+            by_title_content_media[(title, content, media)].append(rec)
+        if content and len(content) >= 100 and media:
+            by_content_media[media].append((rec, content))
+
+    duplicate_url_groups = [v for v in by_link.values() if len(v) > 1]
+    duplicate_title_media_groups = [v for v in by_title_media.values() if len(v) > 1]
+    exact_title_content_media_groups = [v for v in by_title_content_media.values() if len(v) > 1]
+
+    # Strong delete-review candidates: duplicate normalized URL.
+    for group in duplicate_url_groups:
+        ranked = sorted(group, key=lambda r: (
+            r["content_length"], bool(r["title"]), bool(r["published_date"]), -int(r["id"] or 10**18) if str(r["id"] or "").isdigit() else -10**18
+        ), reverse=True)
+        keeper = ranked[0]
+        for rec in ranked[1:]:
+            rec["action"] = "DELETE_REVIEW"
+            rec["delete_reason"] = "DUPLICATE_NORMALIZED_URL"
+        keeper["action"] = "KEEP"
+
+    # Production rule: same title + same media is duplicate.
+    for group in duplicate_title_media_groups:
+        if any(r["action"] == "DELETE_REVIEW" for r in group):
+            # URL duplicate already has priority; still mark remaining non-keeper records.
+            pass
+        ranked = sorted(group, key=lambda r: (
+            r["content_length"], bool(r["title"]), bool(r["published_date"]), -int(r["id"] or 10**18) if str(r["id"] or "").isdigit() else -10**18
+        ), reverse=True)
+        keeper = ranked[0]
+        for rec in ranked[1:]:
+            if rec["action"] != "DELETE_REVIEW":
+                rec["action"] = "DELETE_REVIEW"
+                rec["delete_reason"] = "DUPLICATE_TITLE_SAME_MEDIA"
+        if keeper["action"] != "DELETE_REVIEW":
+            keeper["action"] = "KEEP"
+
+    # Exact title+content+media is a stronger duplicate signal.
+    for group in exact_title_content_media_groups:
+        ranked = sorted(group, key=lambda r: r["content_length"], reverse=True)
+        for rec in ranked[1:]:
+            rec["action"] = "DELETE_REVIEW"
+            rec["delete_reason"] = "EXACT_TITLE_CONTENT_SAME_MEDIA"
+
+    # Same content + same media using the production threshold.
+    content_duplicate_groups = []
+    for media, items in by_content_media.items():
+        for i, (rec_a, content_a) in enumerate(items):
+            group = [rec_a]
+            for rec_b, content_b in items[i + 1:]:
+                similarity = calculate_content_similarity(content_a, content_b)
+                if similarity >= CONTENT_DUPLICATE_THRESHOLD:
+                    group.append(rec_b)
+            if len(group) > 1:
+                ids = tuple(sorted(str(r.get("id")) for r in group))
+                if not any(ids == old for old in content_duplicate_groups):
+                    content_duplicate_groups.append(ids)
+                for rec in group[1:]:
+                    if rec["action"] != "DELETE_REVIEW":
+                        rec["action"] = "DELETE_REVIEW"
+                        rec["delete_reason"] = "DUPLICATE_CONTENT_SAME_MEDIA"
+
+    # Non-destructive fixes are separate from deletion decisions.
+    for rec in records:
+        if rec["action"] == "KEEP" and rec["fixes"]:
+            rec["action"] = "FIX_REVIEW"
+
+    summary = {
+        "total_articles": total,
+        "keep": sum(r["action"] == "KEEP" for r in records),
+        "fix_review": sum(r["action"] == "FIX_REVIEW" for r in records),
+        "delete_review": sum(r["action"] == "DELETE_REVIEW" for r in records),
+        "empty_link": sum("EMPTY_LINK" in r["issues"] for r in records),
+        "google_news_url": sum("GOOGLE_NEWS_URL" in r["issues"] for r in records),
+        "empty_title": sum("EMPTY_TITLE" in r["issues"] for r in records),
+        "empty_content": sum("EMPTY_CONTENT" in r["issues"] for r in records),
+        "short_content": sum("SHORT_CONTENT" in r["issues"] for r in records),
+        "unknown_media": sum("UNKNOWN_MEDIA" in r["issues"] for r in records),
+        "invalid_date": sum("INVALID_OR_EMPTY_DATE" in r["issues"] for r in records),
+        "outside_target_year": sum("OUTSIDE_TARGET_YEAR" in r["issues"] for r in records),
+        "invalid_category": sum("INVALID_CATEGORY" in r["issues"] for r in records),
+        "invalid_risk": sum("INVALID_RISK_SCORE" in r["issues"] or "INVALID_RISK_LEVEL" in r["issues"] for r in records),
+        "html_present": sum("HTML_PRESENT" in r["issues"] for r in records),
+        "duplicate_url_groups": len(duplicate_url_groups),
+        "duplicate_title_media_groups": len(duplicate_title_media_groups),
+        "exact_title_content_media_groups": len(exact_title_content_media_groups),
+        "duplicate_content_media_groups": len(content_duplicate_groups),
+    }
+
+    issue_counter = Counter()
+    for rec in records:
+        issue_counter.update(rec["issues"])
+
+    report = {
+        "success": True,
+        "read_only": True,
+        "summary": summary,
+        "issue_counts": dict(issue_counter),
+        "records": records,
+    }
+
+    with open("database_audit.json", "w", encoding="utf-8") as fh:
+        json.dump(report, fh, ensure_ascii=False, indent=2, default=str)
+
+    with open("database_audit.csv", "w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=[
+            "id", "title", "link", "normalized_link", "media", "domain",
+            "published_date", "category", "risk_score", "risk_level",
+            "content_length", "action", "delete_reason", "issues", "fixes"
+        ])
+        writer.writeheader()
+        for rec in records:
+            row = dict(rec)
+            row["issues"] = " | ".join(rec["issues"])
+            row["fixes"] = " | ".join(rec["fixes"])
+            writer.writerow(row)
+
+    print()
+    print("=" * 70)
+    print("DATABASE AUDIT SUMMARY")
+    print("=" * 70)
+    print(f"KEEP                  : {summary['keep']}")
+    print(f"FIX_REVIEW            : {summary['fix_review']}")
+    print(f"DELETE_REVIEW         : {summary['delete_review']}")
+    print(f"Duplicate URL groups  : {summary['duplicate_url_groups']}")
+    print(f"Title + media groups  : {summary['duplicate_title_media_groups']}")
+    print(f"Exact title+content   : {summary['exact_title_content_media_groups']}")
+    print(f"Content + media       : {summary['duplicate_content_media_groups']}")
+    print(f"Google News URL       : {summary['google_news_url']}")
+    print(f"HTML present          : {summary['html_present']}")
+    print(f"Invalid/empty date    : {summary['invalid_date']}")
+    print(f"Outside target year   : {summary['outside_target_year']}")
+    print()
+    print("[REPORT] database_audit.json")
+    print("[REPORT] database_audit.csv")
+    print("READ-ONLY: DATABASE TIDAK DIUBAH")
+    print("=" * 70)
+
+    return report
+
+# ============================================================
 # MAIN
 # ============================================================
 
@@ -9139,6 +9421,14 @@ def main() -> None:
         action="store_true",
         help=(
             "jalankan patroli normal lalu validasi invariant production"
+        ),
+    )
+
+    parser.add_argument(
+        "--database-audit",
+        action="store_true",
+        help=(
+            "audit read-only seluruh database lama; tidak mengubah data"
         ),
     )
 
@@ -9235,6 +9525,16 @@ def main() -> None:
     if args.production_audit:
 
         production_audit()
+
+        return
+
+    # --------------------------------------------------------
+    # READ-ONLY DATABASE AUDIT
+    # --------------------------------------------------------
+
+    if args.database_audit:
+
+        database_audit()
 
         return
 
