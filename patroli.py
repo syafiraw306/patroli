@@ -4552,8 +4552,22 @@ def run_once() -> Dict[str, Any]:
         Dict[str, Any],
     ] = {}
 
+    print(
+        f"[DEBUG SAVE] Memasuki SAVE LOOP | "
+        f"total={len(valid_articles)}"
+    )
+    
     for article in valid_articles:
 
+        print(
+            f"[DEBUG SAVE] Memproses artikel: "
+            f"{article.get('title', '')[:120]}"
+        )
+    
+        # ====================================================
+        # VALIDATE LINK
+        # ====================================================
+        
         link = normalize_url(
             article.get("link")
         )
@@ -4591,10 +4605,15 @@ def run_once() -> Dict[str, Any]:
     valid_articles = list(
         unique_articles.values()
     )
-
+    
     print(
         f"[PATROLI] "
         f"Artikel valid setelah dedupe: "
+        f"{len(valid_articles)}"
+    )
+    
+    print(
+        f"[DEBUG SAVE] valid_articles sebelum SAVE = "
         f"{len(valid_articles)}"
     )
 
