@@ -40,6 +40,12 @@ from database import (
     delete_article_by_id,
 )
 
+# ============================================================
+# RISK ENGINE
+# ============================================================
+# Risk dihitung di level aplikasi dan tidak mengubah database.py.
+from risk_engine import calculate_risk_score
+
 
 # ============================================================
 # ENVIRONMENT
@@ -4308,8 +4314,35 @@ def run_once() -> Dict[str, Any]:
             # ====================================================
     
             saved_count += 1
-    
-    
+
+            # ====================================================
+            # RISK SCORE
+            # ====================================================
+            # Risk hanya ditambahkan ke object artikel di memory.
+            # Tidak mengubah database.py dan tidak membutuhkan
+            # perubahan schema database.
+            try:
+                risk_result = calculate_risk_score(article)
+                article["risk_score"] = risk_result.get("risk_score", 0)
+                article["risk_level"] = risk_result.get("risk_level", "LOW")
+                article["risk_factors"] = risk_result.get("factors", {})
+                article["risk_reasons"] = risk_result.get("reasons", [])
+            
+                print(
+                    "[RISK] "
+                    f"Score={article['risk_score']}/100 | "
+                    f"Level={article['risk_level']}"
+                )
+            except Exception as exc:
+                article["risk_score"] = 0
+                article["risk_level"] = "LOW"
+                article["risk_factors"] = {}
+                article["risk_reasons"] = []
+                print(
+                    "[RISK ERROR] "
+                    f"{type(exc).__name__}: {exc}"
+                )
+
             # ====================================================
             # UPDATE DUPLICATE INDEX
             #
@@ -4441,6 +4474,29 @@ def run_once() -> Dict[str, Any]:
         f"[TELEGRAM] Tidak dikirim/skipped: "
         f"{telegram_skipped}"
     )
+
+    # ========================================================
+    # RISK SUMMARY
+    # ========================================================
+    risk_levels = Counter(
+        normalize_text(
+            article.get("risk_level")
+        ) or "LOW"
+        for article in new_articles
+        if article.get("risk_score") is not None
+    )
+
+    if new_articles:
+        print(
+            f"[RISK] Artikel baru dianalisis: "
+            f"{len(new_articles)}"
+        )
+        print(
+            f"[RISK] CRITICAL={risk_levels.get('CRITICAL', 0)} | "
+            f"HIGH={risk_levels.get('HIGH', 0)} | "
+            f"MEDIUM={risk_levels.get('MEDIUM', 0)} | "
+            f"LOW={risk_levels.get('LOW', 0)}"
+        )
 
     # ========================================================
     # FINAL DATABASE
