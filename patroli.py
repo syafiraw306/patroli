@@ -1120,44 +1120,122 @@ def is_url_old(
 # FETCH WEB
 # ============================================================
 
+def _is_google_news_url(url: Any) -> bool:
+    """True jika URL berasal dari domain Google News."""
+    if not url:
+        return False
+    try:
+        host = urllib.parse.urlparse(str(url).strip()).netloc.lower().split(":", 1)[0]
+        return host == "news.google.com"
+    except Exception:
+        return False
+
+
+def _clean_candidate_url(url: Any, base_url: str = "") -> str:
+    """Validasi dan normalisasi URL HTTP(S), termasuk URL relatif."""
+    if not url:
+        return ""
+    value = html.unescape(str(url)).strip().strip('"\'')
+    if not value:
+        return ""
+    if base_url:
+        value = urllib.parse.urljoin(base_url, value)
+    try:
+        parsed = urllib.parse.urlparse(value)
+    except Exception:
+        return ""
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return normalize_url(value)
+
+
+def extract_canonical_article_url(raw_html: str, response_url: str = "") -> str:
+    """
+    Mengambil canonical URL artikel dari HTML.
+
+    Prioritas:
+    1. <link rel="canonical" href="...">
+    2. <meta property="og:url" content="...">
+    3. Tidak ada hasil -> string kosong.
+
+    URL Google News tidak dianggap sebagai canonical media.
+    """
+    if not raw_html:
+        return ""
+
+    try:
+        soup = BeautifulSoup(raw_html, "html.parser")
+    except Exception:
+        return ""
+
+    candidates = []
+
+    for tag in soup.find_all("link"):
+        rel = tag.get("rel") or []
+        if isinstance(rel, str):
+            rel = [rel]
+        rel_values = {str(item).lower().strip() for item in rel}
+        if "canonical" in rel_values:
+            candidates.append(tag.get("href"))
+
+    for tag in soup.find_all("meta"):
+        prop = str(tag.get("property") or tag.get("name") or "").lower().strip()
+        if prop == "og:url":
+            candidates.append(tag.get("content"))
+
+    for candidate in candidates:
+        cleaned = _clean_candidate_url(candidate, response_url)
+        if cleaned and not _is_google_news_url(cleaned):
+            return cleaned
+
+    return ""
+
+
+def resolve_article_url(
+    rss_url: str,
+    response_url: str = "",
+    raw_html: str = "",
+) -> str:
+    """
+    Menentukan URL artikel yang akan disimpan.
+
+    Urutan prioritas:
+    1. canonical/og:url dari halaman artikel
+    2. URL akhir redirect HTTP jika bukan Google News
+    3. URL RSS sebagai fallback
+
+    Tidak mengubah database.py. Tujuannya agar kolom link menyimpan
+    URL media asli bila informasi tersebut tersedia.
+    """
+    canonical = extract_canonical_article_url(raw_html, response_url)
+    if canonical:
+        return canonical
+
+    resolved = _clean_candidate_url(response_url)
+    if resolved and not _is_google_news_url(resolved):
+        return resolved
+
+    return normalize_url(rss_url) or _clean_candidate_url(rss_url)
+
+
 def fetch_webpage_content(
     url: str,
 ) -> Tuple[str, str]:
-
+    """Fetch halaman dengan redirect dan mengembalikan URL akhir + HTML."""
     if not url:
         return "", ""
 
-    try:
+    response = SESSION.get(
+        url,
+        timeout=REQUEST_TIMEOUT,
+        allow_redirects=True,
+    )
+    response.raise_for_status()
 
-        response = SESSION.get(
-            url,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
-
-        response.raise_for_status()
-
-        final_url = normalize_url(
-            response.url
-        )
-
-        return (
-            final_url,
-            response.text,
-        )
-
-    except Exception as exc:
-
-        print(
-            f"[FETCH ERROR] "
-            f"{url} -> "
-            f"{type(exc).__name__}: {exc}"
-        )
-
-        return (
-            url,
-            "",
-        )
+    return (
+        normalize_url(response.url),
+        response.text,
+    )
 
 
 # ============================================================
@@ -3050,7 +3128,12 @@ def collect_candidates() -> List[Dict[str, Any]]:
     skipped_empty_link = 0
     replaced_with_better = 0
 
-    for query in SEARCH_TARGETS:
+    for query_index, query in enumerate(SEARCH_TARGETS):
+
+        # Jeda sebelum query berikutnya untuk mengurangi risiko 429/503.
+        # Diterapkan walaupun query sebelumnya gagal atau mengembalikan 0 hasil.
+        if query_index > 0 and RSS_QUERY_DELAY > 0:
+            time.sleep(RSS_QUERY_DELAY)
 
         print(
             f"[RSS] Mencari: {query}"
@@ -3211,12 +3294,6 @@ def collect_candidates() -> List[Dict[str, Any]]:
 
                 replaced_with_better += 1
 
-    # --------------------------------------------------------
-        # Jeda antar query RSS untuk mengurangi risiko 429/503.
-        # Delay diterapkan setelah setiap query kecuali query terakhir.
-        if RSS_QUERY_DELAY > 0 and query != SEARCH_TARGETS[-1]:
-            time.sleep(RSS_QUERY_DELAY)
-
     # HAPUS FIELD INTERNAL
     # --------------------------------------------------------
 
@@ -3364,31 +3441,32 @@ candidate: Dict[str, Any],
     raw_html = ""
     
     try:
-    
-        final_url, raw_html = (
-            fetch_webpage_content(
-                rss_link
-            )
+        fetched_url, raw_html = fetch_webpage_content(rss_link)
+        final_url = resolve_article_url(
+            rss_link=rss_link,
+            response_url=fetched_url,
+            raw_html=raw_html,
         )
+        print(
+            f"[URL] RSS={rss_link} -> RESOLVED={final_url}"
+        )
+        if _is_google_news_url(final_url):
+            print(
+                "[URL WARNING] URL masih Google News; "
+                "canonical media URL tidak ditemukan."
+            )
     
     except Exception as exc:
-    
         print(
             "[FETCH WARNING] "
             f"{rss_link} -> "
             f"{type(exc).__name__}: "
             f"{exc}"
         )
-    
-        final_url = rss_link
+        final_url = normalize_url(rss_link)
         raw_html = ""
     
-    final_url = normalize_url(
-        final_url or rss_link
-    )
-    
     if not final_url:
-    
         final_url = rss_link
     
     # ========================================================
