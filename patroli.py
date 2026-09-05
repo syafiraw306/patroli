@@ -30,6 +30,8 @@ from dateutil import parser as date_parser
 from dotenv import load_dotenv
 
 from database import (
+    normalize_url,
+    get_all_articles,
     get_supabase,
     get_article_by_link,
     upsert_article,
@@ -38,146 +40,6 @@ from database import (
     delete_article_by_id,
 )
 
-
-# ============================================================
-# URL NORMALIZATION
-# ============================================================
-# Lokal agar patroli.py tidak bergantung pada export
-# normalize_url dari database.py. database.py TIDAK diubah.
-def normalize_url(url: str) -> str:
-    """
-    Normalisasi URL untuk deduplikasi.
-
-    Google News: parameter regional (hl, gl, ceid, oc) diabaikan.
-    Domain lain: parameter tracking umum diabaikan.
-    """
-    if not url:
-        return ""
-
-    url = str(url).strip()
-
-    try:
-        parsed = urllib.parse.urlparse(url)
-        domain = parsed.netloc.lower().replace("www.", "")
-
-        if domain == "news.google.com":
-            query_params = urllib.parse.parse_qsl(
-                parsed.query,
-                keep_blank_values=True,
-            )
-            important_params = [
-                (key, value)
-                for key, value in query_params
-                if key.lower() not in {"hl", "gl", "ceid", "oc"}
-            ]
-            normalized_query = urllib.parse.urlencode(
-                sorted(important_params)
-            )
-        else:
-            query_params = urllib.parse.parse_qsl(
-                parsed.query,
-                keep_blank_values=True,
-            )
-            tracking_params = {
-                "utm_source",
-                "utm_medium",
-                "utm_campaign",
-                "utm_term",
-                "utm_content",
-                "fbclid",
-                "gclid",
-            }
-            clean_params = [
-                (key, value)
-                for key, value in query_params
-                if key.lower() not in tracking_params
-            ]
-            normalized_query = urllib.parse.urlencode(
-                sorted(clean_params)
-            )
-
-        return urllib.parse.urlunparse(
-            (
-                parsed.scheme.lower(),
-                domain,
-                parsed.path.rstrip("/"),
-                "",
-                normalized_query,
-                "",
-            )
-        )
-
-    except Exception:
-        return url.lower().strip()
-
-# ============================================================
-# GET ALL ARTICLES
-# ============================================================
-# Lokal agar patroli.py tidak bergantung pada export
-# get_all_articles dari database.py.
-# database.py TIDAK diubah.
-def get_all_articles(
-    page_size: int = 1000,
-) -> List[Dict[str, Any]]:
-    """
-    Mengambil seluruh artikel dari Supabase secara pagination.
-    """
-
-    if not isinstance(page_size, int):
-        raise TypeError(
-            f"page_size harus integer, "
-            f"tetapi menerima {type(page_size).__name__}"
-        )
-
-    if page_size <= 0:
-        raise ValueError(
-            "page_size harus lebih besar dari 0"
-        )
-
-    client = get_supabase()
-
-    results: List[Dict[str, Any]] = []
-
-    start = 0
-
-    while True:
-        end = start + page_size - 1
-
-        try:
-            response = (
-                client
-                .table("articles")
-                .select("*")
-                .range(start, end)
-                .execute()
-            )
-
-            rows = response.data or []
-
-        except Exception as exc:
-            print(
-                "[DB GET ALL ERROR] "
-                f"range={start}-{end} -> "
-                f"{type(exc).__name__}: {exc}"
-            )
-            break
-
-        if not rows:
-            break
-
-        results.extend(rows)
-
-        if len(rows) < page_size:
-            break
-
-        start += page_size
-
-    print(
-        f"[DB] Total artikel berhasil diambil: "
-        f"{len(results)}"
-    )
-
-    return results
 
 # ============================================================
 # ENVIRONMENT
