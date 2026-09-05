@@ -1,0 +1,32 @@
+name: Risk Engine Calibration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  calibration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run calibration test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python test_risk_calibration.py
+
+      - name: Upload calibration report
+        uses: actions/upload-artifact@v4
+        with:
+          name: risk-calibration-report
+          path: risk_calibration_report.csv
