@@ -23,6 +23,7 @@ from audit_event_duplicates import (
     normalize_text,
     jaccard_similarity
 )
+from datetime import datetime, timezone, timedelta
 
 
 import feedparser
