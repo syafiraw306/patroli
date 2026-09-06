@@ -12351,6 +12351,7 @@ INTEL_ALERT_HIGH_THRESHOLD = 65
 INTEL_ALERT_WATCH_THRESHOLD = 50
 INTEL_ALERT_MAX_ITEMS = 5
 INTEL_ALERT_MAX_AGE_DAYS = 7
+INTEL_ALERT_DIAGNOSTIC_MAX_EVENTS = 20
 
 
 def _intel_alert_latest_datetime(value: Any) -> Optional[datetime]:
@@ -12533,6 +12534,184 @@ def _write_intelligence_alert_artifacts(snapshot: Dict[str, Any]) -> Dict[str, s
             writer.writerow({field: row.get(field) for field in fields})
     return {"json": json_path, "html": html_path, "csv": csv_path}
 
+
+
+def _intel_alert_diagnostic_reasons(event: Dict[str, Any], now: datetime, seen_keys: set) -> List[str]:
+    """Jelaskan kenapa event belum menjadi kandidat Intelligence Alert."""
+    reasons: List[str] = []
+    key = str(event.get("event_key") or "").strip()
+    level = str(event.get("early_warning_level") or "LOW")
+    if not key:
+        reasons.append("event_key kosong")
+    if level not in {"HIGH", "WATCH"}:
+        reasons.append(f"EWS level {level} di bawah HIGH/WATCH")
+    latest = _intel_alert_latest_datetime(event.get("latest_seen"))
+    if latest is None:
+        reasons.append("latest_seen tidak valid")
+    elif not _intel_alert_is_fresh(event, now):
+        age_days = (now - latest).total_seconds() / 86400.0
+        if age_days < 0:
+            reasons.append("latest_seen berada di masa depan")
+        else:
+            reasons.append(f"event stale {age_days:.1f} hari > {INTEL_ALERT_MAX_AGE_DAYS} hari")
+    if key and key in seen_keys:
+        reasons.append("event_key duplikat dalam snapshot")
+    return list(dict.fromkeys(reasons)) or ["memenuhi seluruh syarat alert"]
+
+
+def intelligence_alerts_diagnostic_real_read_only() -> Dict[str, Any]:
+    """Diagnostic seluruh EWS event untuk menjelaskan eligibility Feature #6.
+
+    READ-ONLY: tidak menulis database dan tidak mengirim Telegram.
+    Diagnostic melihat seluruh event card, bukan hanya top EWS warnings,
+    sehingga event yang gugur karena level maupun freshness tetap terlihat.
+    """
+    print("=" * 70)
+    print("FEATURE #6 — INTELLIGENCE ALERT DIAGNOSTIC / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+
+    production = [
+        a for a in (articles or [])
+        if isinstance(a, dict)
+        and normalize_text(a.get("title"))
+        and not _is_event_detection_test_article(a)
+    ][:DASHBOARD_MAX_ARTICLES]
+    before_ids = sorted(str(a.get("id")) for a in articles if a.get("id") is not None)
+    now = datetime.now(timezone.utc)
+    events = _ews_build_event_cards(production)
+    rows: List[Dict[str, Any]] = []
+    seen_keys = set()
+    for event in events:
+        key = str(event.get("event_key") or "").strip()
+        fresh = _intel_alert_is_fresh(event, now)
+        level_ok = str(event.get("early_warning_level") or "LOW") in {"HIGH", "WATCH"}
+        unique_ok = bool(key) and key not in seen_keys
+        eligible = level_ok and fresh and unique_ok
+        reasons = _intel_alert_diagnostic_reasons(event, now, seen_keys)
+        row = {
+            "event_key": key,
+            "event_name": event.get("event_name"),
+            "early_warning_score": event.get("early_warning_score"),
+            "early_warning_level": event.get("early_warning_level"),
+            "risk_score": event.get("risk_score"),
+            "risk_level": event.get("risk_level"),
+            "trend_status": event.get("trend_status"),
+            "trend_confidence": event.get("trend_confidence"),
+            "recent_count": event.get("recent_count"),
+            "previous_count": event.get("previous_count"),
+            "media_count": event.get("media_count"),
+            "related_count": event.get("related_count"),
+            "latest_seen": event.get("latest_seen"),
+            "fresh_within_7d": fresh,
+            "alert_eligible": eligible,
+            "rejection_reasons": reasons,
+        }
+        rows.append(row)
+        if key:
+            seen_keys.add(key)
+
+    eligible_count = sum(1 for x in rows if x["alert_eligible"])
+    high_watch = sum(1 for x in rows if x["early_warning_level"] in {"HIGH", "WATCH"})
+    fresh_high_watch = sum(1 for x in rows if x["early_warning_level"] in {"HIGH", "WATCH"} and x["fresh_within_7d"])
+    stale_high_watch = high_watch - fresh_high_watch
+    below_threshold = sum(1 for x in rows if x["early_warning_level"] not in {"HIGH", "WATCH"})
+
+    diagnostic = {
+        "diagnostic_version": "FEATURE6-DIAGNOSTIC-V1",
+        "generated_at": now.isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "freshness_limit_days": INTEL_ALERT_MAX_AGE_DAYS,
+        "top_events_shown": min(INTEL_ALERT_DIAGNOSTIC_MAX_EVENTS, len(rows)),
+        "summary": {
+            "production_articles": len(production),
+            "unique_events": len(events),
+            "high_watch_events": high_watch,
+            "fresh_high_watch_events": fresh_high_watch,
+            "stale_high_watch_events": stale_high_watch,
+            "below_alert_threshold_events": below_threshold,
+            "eligible_events": eligible_count,
+        },
+        "events": rows[:INTEL_ALERT_DIAGNOSTIC_MAX_EVENTS],
+    }
+
+    with open("intelligence_alerts_diagnostic.json", "w", encoding="utf-8") as fh:
+        json.dump(diagnostic, fh, ensure_ascii=False, indent=2, default=str)
+
+    html_rows = []
+    for idx, row in enumerate(diagnostic["events"], 1):
+        html_rows.append(
+            "<tr>"
+            f"<td>{idx}</td>"
+            f"<td>{html.escape(str(row.get('event_name')))}</td>"
+            f"<td>{html.escape(str(row.get('early_warning_score')))}</td>"
+            f"<td>{html.escape(str(row.get('early_warning_level')))}</td>"
+            f"<td>{html.escape(str(row.get('risk_score')))} ({html.escape(str(row.get('risk_level')))})</td>"
+            f"<td>{html.escape(str(row.get('trend_status')))}</td>"
+            f"<td>{html.escape(str(row.get('recent_count')))} / {html.escape(str(row.get('previous_count')))}</td>"
+            f"<td>{html.escape(str(row.get('media_count')))}</td>"
+            f"<td>{html.escape(str(row.get('latest_seen')))}</td>"
+            f"<td>{'YES' if row.get('fresh_within_7d') else 'NO'}</td>"
+            f"<td>{'YES' if row.get('alert_eligible') else 'NO'}</td>"
+            f"<td>{html.escape('; '.join(row.get('rejection_reasons') or []))}</td>"
+            "</tr>"
+        )
+    html_body = "".join(html_rows) or '<tr><td colspan="12">Tidak ada event.</td></tr>'
+    summary = diagnostic["summary"]
+    html_doc = f"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><title>Intelligence Alert Diagnostic</title>
+<style>body{{font-family:Arial,sans-serif;margin:28px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:24px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head>
+<body><h1>Patroli Siber — Intelligence Alert Diagnostic</h1>
+<p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {html.escape(str(diagnostic['generated_at']))}</p>
+<div class="grid"><div class="card">Production<div class="value">{summary['production_articles']}</div></div><div class="card">Unique Events<div class="value">{summary['unique_events']}</div></div><div class="card">HIGH/WATCH<div class="value">{summary['high_watch_events']}</div></div><div class="card">Eligible<div class="value">{summary['eligible_events']}</div></div></div>
+<p><small>Freshness maksimum {INTEL_ALERT_MAX_AGE_DAYS} hari. Diagnostic menampilkan alasan event tidak eligible tanpa mengubah database atau mengirim Telegram.</small></p>
+<table><thead><tr><th>#</th><th>Event</th><th>EWS</th><th>Level</th><th>Risk</th><th>Trend</th><th>Recent/Previous</th><th>Media</th><th>Last Seen</th><th>Fresh ≤7d?</th><th>Alert Eligible?</th><th>Reason rejected</th></tr></thead><tbody>{html_body}</tbody></table></body></html>"""
+    with open("intelligence_alerts_diagnostic.html", "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+
+    fields = list(diagnostic["events"][0].keys()) if diagnostic["events"] else [
+        "event_key","event_name","early_warning_score","early_warning_level","risk_score","risk_level","trend_status","trend_confidence","recent_count","previous_count","media_count","related_count","latest_seen","fresh_within_7d","alert_eligible","rejection_reasons"
+    ]
+    with open("intelligence_alerts_diagnostic.csv", "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for row in diagnostic["events"]:
+            out = dict(row)
+            out["rejection_reasons"] = "; ".join(row.get("rejection_reasons") or [])
+            writer.writerow(out)
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+
+    print(f"[DIAG] Production articles : {len(production)}")
+    print(f"[DIAG] Unique events        : {len(events)}")
+    print(f"[DIAG] HIGH / WATCH         : {high_watch}")
+    print(f"[DIAG] Fresh HIGH / WATCH    : {fresh_high_watch}")
+    print(f"[DIAG] Stale HIGH / WATCH    : {stale_high_watch}")
+    print(f"[DIAG] Below threshold       : {below_threshold}")
+    print(f"[DIAG] Eligible              : {eligible_count}")
+    print("-" * 70)
+    print("TOP EWS EVENTS")
+    print("-" * 70)
+    for idx, row in enumerate(diagnostic["events"], 1):
+        print(
+            f"#{idx} {row.get('event_name')} | EWS={row.get('early_warning_score')} ({row.get('early_warning_level')}) | "
+            f"Risk={row.get('risk_score')} ({row.get('risk_level')}) | Trend={row.get('trend_status')} | "
+            f"Recent={row.get('recent_count')} Previous={row.get('previous_count')} | Media={row.get('media_count')} | "
+            f"LastSeen={row.get('latest_seen')} | Fresh<=7d={'YES' if row.get('fresh_within_7d') else 'NO'} | "
+            f"Eligible={'YES' if row.get('alert_eligible') else 'NO'} | Reason={'; '.join(row.get('rejection_reasons') or [])}"
+        )
+    print("[DIAG] Artifact JSON : intelligence_alerts_diagnostic.json")
+    print("[DIAG] Artifact HTML : intelligence_alerts_diagnostic.html")
+    print("[DIAG] Artifact CSV  : intelligence_alerts_diagnostic.csv")
+    print("[DIAG PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status": "PASSED", "diagnostic": diagnostic}
 
 def intelligence_alerts() -> Dict[str, Any]:
     """Generate kandidat alert production secara READ-ONLY."""
@@ -12848,6 +13027,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--intelligence-alerts-diagnostic-real",
+        action="store_true",
+        help="diagnostic seluruh EWS event untuk menjelaskan eligibility Intelligence Alert secara read-only",
+    )
+
+    parser.add_argument(
         "--test-intelligence-alerts-real",
         action="store_true",
         help="uji Intelligence Alert & Prioritization pada production nyata secara read-only",
@@ -12966,6 +13151,12 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.intelligence_alerts_diagnostic_real:
+        result = intelligence_alerts_diagnostic_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Diagnostic Intelligence Alerts gagal: {result.get('reason')}")
         return
 
     if args.test_intelligence_alerts_real:
