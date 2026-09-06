@@ -4238,8 +4238,15 @@ RISK_EVENT_ANCHOR_TOKENS = {
     "diganti", "penggantinya", "pelantikan", "dilantik", "lantik", "plh",
     # Kegiatan/kebijakan yang cukup spesifik
     "sertifikasi", "wakaf", "tanah", "bunga", "pelakor", "bos", "dana",
-    "desa", "lubuk", "pakam", "batu", "lokong", "revanda", "sitepu",
-    "padang", "lawas", "sapta", "putra", "jamintel", "integritas",
+    "desa", "lokong", "jamintel", "integritas",
+    # Aktivitas/peristiwa yang lebih spesifik daripada nama orang/lokasi.
+    "harlah", "ziarah", "makam", "pahlawan", "upacara", "donor",
+    "peringatan", "peresmian", "penghargaan", "sosialisasi", "kunjungan",
+    "rapat", "koordinasi", "kerjasama", "deklarasi", "launching",
+    "peluncuran", "sertifikat", "pelantikan", "dilantik", "lantik",
+    # Incident/problem anchors.
+    "kabur", "melarikan", "pelarian", "ganja", "narkotika", "narkoba",
+    "terpidana", "tuntutan", "mati", "pencopotan", "dicopot", "dipanggil",
 }
 
 # V3: proteksi context untuk kategori non-prioritas.
@@ -5543,50 +5550,74 @@ def _risk_same_title_media(article_a: Dict[str, Any], article_b: Dict[str, Any])
     return bool(media_a and media_b and media_a == media_b)
 
 
+RISK_LAW_IDENTITY_ANCHORS = {
+    "korupsi", "narkotika", "narkoba", "tersangka", "terdakwa", "pidana",
+    "penyidikan", "penyelidikan", "penuntutan", "perkara", "pengadilan",
+    "sidang", "vonis", "dakwaan", "suap", "gratifikasi", "penggeledahan",
+    "penyitaan", "penangkapan", "ditangkap", "diamankan", "pelanggaran",
+    "kode", "etik", "dicopot", "pencopotan", "dipanggil", "kabur",
+    "melarikan", "pelarian", "ganja", "terpidana", "tuntutan", "mati",
+}
+RISK_ACTIVITY_IDENTITY_ANCHORS = {
+    "harlah", "ziarah", "makam", "pahlawan", "upacara", "donor", "peringatan",
+    "sertifikasi", "wakaf", "tanah", "pelantikan", "dilantik", "lantik",
+    "integritas", "kebijakan", "sosialisasi", "kunjungan", "rapat",
+    "koordinasi", "kerjasama", "peresmian", "penghargaan", "deklarasi",
+    "launching", "peluncuran", "bunga", "pelakor",
+}
+
+def _risk_identity_anchor_sets(article: Dict[str, Any]) -> Tuple[set, set]:
+    tokens = _risk_event_tokens(article)
+    return (tokens & RISK_LAW_IDENTITY_ANCHORS, tokens & RISK_ACTIVITY_IDENTITY_ANCHORS)
+
+
 def _risk_is_related_event(article: Dict[str, Any], other: Dict[str, Any]) -> Tuple[bool, float]:
-    """Validasi dua tahap agar institusi/lokasi umum tidak membuat false cluster."""
+    """
+    Korelasi event yang konservatif. Shared location, institution, person, atau
+    satker tidak cukup. Event-family yang bertentangan (mis. incident hukum vs
+    kegiatan Harlah) juga ditolak kecuali judulnya benar-benar identik/nyaris identik.
+    """
     similarity = _risk_event_similarity(article, other)
     if similarity < RISK_EVENT_SIMILARITY_THRESHOLD:
         return False, similarity
+
+    title_a = normalize_text(article.get("title"))
+    title_b = normalize_text(other.get("title"))
+    if not title_a or not title_b:
+        return False, similarity
+
+    title_ratio = SequenceMatcher(None, title_a.lower(), title_b.lower()).ratio()
+
+    # Strong title match adalah bukti terbaik untuk cross-media republishing.
+    if title_ratio >= RISK_STRONG_TITLE_SIMILARITY:
+        return True, similarity
 
     anchors_a = _risk_event_anchors(article)
     anchors_b = _risk_event_anchors(other)
     anchor_overlap = anchors_a & anchors_b
 
-    # Safety guard: shared location/institution terms alone are never enough
-    # to correlate incidents. Strong title similarity can still establish a
-    # relation because it reflects the same concrete headline/event wording.
-    location_a = _risk_tokens(article.get("title")) & EVENT_LOCATION_TOKENS
-    location_b = _risk_tokens(other.get("title")) & EVENT_LOCATION_TOKENS
-    non_location_overlap = anchor_overlap - EVENT_LOCATION_TOKENS
-    if anchor_overlap and not non_location_overlap:
-        title_a0 = normalize_text(article.get("title"))
-        title_b0 = normalize_text(other.get("title"))
-        title_ratio0 = SequenceMatcher(None, title_a0.lower(), title_b0.lower()).ratio()
-        if title_ratio0 < RISK_STRONG_TITLE_SIMILARITY:
-            return False, similarity
+    law_a, activity_a = _risk_identity_anchor_sets(article)
+    law_b, activity_b = _risk_identity_anchor_sets(other)
 
-    # Judul yang sangat kuat boleh lolos tanpa anchor eksplisit.
-    title_a = normalize_text(article.get("title"))
-    title_b = normalize_text(other.get("title"))
-    title_ratio = SequenceMatcher(None, title_a.lower(), title_b.lower()).ratio()
-
-    if title_ratio >= RISK_STRONG_TITLE_SIMILARITY:
-        return True, similarity
-
-    # Untuk similarity normal, wajib ada anchor event yang sama.
-    if not anchor_overlap:
+    # Dua artikel dengan keluarga event yang berlawanan tidak boleh digabung
+    # hanya karena berbagi lokasi/institusi.
+    if (law_a and activity_b) or (activity_a and law_b):
         return False, similarity
 
-    # Minimal dua anchor yang sama untuk mencegah event berbeda yang hanya
-    # berbagi satu istilah umum seperti "dana", "desa", atau "korupsi".
-    # Satu anchor tetap boleh jika judul sudah cukup dekat.
-    if len(anchor_overlap) >= 2:
-        return True, similarity
-    if title_ratio >= 0.72:
-        return True, similarity
-    return False, similarity
+    # Shared identity anchor harus benar-benar menjelaskan kejadian.
+    identity_overlap = (law_a & law_b) | (activity_a & activity_b)
+    if not identity_overlap:
+        return False, similarity
 
+    # Untuk similarity normal, minimal dua anchor event bersama, atau satu
+    # identity anchor + judul cukup dekat. Ini mencegah korelasi berbasis nama
+    # orang, satker, atau lokasi saja.
+    if len(identity_overlap) >= 2 and len(anchor_overlap) >= 2:
+        return True, similarity
+    if len(identity_overlap) >= 1 and title_ratio >= 0.72:
+        return True, similarity
+
+    return False, similarity
 
 def _build_risk_block_index(all_articles: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     """Membuat inverted index setelah dedup internal untuk mencegah recurrence palsu."""
@@ -5600,7 +5631,7 @@ def _build_risk_block_index(all_articles: List[Dict[str, Any]]) -> Dict[str, Lis
 
 def _risk_candidate_articles(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Ambil kandidat berdasarkan anchor event; fallback terbatas untuk judul sangat kuat."""
-    cache_key = (id(all_articles), len(all_articles), "v3")
+    cache_key = (id(all_articles), len(all_articles), "v4-event-guard")
     index = _RISK_BLOCK_CACHE.get(cache_key)
     if index is None:
         index = _build_risk_block_index(all_articles)
@@ -13101,7 +13132,7 @@ def build_incident_timeline(
     timeline = timeline[:FEATURE7_MAX_EVENTS]
 
     return {
-        "incident_timeline_version": "FEATURE7-READONLY-V1",
+        "incident_timeline_version": "FEATURE7-READONLY-V2-CORRELATION-GUARD",
         "generated_at": now.isoformat(),
         "mode": "READ-ONLY",
         "database_write": False,
@@ -13250,6 +13281,34 @@ def test_incident_timeline_real_read_only() -> Dict[str, Any]:
         return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
 
     artifacts = _write_incident_timeline_artifacts(snapshot)
+
+    # Quality regression guard: dua artikel nyata yang hanya berbagi lokasi/satker
+    # tetapi membahas kejadian berbeda wajib berada pada event yang berbeda.
+    cannabis = next((a for a in before if "kasus ganja kabur" in normalize_text(a.get("title")).lower()), None)
+    harlah_ziarah = next((a for a in before if "harlah" in normalize_text(a.get("title")).lower() and "ziarah" in normalize_text(a.get("title")).lower() and "lubuk pakam" in normalize_text(a.get("title")).lower()), None)
+    if cannabis and harlah_ziarah:
+        rel, sim = _risk_is_related_event(cannabis, harlah_ziarah)
+        if rel:
+            return {"status": "FAILED", "reason": "FALSE_LOCATION_ONLY_CORRELATION", "similarity": sim}
+        event_a = detect_article_event(cannabis, before)
+        event_b = detect_article_event(harlah_ziarah, before)
+        if event_a.get("event_key") == event_b.get("event_key"):
+            return {"status": "FAILED", "reason": "FALSE_EVENT_KEY_COLLISION"}
+        print("[TEST PASS] CORRELATION QUALITY | lokasi/satker tidak menggabungkan incident berbeda")
+    else:
+        print("[TEST WARN] CORRELATION QUALITY FIXTURE TIDAK DITEMUKAN | structural checks tetap dijalankan")
+
+    # HTML regression guard: timeline cell harus valid dan tidak menghasilkan nested <td>.
+    html_path = artifacts.get("html") if isinstance(artifacts, dict) else None
+    if html_path:
+        try:
+            html_text = Path(html_path).read_text(encoding="utf-8")
+            if "<td><td>" in html_text or "<td><br>" in html_text:
+                return {"status": "FAILED", "reason": "MALFORMED_TIMELINE_HTML"}
+            print("[TEST PASS] HTML TIMELINE MARKUP")
+        except Exception as exc:
+            return {"status": "FAILED", "reason": f"HTML_READ_FAILED:{exc}"}
+
     print(f"[TEST] Production articles : {snapshot['summary']['production_articles']}")
     print(f"[TEST] Unique events        : {snapshot['summary']['unique_events']}")
     print(f"[TEST] Events shown         : {snapshot['summary']['events_shown']}")
