@@ -15410,8 +15410,13 @@ def _feature10_regression_entity_guard() -> Dict[str, Any]:
     if "revanda sitepu" not in {_feature10_norm(p) for p in persons}:
         return {"status":"FAILED", "reason":"VALID_PERSON_NOT_EXTRACTED", "persons":persons}
 
-    cross_a = {"event_key":"XA","event_name":"Revanda Sitepu Diperiksa Kasus Korupsi","event_type":"PENEGAKAN_HUKUM","entities":{"persons":["revanda sitepu"],"institutions":["kejagung"],"positions":["kajari"],"topics":["korupsi"]},"latest_seen":"2026-01-20T08:00:00+00:00"}
-    cross_b = {"event_key":"XB","event_name":"Revanda Sitepu Hadiri Pelantikan Kajari Baru","event_type":"KEGIATAN_KEBIJAKAN","entities":{"persons":["revanda sitepu"],"institutions":["kejati"],"positions":["kajari"],"topics":["pelantikan"]},"latest_seen":"2026-01-25T08:00:00+00:00"}
+    # IMPORTANT: V24 person provenance requires the shared person to be
+    # traceable in the underlying article title/content of BOTH incidents.
+    # The previous regression fixture supplied only precomputed entities, so
+    # the provenance guard correctly rejected it. The fixture is now aligned
+    # with the production contract without weakening the guard.
+    cross_a = {"event_key":"XA","event_name":"Revanda Sitepu Diperiksa Kasus Korupsi","event_type":"PENEGAKAN_HUKUM","entities":{"persons":["revanda sitepu"],"institutions":["kejagung"],"positions":["kajari"],"topics":["korupsi"]},"latest_seen":"2026-01-20T08:00:00+00:00","articles":[{"title":"Revanda Sitepu Diperiksa Kasus Korupsi","content":"Revanda Sitepu diperiksa oleh Kejagung dalam perkara korupsi.","source":"Media A","publisher":"Media A"}]}
+    cross_b = {"event_key":"XB","event_name":"Revanda Sitepu Hadiri Pelantikan Kajari Baru","event_type":"KEGIATAN_KEBIJAKAN","entities":{"persons":["revanda sitepu"],"institutions":["kejati"],"positions":["kajari"],"topics":["pelantikan"]},"latest_seen":"2026-01-25T08:00:00+00:00","articles":[{"title":"Revanda Sitepu Hadiri Pelantikan Kajari Baru","content":"Revanda Sitepu menghadiri pelantikan Kajari baru di Kejati.","source":"Media B","publisher":"Media B"}]}
     rel = _feature10_relationship(cross_a, cross_b)
     if not rel or rel.get("identity_strength") != "STRONG_PERSON_IDENTITY":
         return {"status":"FAILED", "reason":"VALID_CROSS_INCIDENT_IDENTITY_NOT_ACCEPTED", "relationship":rel}
