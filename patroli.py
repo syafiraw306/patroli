@@ -12,7 +12,7 @@ from itertools import combinations
 from difflib import SequenceMatcher
 from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from audit_event_duplicates import (
     audit_event_duplicates,
@@ -23,7 +23,6 @@ from audit_event_duplicates import (
     normalize_text,
     jaccard_similarity
 )
-from datetime import datetime, timezone, timedelta
 
 
 import feedparser
@@ -4465,6 +4464,344 @@ def test_trend_escalation_real_read_only() -> Dict[str, Any]:
     print("[TEST PASS] READ-ONLY | database ID tetap")
     print("TEST TREND & ESCALATION DETECTION REAL: PASSED")
     return {"status": "PASSED", "tested": len(sample), "counts": counts, "results": results}
+
+
+# ============================================================
+# FEATURE #4 — INTELLIGENCE DASHBOARD / READ-ONLY AUDIT
+# ============================================================
+# Phase 1: dashboard observability dari data production.
+# TIDAK menulis database, TIDAK mengubah dedupe, TIDAK mengirim Telegram.
+# Risk dihitung ulang di memory karena risk fields bukan kolom database.
+# Event/Trend dihitung dari Feature #2 dan #3.
+# ============================================================
+
+DASHBOARD_TOP_EVENTS = 10
+DASHBOARD_MAX_ARTICLES = 1000
+
+
+def _dashboard_safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _dashboard_safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _dashboard_article_risk(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Hitung risk untuk dashboard tanpa menyimpan hasil ke database."""
+    try:
+        result = calculate_article_risk(article, all_articles)
+        return {
+            "risk_score": _dashboard_safe_int(result.get("risk_score")),
+            "risk_level": str(result.get("risk_level") or "LOW"),
+            "risk_factors": result.get("factors") or {},
+            "risk_reasons": result.get("reasons") or [],
+        }
+    except Exception as exc:
+        return {
+            "risk_score": 0,
+            "risk_level": "UNKNOWN",
+            "risk_factors": {},
+            "risk_reasons": [f"Risk calculation error: {type(exc).__name__}"],
+        }
+
+
+def _dashboard_priority_value(risk_score: int, trend_status: str, event: Dict[str, Any]) -> float:
+    """Skor ranking observability; bukan risk score baru dan bukan keputusan Telegram."""
+    trend_bonus = {
+        "ESCALATING": 30.0,
+        "EMERGING": 25.0,
+        "RISING": 15.0,
+        "DECLINING": -5.0,
+        "STABLE": 0.0,
+        "INSUFFICIENT_DATA": 0.0,
+    }.get(trend_status, 0.0)
+    media_bonus = min(10.0, _dashboard_safe_int(event.get("media_count")) * 2.0)
+    related_bonus = min(10.0, _dashboard_safe_int(event.get("related_count")) * 1.5)
+    return round(float(risk_score) + trend_bonus + media_bonus + related_bonus, 2)
+
+
+def build_intelligence_dashboard(articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Bangun snapshot dashboard intelligence secara deterministic dan READ-ONLY."""
+    production = [
+        a for a in (articles or [])
+        if isinstance(a, dict)
+        and normalize_text(a.get("title"))
+        and not _is_event_detection_test_article(a)
+    ]
+    production = production[:DASHBOARD_MAX_ARTICLES]
+
+    category_counts = Counter(str(a.get("category") or "Tidak diketahui") for a in production)
+    priority_counts = Counter(str(a.get("priority") or "Tidak diketahui") for a in production)
+    risk_counts = Counter()
+    event_status_counts = Counter()
+    event_type_counts = Counter()
+    trend_status_counts = Counter()
+    event_cards: Dict[str, Dict[str, Any]] = {}
+    dated_count = 0
+    risk_errors = 0
+
+    for article in production:
+        if _risk_published_datetime(article):
+            dated_count += 1
+
+        risk = _dashboard_article_risk(article, production)
+        risk_level = risk["risk_level"]
+        risk_counts[risk_level] += 1
+        if risk_level == "UNKNOWN":
+            risk_errors += 1
+
+        event = detect_article_event(article, production)
+        trend = analyze_event_trend(article, production)
+        event_status_counts[event.get("status", "UNKNOWN")] += 1
+        event_type_counts[event.get("event_type", "UMUM")] += 1
+        trend_status_counts[trend.get("status", "UNKNOWN")] += 1
+
+        event_key = str(event.get("event_key") or "")
+        if not event_key:
+            continue
+
+        card = event_cards.setdefault(event_key, {
+            "event_key": event_key,
+            "event_name": event.get("event_name") or "Event tidak teridentifikasi",
+            "event_type": event.get("event_type") or "UMUM",
+            "status": event.get("status") or "UNCONFIRMED_NEW_EVENT",
+            "max_risk_score": 0,
+            "max_risk_level": "LOW",
+            "trend_status": trend.get("status") or "INSUFFICIENT_DATA",
+            "trend_confidence": _dashboard_safe_float(trend.get("trend_confidence")),
+            "recent_count": _dashboard_safe_int(trend.get("recent_count")),
+            "previous_count": _dashboard_safe_int(trend.get("previous_count")),
+            "growth_ratio": _dashboard_safe_float(trend.get("growth_ratio")),
+            "media_count": _dashboard_safe_int(event.get("media_count")),
+            "related_count": _dashboard_safe_int(event.get("related_count")),
+            "media_sources": list(event.get("media_sources") or []),
+            "satker_matches": list(event.get("satker_matches") or []),
+            "first_seen": event.get("first_seen"),
+            "latest_seen": event.get("latest_seen"),
+            "article_ids": [],
+            "titles": [],
+            "dashboard_priority": 0.0,
+        })
+
+        score = risk["risk_score"]
+        if score > card["max_risk_score"]:
+            card["max_risk_score"] = score
+            card["max_risk_level"] = risk["risk_level"]
+        if article.get("id") is not None:
+            card["article_ids"].append(article.get("id"))
+        title = normalize_text(article.get("title"))
+        if title and title not in card["titles"]:
+            card["titles"].append(title)
+        card["dashboard_priority"] = max(
+            card["dashboard_priority"],
+            _dashboard_priority_value(score, str(trend.get("status") or ""), event),
+        )
+
+    cards = list(event_cards.values())
+    for card in cards:
+        card["article_count"] = len(set(str(x) for x in card["article_ids"]))
+        card["article_ids"] = card["article_ids"][:20]
+        card["titles"] = card["titles"][:5]
+        card["dashboard_priority"] = round(card["dashboard_priority"], 2)
+    cards.sort(key=lambda x: (x["dashboard_priority"], x["max_risk_score"], x["article_count"]), reverse=True)
+
+    critical = risk_counts.get("CRITICAL", 0)
+    high = risk_counts.get("HIGH", 0)
+    medium = risk_counts.get("MEDIUM", 0)
+    attention = critical + high + medium
+
+    return {
+        "dashboard_version": "FEATURE4-READONLY-V1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "source": "production_articles_in_memory",
+        "summary": {
+            "total_articles": len(production),
+            "dated_articles": dated_count,
+            "undated_articles": len(production) - dated_count,
+            "unique_events": len(cards),
+            "articles_needing_attention": attention,
+            "critical": critical,
+            "high": high,
+            "medium": medium,
+            "low": risk_counts.get("LOW", 0),
+            "risk_unknown": risk_errors,
+        },
+        "category_counts": dict(category_counts),
+        "priority_counts": dict(priority_counts),
+        "risk_counts": dict(risk_counts),
+        "event_status_counts": dict(event_status_counts),
+        "event_type_counts": dict(event_type_counts),
+        "trend_status_counts": dict(trend_status_counts),
+        "top_events": cards[:DASHBOARD_TOP_EVENTS],
+    }
+
+
+def _dashboard_html(snapshot: Dict[str, Any]) -> str:
+    """Render dashboard lokal tanpa dependency eksternal."""
+    summary = snapshot.get("summary", {})
+    top_events = snapshot.get("top_events", [])
+    def esc(value: Any) -> str:
+        return html.escape(str(value if value is not None else ""))
+
+    rows = []
+    for event in top_events:
+        rows.append(
+            "<tr>"
+            f"<td>{esc(event.get('event_name'))}</td>"
+            f"<td>{esc(event.get('event_type'))}</td>"
+            f"<td>{esc(event.get('trend_status'))}</td>"
+            f"<td>{esc(event.get('max_risk_score'))} ({esc(event.get('max_risk_level'))})</td>"
+            f"<td>{esc(event.get('recent_count'))}/{esc(event.get('previous_count'))}</td>"
+            f"<td>{esc(event.get('media_count'))}</td>"
+            f"<td>{esc(event.get('dashboard_priority'))}</td>"
+            "</tr>"
+        )
+    return f"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Intelligence Dashboard</title>
+<style>body{{font-family:Arial,sans-serif;margin:32px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}}.card{{background:white;padding:16px;border-radius:10px;box-shadow:0 1px 4px #ccc}}.value{{font-size:28px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:24px}}th,td{{padding:10px;border-bottom:1px solid #ddd;text-align:left}}th{{background:#eee}}small{{color:#666}}</style>
+</head><body><h1>Patroli Siber Intelligence Dashboard</h1>
+<p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {esc(snapshot.get('generated_at'))}</p>
+<div class="grid">
+<div class="card">Total Artikel<div class="value">{summary.get('total_articles',0)}</div></div>
+<div class="card">Perlu Perhatian<div class="value">{summary.get('articles_needing_attention',0)}</div></div>
+<div class="card">Critical / High<div class="value">{summary.get('critical',0)} / {summary.get('high',0)}</div></div>
+<div class="card">Unique Event<div class="value">{summary.get('unique_events',0)}</div></div>
+<div class="card">Risk Unknown<div class="value">{summary.get('risk_unknown',0)}</div></div>
+</div>
+<h2>Top Event Intelligence</h2><table><thead><tr><th>Event</th><th>Type</th><th>Trend</th><th>Risk</th><th>Recent/Prev</th><th>Media</th><th>Priority</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="7">Tidak ada event.</td></tr>'}</tbody></table>
+<p><small>Dashboard ini hanya snapshot observability. Tidak mengubah database dan tidak mengirim Telegram.</small></p></body></html>"""
+
+
+def _write_dashboard_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    """Menulis artifact lokal saja; tidak menyentuh Supabase."""
+    json_path = "intelligence_dashboard.json"
+    html_path = "intelligence_dashboard.html"
+    csv_path = "intelligence_dashboard_events.csv"
+
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(_dashboard_html(snapshot))
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=[
+            "event_key", "event_name", "event_type", "status", "trend_status",
+            "trend_confidence", "recent_count", "previous_count", "growth_ratio",
+            "max_risk_score", "max_risk_level", "media_count", "related_count",
+            "dashboard_priority", "first_seen", "latest_seen",
+        ])
+        writer.writeheader()
+        for event in snapshot.get("top_events", []):
+            writer.writerow({field: event.get(field) for field in writer.fieldnames})
+    return {"json": json_path, "html": html_path, "csv": csv_path}
+
+
+def intelligence_dashboard() -> Dict[str, Any]:
+    """Generate snapshot dashboard production secara READ-ONLY."""
+    print("=" * 70)
+    print("FEATURE #4 — INTELLIGENCE DASHBOARD / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        print("[DASHBOARD] Database artikel kosong.")
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+
+    snapshot = build_intelligence_dashboard(articles)
+    artifacts = _write_dashboard_artifacts(snapshot)
+    snapshot["artifacts"] = artifacts
+
+    print(f"[DASHBOARD] Total artikel       : {snapshot['summary']['total_articles']}")
+    print(f"[DASHBOARD] Unique event        : {snapshot['summary']['unique_events']}")
+    print(f"[DASHBOARD] Attention           : {snapshot['summary']['articles_needing_attention']}")
+    print(f"[DASHBOARD] Risk                : {snapshot['risk_counts']}")
+    print(f"[DASHBOARD] Trend               : {snapshot['trend_status_counts']}")
+    print("[DASHBOARD] Top events:")
+    for idx, event in enumerate(snapshot.get("top_events", []), 1):
+        print(
+            f"[DASHBOARD {idx}] {event.get('event_name')} | "
+            f"risk={event.get('max_risk_score')} ({event.get('max_risk_level')}) | "
+            f"trend={event.get('trend_status')} | "
+            f"recent={event.get('recent_count')} | media={event.get('media_count')} | "
+            f"priority={event.get('dashboard_priority')}"
+        )
+    print(f"[DASHBOARD] Artifact JSON       : {artifacts['json']}")
+    print(f"[DASHBOARD] Artifact HTML       : {artifacts['html']}")
+    print(f"[DASHBOARD] Artifact CSV        : {artifacts['csv']}")
+    print("[DASHBOARD PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status": "PASSED", "snapshot": snapshot}
+
+
+def test_intelligence_dashboard_real_read_only() -> Dict[str, Any]:
+    """Validasi Feature #4 terhadap production nyata dan memastikan DB tidak berubah."""
+    print("=" * 70)
+    print("TEST FEATURE #4 — INTELLIGENCE DASHBOARD / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    before = get_all_articles()
+    if not before:
+        print("[TEST FAIL] Database artikel kosong.")
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+
+    snapshot = build_intelligence_dashboard(before)
+    required = {"summary", "risk_counts", "event_status_counts", "event_type_counts", "trend_status_counts", "top_events"}
+    missing = sorted(required - set(snapshot.keys()))
+    if missing:
+        print(f"[TEST FAIL] Dashboard fields hilang: {missing}")
+        return {"status": "FAILED", "reason": "MISSING_DASHBOARD_FIELDS"}
+
+    summary = snapshot["summary"]
+    if summary.get("total_articles", 0) < 1:
+        print("[TEST FAIL] Dashboard tidak memiliki artikel production.")
+        return {"status": "FAILED", "reason": "NO_PRODUCTION_ARTICLES"}
+    if summary.get("unique_events", 0) < 1:
+        print("[TEST FAIL] Tidak ada event yang dapat dibentuk dari production.")
+        return {"status": "FAILED", "reason": "NO_EVENTS"}
+
+    allowed_risk = {"CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"}
+    if not set(snapshot["risk_counts"]).issubset(allowed_risk):
+        print("[TEST FAIL] Risk level tidak valid.")
+        return {"status": "FAILED", "reason": "INVALID_RISK_LEVEL"}
+
+    allowed_trend = {"EMERGING", "RISING", "ESCALATING", "STABLE", "DECLINING", "INSUFFICIENT_DATA"}
+    if not set(snapshot["trend_status_counts"]).issubset(allowed_trend):
+        print("[TEST FAIL] Trend status tidak valid.")
+        return {"status": "FAILED", "reason": "INVALID_TREND_STATUS"}
+
+    for event in snapshot.get("top_events", []):
+        if not event.get("event_key") or not event.get("event_name"):
+            print("[TEST FAIL] Top event tidak memiliki identity observability lengkap.")
+            return {"status": "FAILED", "reason": "INVALID_EVENT_CARD"}
+        if not (0.0 <= _dashboard_safe_float(event.get("trend_confidence")) <= 1.0):
+            print("[TEST FAIL] Trend confidence di luar 0..1.")
+            return {"status": "FAILED", "reason": "INVALID_TREND_CONFIDENCE"}
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        print("[TEST FAIL] Database berubah selama dashboard test.")
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+
+    artifacts = _write_dashboard_artifacts(snapshot)
+    print(f"[TEST] Production articles : {summary.get('total_articles')}")
+    print(f"[TEST] Unique events        : {summary.get('unique_events')}")
+    print(f"[TEST] Attention             : {summary.get('articles_needing_attention')}")
+    print(f"[TEST] Risk counts           : {snapshot.get('risk_counts')}")
+    print(f"[TEST] Trend counts          : {snapshot.get('trend_status_counts')}")
+    print(f"[TEST] Artifacts             : {artifacts}")
+    print("[TEST PASS] DASHBOARD STRUCTURE")
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+    print("TEST INTELLIGENCE DASHBOARD REAL: PASSED")
+    return {"status": "PASSED", "summary": summary, "artifacts": artifacts}
 
 
 # ============================================================
@@ -11765,6 +12102,18 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--intelligence-dashboard",
+        action="store_true",
+        help="generate Intelligence Dashboard snapshot production secara read-only",
+    )
+
+    parser.add_argument(
+        "--test-intelligence-dashboard-real",
+        action="store_true",
+        help="uji Intelligence Dashboard terhadap production nyata secara read-only",
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -11872,6 +12221,18 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_intelligence_dashboard_real:
+        result = test_intelligence_dashboard_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Intelligence Dashboard REAL gagal: {result.get('reason')}")
+        return
+
+    if args.intelligence_dashboard:
+        result = intelligence_dashboard()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Intelligence Dashboard gagal: {result.get('reason')}")
         return
 
     if args.test_trend_escalation_real:
