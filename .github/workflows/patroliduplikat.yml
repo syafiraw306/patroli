@@ -186,6 +186,18 @@ jobs:
             dedupe_delete_report.json
             dedupe_diagnostic_report.csv
             dedupe_diagnostic_report.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ==========================================
+      # UPLOAD LAPORAN EXISTING URL REPAIR
+      # ==========================================
+      - name: Upload Existing URL Repair Report
+        if: ${{ inputs.mode == 'resolve-existing-urls-dry-run' || inputs.mode == 'resolve-existing-urls' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: existing-url-repair-report
+          path: |
             existing_url_repair.csv
             existing_url_repair.json
           if-no-files-found: warn
