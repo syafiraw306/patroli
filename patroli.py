@@ -6052,7 +6052,7 @@ def test_real_new_article_e2e() -> Dict[str, Any]:
         # Identitas yang dapat mengubah dedupe dibuat unik:
         # - URL test unik
         # - title test unik
-        # - media test khusus
+        # - publisher/source test khusus
         # Content asli tetap dipertahankan.
         # Ini BUKAN artikel produksi dan TIDAK boleh dikirim Telegram.
         # ========================================================
@@ -6062,7 +6062,9 @@ def test_real_new_article_e2e() -> Dict[str, Any]:
         source_title = str(source_article.get("title") or "Artikel Real Crawler").strip()
         test_article["title"] = f"[E2E TEST - REAL PAYLOAD] {source_title}"
         test_article["link"] = f"https://example.com/patroli-siber-e2e-test-{test_stamp}"
-        test_article["media"] = "PATROLI-E2E-TEST"
+        # `media` BUKAN kolom schema Supabase articles.
+        # Gunakan field schema yang memang dipakai production: publisher/source.
+        test_article["publisher"] = "PATROLI-E2E-TEST"
         test_article["source"] = "PATROLI-E2E-TEST"
         selected = (test_article, 0.0, None)
         print()
@@ -6139,8 +6141,43 @@ def test_real_new_article_e2e() -> Dict[str, Any]:
             "risk_factors",
             "risk_reasons",
             "risk_context",
+            # Alias/internal media fields are used by dedupe logic,
+            # but are NOT columns in Supabase articles schema.
+            "media",
+            "media_name",
+            "source_name",
+            "nama_media",
         ):
             db_test_article.pop(_field, None)
+
+        # --------------------------------------------------------
+        # HARD SAFETY DIAGNOSTIC: verify exactly what enters database.py
+        # --------------------------------------------------------
+        print("[TEST DEBUG] DB payload keys BEFORE upsert_article():")
+        print(sorted(db_test_article.keys()))
+
+        forbidden_test_fields = {
+            "media",
+            "media_name",
+            "source_name",
+            "nama_media",
+            "risk_score",
+            "risk_level",
+            "risk_factors",
+            "risk_reasons",
+            "risk_context",
+        }
+        leaked_test_fields = sorted(
+            field for field in forbidden_test_fields
+            if field in db_test_article
+        )
+        if leaked_test_fields:
+            raise RuntimeError(
+                "SAFETY FAILURE: field internal/test masih ada sebelum "
+                f"upsert_article(): {leaked_test_fields}"
+            )
+
+        print("[TEST PASS] DB PAYLOAD SAFETY | no forbidden internal/test fields")
 
         saved = upsert_article(db_test_article)
         write_succeeded = saved is not None
