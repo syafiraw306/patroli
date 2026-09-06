@@ -2,6 +2,7 @@ import argparse
 import base64
 import csv
 import html
+import hashlib
 import json
 import os
 import re
@@ -4247,6 +4248,165 @@ RISK_EVENT_ANCHOR_TOKENS = {
 RISK_NONPRIORITY_MAX_SCORE = 30
 
 
+# ============================================================
+# EVENT / INCIDENT DETECTION — SAFE APPLICATION LAYER
+# ============================================================
+# Phase 1: deterministic, READ-ONLY event detection.
+# Tidak menambah/mengubah schema database.py.
+# Tidak menghapus artikel.
+# Tidak mengubah keputusan duplicate prevention.
+# ============================================================
+
+EVENT_DETECTION_MIN_SIMILARITY = 0.62
+EVENT_DETECTION_MAX_RELATED = 20
+EVENT_DETECTION_MIN_ANCHORS = 1
+
+EVENT_TYPE_ANCHORS = {
+    "PENEGAKAN_HUKUM": {
+        "korupsi", "narkotika", "narkoba", "tersangka", "terdakwa",
+        "pidana", "penyidikan", "penyelidikan", "penuntutan", "perkara",
+        "pengadilan", "sidang", "vonis", "dakwaan", "suap", "gratifikasi",
+        "penggeledahan", "penyitaan", "penangkapan", "ditangkap",
+        "diamankan", "pelanggaran", "kode", "etik",
+    },
+    "KEGIATAN_KEBIJAKAN": {
+        "sertifikasi", "wakaf", "tanah", "bunga", "dana", "desa",
+        "pelantikan", "dilantik", "lantik", "plh", "integritas",
+    },
+}
+
+
+def _event_key(article: Dict[str, Any]) -> str:
+    """Event key deterministik; hanya untuk observability, bukan DB identity."""
+    anchors = sorted(_risk_event_anchors(article))
+    satkers = sorted(
+        normalize_text(x).lower()
+        for x in (article.get("satker_matches") or [])
+        if normalize_text(x)
+    )
+    basis = "|".join(anchors[:8] + satkers[:3]) or normalize_text(article.get("title")).lower()
+    digest = hashlib.sha1(basis.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    return f"EVT-{digest.upper()}"
+
+
+def _event_type(article: Dict[str, Any]) -> str:
+    anchors = _risk_event_anchors(article)
+    scores = {
+        name: len(anchors & terms)
+        for name, terms in EVENT_TYPE_ANCHORS.items()
+    }
+    best = max(scores, key=scores.get) if scores else None
+    if best and scores[best] > 0:
+        return best
+    return "UMUM"
+
+
+def _event_name(article: Dict[str, Any]) -> str:
+    """Nama event konservatif dari anchor judul, bukan klaim entitas baru."""
+    anchors = sorted(_risk_event_anchors(article))
+    if not anchors:
+        return "Event tidak teridentifikasi"
+    return " / ".join(anchors[:4])
+
+
+def detect_article_event(
+    article: Dict[str, Any],
+    all_articles: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Deteksi event untuk satu artikel secara READ-ONLY.
+
+    Status tidak pernah menyatakan 'event baru' hanya karena tidak ada match.
+    Jika tidak ada artikel terkait, status = UNCONFIRMED_NEW_EVENT.
+    """
+    candidates = _risk_candidate_articles(article, all_articles)
+    related = []
+
+    for other in candidates:
+        if other is article:
+            continue
+        if _risk_same_url(article, other):
+            continue
+        is_related, similarity = _risk_is_related_event(article, other)
+        if is_related and similarity >= EVENT_DETECTION_MIN_SIMILARITY:
+            related.append((similarity, other))
+
+    related.sort(key=lambda x: x[0], reverse=True)
+    related = related[:EVENT_DETECTION_MAX_RELATED]
+
+    if related:
+        best_similarity = related[0][0]
+        confidence = round(min(0.99, 0.65 + (best_similarity - EVENT_DETECTION_MIN_SIMILARITY) * 0.9), 3)
+        status = "RELATED_EVENT"
+    else:
+        best_similarity = 0.0
+        confidence = 0.50
+        status = "UNCONFIRMED_NEW_EVENT"
+
+    event_articles = [article] + [item for _, item in related]
+    media_sources = sorted({
+        normalize_text(get_media_source(item))
+        for item in event_articles
+        if normalize_text(get_media_source(item))
+    })
+
+    dates = []
+    for item in event_articles:
+        dt = _risk_published_datetime(item)
+        if dt:
+            dates.append(dt)
+    dates.sort()
+
+    satker_matches = sorted({
+        normalize_text(x)
+        for item in event_articles
+        for x in (item.get("satker_matches") or [])
+        if normalize_text(x)
+    })
+
+    return {
+        "status": status,
+        "confidence": confidence,
+        "event_key": _event_key(article),
+        "event_name": _event_name(article),
+        "event_type": _event_type(article),
+        "best_similarity": round(best_similarity, 4),
+        "related_count": len(related),
+        "media_count": len(media_sources),
+        "media_sources": media_sources,
+        "satker_matches": satker_matches,
+        "first_seen": dates[0].isoformat() if dates else None,
+        "latest_seen": dates[-1].isoformat() if dates else None,
+        "related_articles": [
+            {
+                "id": item.get("id"),
+                "title": item.get("title", ""),
+                "media": get_media_source(item),
+                "similarity": round(similarity, 4),
+                "published_date": item.get("published_date"),
+            }
+            for similarity, item in related
+        ],
+    }
+
+
+def print_event_detection(article: Dict[str, Any], event: Dict[str, Any]) -> None:
+    print(
+        f"[EVENT] {event['status']} | key={event['event_key']} | "
+        f"confidence={event['confidence']:.0%} | "
+        f"similarity={event['best_similarity']:.2%} | "
+        f"related={event['related_count']} | media={event['media_count']}"
+    )
+    print(f"[EVENT] type={event['event_type']} | name={event['event_name']}")
+    if event.get("satker_matches"):
+        print(f"[EVENT] satker={', '.join(event['satker_matches'][:10])}")
+    for rel in event.get("related_articles", [])[:5]:
+        print(
+            f"[EVENT RELATED] similarity={rel['similarity']:.2%} | "
+            f"media={rel['media']} | title={str(rel['title'])[:120]}"
+        )
+
+
 def _risk_article_fingerprint(article: Dict[str, Any]) -> str:
     """Fingerprint ringan untuk menghindari duplicate internal saat context dihitung."""
     url = normalize_url(article.get("link") or "")
@@ -5443,6 +5603,19 @@ def run_once() -> Dict[str, Any]:
                     f"{type(exc).__name__}: {exc}"
                 )
 
+
+            # ====================================================
+            # EVENT / INCIDENT DETECTION — READ-ONLY
+            # ====================================================
+            try:
+                event_result = detect_article_event(article, risk_pool)
+                article["event_detection"] = event_result
+                print_event_detection(article, event_result)
+            except Exception as exc:
+                print(
+                    f"[EVENT WARNING] Gagal mendeteksi event: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
             # ====================================================
             # NEW ARTICLE
@@ -9389,6 +9562,48 @@ def _cluster_average_similarity(cluster):
     return sum(similarities) / len(similarities) if similarities else 0.0
 
 
+def test_event_detection_read_only() -> Dict[str, Any]:
+    """Smoke test event detection dengan data production secara READ-ONLY."""
+    print("=" * 70)
+    print("TEST EVENT / INCIDENT DETECTION — READ-ONLY")
+    print("=" * 70)
+
+    articles = get_all_articles()
+    if not articles:
+        print("[TEST FAIL] Database artikel kosong.")
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+
+    # Pilih artikel terbaru yang memiliki judul valid.
+    candidates = [a for a in articles if normalize_text(a.get("title"))]
+    candidates.sort(
+        key=lambda a: _risk_published_datetime(a) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    article = candidates[0]
+
+    result = detect_article_event(article, articles)
+    print(f"[TEST] Artikel: {article.get('title', '')[:160]}")
+    print_event_detection(article, result)
+
+    required = {
+        "status", "confidence", "event_key", "event_name", "event_type",
+        "related_count", "media_count", "related_articles",
+    }
+    missing = sorted(required - set(result))
+    if missing:
+        print(f"[TEST FAIL] Field event missing: {missing}")
+        return {"status": "FAILED", "reason": "MISSING_EVENT_FIELDS", "missing": missing}
+
+    if not (0.0 <= float(result["confidence"]) <= 1.0):
+        print("[TEST FAIL] Confidence di luar rentang 0..1")
+        return {"status": "FAILED", "reason": "INVALID_CONFIDENCE"}
+
+    print("[TEST PASS] EVENT DETECTION STRUCTURE")
+    print("[TEST PASS] READ-ONLY | database tidak diubah")
+    print("TEST EVENT / INCIDENT DETECTION: PASSED")
+    return {"status": "PASSED", "event": result}
+
+
 def audit_event_quality(articles):
     print("=" * 70)
     print("AUDIT EVENT QUALITY")
@@ -11129,6 +11344,14 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--test-event-detection",
+        action="store_true",
+        help=(
+            "uji Event/Incident Detection menggunakan data production secara read-only"
+        ),
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -11236,6 +11459,15 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_event_detection:
+
+        result = test_event_detection_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Test Event/Incident Detection gagal: {result.get('reason')}"
+            )
         return
 
     if args.audit_event_duplicates:
