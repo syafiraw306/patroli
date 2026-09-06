@@ -4249,6 +4249,224 @@ RISK_NONPRIORITY_MAX_SCORE = 30
 
 
 # ============================================================
+# FEATURE #3 — TREND & ESCALATION DETECTION
+# ============================================================
+# Phase 1: deterministic, READ-ONLY intelligence layer.
+# Tidak menulis database, tidak mengubah dedupe, tidak mengirim Telegram.
+# Menggunakan event relationship dari Feature #2 sebagai basis.
+# ============================================================
+
+TREND_WINDOW_DAYS = 7
+TREND_MIN_RECENT_ARTICLES = 2
+TREND_MIN_ESCALATION_RECENT = 3
+TREND_ESCALATION_RATIO = 2.0
+TREND_RISING_RATIO = 1.5
+TREND_MAX_EVENT_ARTICLES = 50
+
+
+def _trend_unique_articles(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Deduplicate event members by normalized URL, then title+media."""
+    unique = []
+    seen = set()
+    for item in items:
+        url = normalize_url(item.get("link") or "")
+        if url:
+            key = f"url:{url}"
+        else:
+            key = (
+                f"tm:{normalize_text(item.get('title')).lower()}|"
+                f"{normalize_text(get_media_source(item)).lower()}"
+            )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def _trend_event_members(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Bangun anggota event dari detector Feature #2 tanpa menulis state."""
+    event = detect_article_event(article, all_articles)
+    members = [article]
+    related_by_id = {}
+    for rel in event.get("related_articles") or []:
+        rid = rel.get("id")
+        for item in all_articles:
+            if rid is not None and item.get("id") == rid:
+                related_by_id[rid] = item
+                break
+    members.extend(related_by_id.values())
+    return _trend_unique_articles(members)[:TREND_MAX_EVENT_ARTICLES]
+
+
+def analyze_event_trend(article: Dict[str, Any], all_articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Analisis trend/eskalasi event secara READ-ONLY."""
+    event = detect_article_event(article, all_articles)
+    members = _trend_event_members(article, all_articles)
+
+    dated = []
+    for item in members:
+        dt = _risk_published_datetime(item)
+        if dt:
+            dated.append((dt, item))
+    dated.sort(key=lambda x: x[0])
+
+    anchor_dt = _risk_published_datetime(article)
+    if not anchor_dt and dated:
+        anchor_dt = dated[-1][0]
+    if not anchor_dt:
+        return {
+            "status": "INSUFFICIENT_DATA",
+            "reason": "NO_VALID_DATES",
+            "event": event,
+            "recent_count": 0,
+            "previous_count": 0,
+            "growth_ratio": 0.0,
+            "recent_media_count": 0,
+            "previous_media_count": 0,
+            "event_article_count": len(members),
+        }
+
+    recent_start = anchor_dt - timedelta(days=TREND_WINDOW_DAYS)
+    previous_start = anchor_dt - timedelta(days=TREND_WINDOW_DAYS * 2)
+    recent = [item for dt, item in dated if recent_start <= dt <= anchor_dt]
+    previous = [item for dt, item in dated if previous_start <= dt < recent_start]
+
+    recent_media = sorted({normalize_text(get_media_source(x)) for x in recent if normalize_text(get_media_source(x))})
+    previous_media = sorted({normalize_text(get_media_source(x)) for x in previous if normalize_text(get_media_source(x))})
+
+    recent_count = len(recent)
+    previous_count = len(previous)
+    if previous_count == 0:
+        growth_ratio = float(recent_count) if recent_count else 0.0
+    else:
+        growth_ratio = round(recent_count / previous_count, 2)
+
+    if recent_count >= TREND_MIN_ESCALATION_RECENT and previous_count == 0:
+        status = "EMERGING"
+    elif recent_count >= TREND_MIN_ESCALATION_RECENT and growth_ratio >= TREND_ESCALATION_RATIO:
+        status = "ESCALATING"
+    elif recent_count >= TREND_MIN_RECENT_ARTICLES and growth_ratio >= TREND_RISING_RATIO:
+        status = "RISING"
+    elif recent_count < previous_count:
+        status = "DECLINING"
+    else:
+        status = "STABLE"
+
+    # Confidence hanya menggambarkan kekuatan observasi trend, bukan probabilitas kejadian.
+    evidence = 0
+    if recent_count >= 2:
+        evidence += 1
+    if previous_count > 0:
+        evidence += 1
+    if len(recent_media) >= 2:
+        evidence += 1
+    if event.get("related_count", 0) >= 2:
+        evidence += 1
+    trend_confidence = round(min(0.95, 0.40 + evidence * 0.12 + min(0.20, max(0.0, growth_ratio - 1) * 0.05)), 2)
+
+    return {
+        "status": status,
+        "trend_confidence": trend_confidence,
+        "event": event,
+        "event_key": event.get("event_key"),
+        "event_name": event.get("event_name"),
+        "event_type": event.get("event_type"),
+        "anchor_date": anchor_dt.isoformat(),
+        "recent_window": f"{recent_start.isoformat()} sampai {anchor_dt.isoformat()}",
+        "previous_window": f"{previous_start.isoformat()} sampai {recent_start.isoformat()}",
+        "recent_count": recent_count,
+        "previous_count": previous_count,
+        "growth_ratio": growth_ratio,
+        "recent_media_count": len(recent_media),
+        "previous_media_count": len(previous_media),
+        "recent_media": recent_media,
+        "previous_media": previous_media,
+        "event_article_count": len(members),
+        "recent_titles": [x.get("title", "") for x in recent[:10]],
+    }
+
+
+def print_event_trend(trend: Dict[str, Any]) -> None:
+    print(
+        f"[TREND] {trend.get('status')} | "
+        f"confidence={float(trend.get('trend_confidence', 0)):.0%} | "
+        f"recent={trend.get('recent_count', 0)} | "
+        f"previous={trend.get('previous_count', 0)} | "
+        f"growth={trend.get('growth_ratio', 0):.2f}x | "
+        f"media={trend.get('recent_media_count', 0)}"
+    )
+    print(
+        f"[TREND] event={trend.get('event_name')} | "
+        f"type={trend.get('event_type')} | key={trend.get('event_key')}"
+    )
+
+
+def test_trend_escalation_real_read_only() -> Dict[str, Any]:
+    """Validasi Feature #3 pada production nyata tanpa write/delete/Telegram."""
+    print("=" * 70)
+    print("TEST TREND & ESCALATION DETECTION — REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+
+    articles = get_all_articles()
+    if not articles:
+        print("[TEST FAIL] Database artikel kosong.")
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+
+    before_ids = sorted(str(a.get("id")) for a in articles if a.get("id") is not None)
+    real_articles = [
+        a for a in articles
+        if normalize_text(a.get("title")) and not _is_event_detection_test_article(a)
+    ]
+    real_articles.sort(
+        key=lambda a: _risk_published_datetime(a) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    if not real_articles:
+        print("[TEST FAIL] Tidak ada artikel production nyata.")
+        return {"status": "FAILED", "reason": "NO_REAL_ARTICLES"}
+
+    real_pool = [a for a in articles if not _is_event_detection_test_article(a)]
+    sample = real_articles[:5]
+    print(f"[TEST] Total database artikel    : {len(articles)}")
+    print(f"[TEST] Artikel production nyata : {len(real_articles)}")
+    print(f"[TEST] Artikel diuji            : {len(sample)}")
+    print("[TEST] Mode                     : READ-ONLY")
+
+    results = []
+    allowed_status = {"EMERGING", "RISING", "ESCALATING", "STABLE", "DECLINING", "INSUFFICIENT_DATA"}
+    for idx, article in enumerate(sample, 1):
+        trend = analyze_event_trend(article, real_pool)
+        results.append(trend)
+        print(f"[TEST REAL {idx}] Artikel: {article.get('title', '')[:160]}")
+        print_event_trend(trend)
+        if trend.get("status") not in allowed_status:
+            print("[TEST FAIL] Status trend tidak valid")
+            return {"status": "FAILED", "reason": "INVALID_TREND_STATUS"}
+        confidence = float(trend.get("trend_confidence", 0))
+        if not (0.0 <= confidence <= 1.0):
+            print("[TEST FAIL] Trend confidence di luar rentang 0..1")
+            return {"status": "FAILED", "reason": "INVALID_TREND_CONFIDENCE"}
+        if trend.get("recent_count", 0) < 0 or trend.get("previous_count", 0) < 0:
+            print("[TEST FAIL] Count trend negatif")
+            return {"status": "FAILED", "reason": "INVALID_TREND_COUNT"}
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        print("[TEST FAIL] Database berubah selama test trend")
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+
+    counts = {status: sum(1 for x in results if x.get("status") == status) for status in sorted(allowed_status)}
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("[TEST PASS] TREND/ESCALATION STRUCTURE")
+    print(f"[TEST RESULT] {counts}")
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+    print("TEST TREND & ESCALATION DETECTION REAL: PASSED")
+    return {"status": "PASSED", "tested": len(sample), "counts": counts, "results": results}
+
+
+# ============================================================
 # EVENT / INCIDENT DETECTION — SAFE APPLICATION LAYER
 # ============================================================
 # Phase 1: deterministic, READ-ONLY event detection.
@@ -11531,6 +11749,14 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--test-trend-escalation-real",
+        action="store_true",
+        help=(
+            "uji Trend & Escalation Detection pada artikel production nyata, secara read-only"
+        ),
+    )
+
+    parser.add_argument(
         "--test-event-detection-real",
         action="store_true",
         help=(
@@ -11645,6 +11871,12 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_trend_escalation_real:
+        result = test_trend_escalation_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Trend & Escalation Detection REAL gagal: {result.get('reason')}")
         return
 
     if args.test_event_detection_real:
