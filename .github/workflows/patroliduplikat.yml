@@ -56,6 +56,8 @@ on:
           - test-incident-lifecycle-real
           - incident-case-dossier
           - test-incident-case-dossier-real
+          - cross-incident-relationships
+          - test-cross-incident-relationships-real
           - send-intelligence-alerts
 
 jobs:
@@ -222,6 +224,14 @@ jobs:
               echo "Menjalankan test Incident Case Dossier & Analyst Action REAL production (READ-ONLY)..."
               python patroli.py --test-incident-case-dossier-real
 
+            elif [ "${{ inputs.mode }}" = "cross-incident-relationships" ]; then
+              echo "Generate Cross-Incident Relationship & Entity Link Analysis REAL production (READ-ONLY)..."
+              python patroli.py --cross-incident-relationships
+
+            elif [ "${{ inputs.mode }}" = "test-cross-incident-relationships-real" ]; then
+              echo "Menjalankan test Cross-Incident Relationship & Entity Link Analysis REAL production (READ-ONLY)..."
+              python patroli.py --test-cross-incident-relationships-real
+
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
               echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
               python patroli.py --send-intelligence-alerts
@@ -381,3 +391,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+
+      # ==========================================
+      # UPLOAD FEATURE #10 — CROSS-INCIDENT RELATIONSHIP
+      # ==========================================
+      - name: Upload Cross-Incident Relationships
+        if: ${{ inputs.mode == 'cross-incident-relationships' || inputs.mode == 'test-cross-incident-relationships-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-incident-relationships
+          path: |
+            cross_incident_relationships.json
+            cross_incident_relationships.html
+            cross_incident_relationships.csv
+          if-no-files-found: warn
+          retention-days: 30
