@@ -15560,6 +15560,18 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
             # by the V26 contextual extractor in BOTH underlying events. This
             # deliberately uses the extractor contract rather than a growing
             # blacklist of observed false positives.
+            # Resolve the underlying events before provenance extraction.
+            # V26.1 fixes an execution-order bug where event_a/event_b were
+            # referenced before assignment in the hard artifact gate.
+            event_a = provenance_events.get((r.get("event_a") or {}).get("event_key"))
+            event_b = provenance_events.get((r.get("event_b") or {}).get("event_key"))
+            if event_a is None or event_b is None:
+                return {
+                    "status":"FAILED",
+                    "reason":"MISSING_EVENT_PROVENANCE",
+                    "event_a":(r.get("event_a") or {}).get("event_key"),
+                    "event_b":(r.get("event_b") or {}).get("event_key"),
+                }
             for person in shared["persons"]:
                 if not _feature10_clean_person_candidate(person):
                     return {"status":"FAILED","reason":"INVALID_PERSON_IN_RELATIONSHIP","person":person}
