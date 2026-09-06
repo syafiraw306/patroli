@@ -9958,7 +9958,12 @@ def _historical_duplicate_plan(articles):
             # such as /all vs canonical pages that share a headline but have
             # different extracted content.
             if rec["photo_gallery"] or keeper["photo_gallery"]:
-                add_review(rec, "PHOTO_OR_GALLERY_REVIEW", keeper)
+                # Review ONLY the photo/gallery record. A normal article must
+                # not become a false photo-review merely because it is paired
+                # with a photo/gallery version of the same content.
+                photo_rec = rec if rec["photo_gallery"] else keeper
+                normal_rec = keeper if rec["photo_gallery"] else rec
+                add_review(photo_rec, "PHOTO_OR_GALLERY_REVIEW", normal_rec)
                 continue
 
             rec_content = rec.get("content") or ""
@@ -10002,7 +10007,9 @@ def _historical_duplicate_plan(articles):
         keeper = ranked[0]
         for rec in ranked[1:]:
             if rec["photo_gallery"] or keeper["photo_gallery"]:
-                add_review(rec, "PHOTO_OR_GALLERY_REVIEW", keeper, 1.0)
+                photo_rec = rec if rec["photo_gallery"] else keeper
+                normal_rec = keeper if rec["photo_gallery"] else rec
+                add_review(photo_rec, "PHOTO_OR_GALLERY_REVIEW", normal_rec, 1.0)
                 continue
             mark_delete(rec, keeper, "EXACT_TITLE_CONTENT_SAME_MEDIA", 1.0)
 
@@ -10030,7 +10037,11 @@ def _historical_duplicate_plan(articles):
                     continue
                 seen_pairs.add(pk)
                 if a["photo_gallery"] or b["photo_gallery"]:
-                    add_review(b, "PHOTO_OR_GALLERY_REVIEW", a, sim)
+                    # Do not propagate photo/gallery status to the normal
+                    # article. Review the photo/gallery record itself.
+                    photo_rec = a if a["photo_gallery"] else b
+                    normal_rec = b if a["photo_gallery"] else a
+                    add_review(photo_rec, "PHOTO_OR_GALLERY_REVIEW", normal_rec, sim)
                     continue
                 keeper = max((a, b), key=lambda r: _historical_keeper_score(r["article"]))
                 loser = b if keeper is a else a
