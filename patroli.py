@@ -5954,81 +5954,250 @@ def test_new_article() -> Dict[str, Any]:
 # TEST REAL NEW ARTICLE — SAFE / READ-ONLY
 # ============================================================
 
-def test_real_new_article() -> Dict[str, Any]:
-    """Ambil kandidat nyata dari crawler dan uji sampai risk + Telegram payload.
-    Tidak INSERT, UPDATE, DELETE, dan tidak mengirim Telegram.
+def test_real_new_article_e2e() -> Dict[str, Any]:
     """
-    print("=" * 70); print("TEST REAL NEW ARTICLE — SAFE / READ-ONLY"); print("=" * 70)
-    print("Sumber            : crawler production")
-    print("Database write    : SKIPPED")
-    print("Telegram send     : SKIPPED")
+    End-to-end SAFE test untuk SATU artikel nyata yang lolos duplicate gate.
+
+    Tahapan:
+      1. Crawl + process menggunakan fungsi production.
+      2. Pilih artikel nyata yang benar-benar NEW_ARTICLE.
+      3. Risk analysis.
+      4. Simpan sementara ke Supabase menggunakan upsert_article().
+      5. Read-back berdasarkan link dan verifikasi tepat satu baris.
+      6. Uji Telegram secara MOCK (tidak melakukan HTTP request Telegram).
+      7. Hapus kembali row test menggunakan delete_article_by_id().
+      8. Read-back final memastikan row test sudah hilang.
+
+    PENTING:
+      - database.py TIDAK diubah.
+      - Telegram TIDAK benar-benar dikirim.
+      - Artikel nyata tidak dimodifikasi URL/judul/content-nya.
+      - Row hanya ditulis sementara untuk menguji kontrak database.
+      - Cleanup wajib dilakukan pada finally setelah insert berhasil.
+    """
     print("=" * 70)
-    try:
-        existing_articles = get_all_articles()
-    except Exception as exc:
-        print(f"[TEST FAIL] DATABASE READ | {type(exc).__name__}: {exc}")
-        return {"status":"FAILED","reason":"DATABASE_READ"}
-    print(f"[TEST] Database existing articles : {len(existing_articles)}")
-    existing_link_index = {normalize_url(a.get("link")) for a in existing_articles if normalize_url(a.get("link"))}
+    print("TEST REAL NEW ARTICLE E2E — SAFE / WRITE-THEN-CLEANUP")
+    print("=" * 70)
+    print("Sumber             : crawler production")
+    print("Supabase temporary : ENABLED")
+    print("Supabase cleanup   : WAJIB")
+    print("Telegram HTTP      : MOCK / SKIPPED")
+    print("database.py        : TIDAK DIUBAH")
+    print("=" * 70)
+
+    existing_articles = get_all_articles()
+    baseline_count = len(existing_articles)
+    existing_link_index = {
+        normalize_url(a.get("link") or "")
+        for a in existing_articles
+        if normalize_url(a.get("link") or "")
+    }
     existing_title_index = build_existing_title_index(existing_articles)
     existing_content_index = build_existing_content_index(existing_articles)
-    try:
-        candidates = collect_candidates()
-    except Exception as exc:
-        print(f"[TEST FAIL] CRAWLER COLLECT | {type(exc).__name__}: {exc}")
-        return {"status":"FAILED","reason":"CRAWLER_COLLECT"}
+
+    candidates = collect_candidates()
     print(f"[TEST] Real crawler candidates       : {len(candidates)}")
+
     if not candidates:
         print("[TEST RESULT] NO_CANDIDATES")
-        return {"status":"NO_CANDIDATES"}
-    valid_articles=[]; worker_errors=0
-    with ThreadPoolExecutor(max_workers=max(1,MAX_WORKERS)) as executor:
-        futures=[executor.submit(process_candidate,c) for c in candidates]
+        return {"status": "NO_CANDIDATES"}
+
+    valid_articles: List[Dict[str, Any]] = []
+    worker_errors = 0
+    with ThreadPoolExecutor(max_workers=max(1, MAX_WORKERS)) as executor:
+        futures = [executor.submit(process_candidate, c) for c in candidates]
         for future in as_completed(futures):
             try:
-                r=future.result()
-                if r.get("ok") and r.get("article"): valid_articles.append(r["article"])
+                result = future.result()
+                if result.get("ok") and result.get("article"):
+                    valid_articles.append(result["article"])
             except Exception as exc:
-                worker_errors += 1; print(f"[TEST WORKER ERROR] {type(exc).__name__}: {exc}")
+                worker_errors += 1
+                print(f"[TEST WORKER ERROR] {type(exc).__name__}: {exc}")
+
     print(f"[TEST] Real valid articles          : {len(valid_articles)}")
     print(f"[TEST] Worker errors                 : {worker_errors}")
-    if worker_errors: return {"status":"FAILED","reason":"WORKER_ERRORS"}
+    if worker_errors:
+        return {"status": "FAILED", "reason": "WORKER_ERRORS"}
     if not valid_articles:
-        print("[TEST RESULT] NO_VALID_REAL_ARTICLE"); return {"status":"NO_VALID_REAL_ARTICLE"}
-    duplicate_counts=Counter(); selected=None
+        return {"status": "NO_VALID_REAL_ARTICLE"}
+
+    selected = None
+    duplicate_counts = Counter()
     for article in valid_articles:
-        ok,reason,similarity,matched=should_save_article(article,existing_link_index,existing_title_index,existing_content_index)
-        duplicate_counts[reason]+=1
-        if ok and selected is None: selected=(article,reason,similarity,matched)
+        ok, reason, similarity, matched = should_save_article(
+            article,
+            existing_link_index,
+            existing_title_index,
+            existing_content_index,
+        )
+        duplicate_counts[reason] += 1
+        if ok and reason == "NEW_ARTICLE" and selected is None:
+            selected = (article, similarity, matched)
+
     print("[TEST] REAL DUPLICATE SUMMARY")
-    for reason,count in duplicate_counts.most_common(): print(f"[TEST] {reason:<32}: {count}")
+    for reason, count in duplicate_counts.most_common():
+        print(f"[TEST] {reason:<32}: {count}")
+
     if selected is None:
-        print("TEST REAL NEW ARTICLE: NO_REAL_NEW")
-        print("Tidak ditemukan artikel nyata yang benar-benar baru; test tidak memaksa NEW_ARTICLE.")
-        return {"status":"NO_REAL_NEW","candidate_count":len(candidates),"valid_count":len(valid_articles),"duplicate_counts":dict(duplicate_counts)}
-    article,reason,similarity,matched=selected
+        print("TEST REAL NEW ARTICLE E2E: NO_REAL_NEW")
+        print("Tidak ada artikel nyata yang lolos duplicate gate; tidak ada write test.")
+        return {
+            "status": "NO_REAL_NEW",
+            "baseline_count": baseline_count,
+            "candidate_count": len(candidates),
+            "valid_count": len(valid_articles),
+            "duplicate_counts": dict(duplicate_counts),
+            "database_write": False,
+        }
+
+    article, similarity, matched = selected
+    link = normalize_url(article.get("link") or "")
+    title = str(article.get("title") or "").strip()
+    if not link or not title:
+        return {"status": "FAILED", "reason": "ARTICLE_FIELDS"}
+
+    print()
     print("[TEST] REAL ARTICLE SELECTED")
-    print(f"[TEST] title       : {article.get('title','')[:180]}")
-    print(f"[TEST] media       : {article.get('media',article.get('source',''))}")
-    print(f"[TEST] URL         : {article.get('link','')}")
-    print(f"[TEST] should_save : True")
-    print(f"[TEST] reason      : {reason}")
+    print(f"[TEST] title       : {title[:180]}")
+    print(f"[TEST] media       : {get_media_source(article)}")
+    print(f"[TEST] URL         : {link}")
+    print("[TEST] should_save : True")
+    print("[TEST] reason      : NEW_ARTICLE")
     print(f"[TEST] similarity  : {similarity:.2%}")
+
+    # Safety gate: link harus benar-benar belum ada sebelum write.
+    before = get_article_by_link(link)
+    if before is not None:
+        print("[TEST FAIL] PRE-WRITE SAFETY: link ternyata sudah ada di database.")
+        return {"status": "FAILED", "reason": "PREEXISTING_LINK"}
+    print("[TEST PASS] PRE-WRITE SAFETY | link belum ada")
+
+    risk_result = calculate_article_risk(article, existing_articles + [article])
+    article["risk_score"] = risk_result["risk_score"]
+    article["risk_level"] = risk_result["risk_level"]
+    article["risk_factors"] = risk_result["factors"]
+    article["risk_reasons"] = risk_result["reasons"]
+    article["risk_context"] = risk_result["context"]
+    print(
+        f"[TEST PASS] RISK ANALYSIS | score={risk_result['risk_score']}/100 | "
+        f"level={risk_result['risk_level']}"
+    )
+
+    payload = telegram_text(article)
+    if not payload or link not in html.unescape(payload):
+        return {"status": "FAILED", "reason": "TELEGRAM_PAYLOAD"}
+    print("[TEST PASS] TELEGRAM PAYLOAD BUILD")
+
+    inserted_id = None
+    write_succeeded = False
+    cleanup_succeeded = False
+    telegram_mock_succeeded = False
+    original_sender = globals().get("send_telegram_message")
+    mock_calls: List[str] = []
+
+    def mock_send_telegram_message(text: str) -> bool:
+        mock_calls.append(text)
+        print("[TEST MOCK TELEGRAM] send_telegram_message() dipanggil; HTTP SKIPPED")
+        return True
+
     try:
-        risk_result=calculate_article_risk(article,existing_articles+[article])
-        article["risk_score"]=risk_result["risk_score"]; article["risk_level"]=risk_result["risk_level"]
-        article["risk_factors"]=risk_result["factors"]; article["risk_reasons"]=risk_result["reasons"]; article["risk_context"]=risk_result["context"]
-        print(f"[TEST PASS] RISK ANALYSIS | score={risk_result['risk_score']}/100 | level={risk_result['risk_level']}")
-    except Exception as exc:
-        print(f"[TEST FAIL] RISK ANALYSIS | {type(exc).__name__}: {exc}"); return {"status":"FAILED","reason":"RISK_ANALYSIS"}
-    title=str(article.get("title") or "").strip(); link=str(article.get("link") or "").strip(); category=str(article.get("category") or "Netral").strip()
-    if not title or not link or not category:
-        print("[TEST FAIL] TELEGRAM PAYLOAD | field wajib kosong"); return {"status":"FAILED","reason":"TELEGRAM_PAYLOAD"}
-    payload=(f"<b>{html.escape(title)}</b>\nKategori: {html.escape(category)}\nRisk: {article.get('risk_score',0)}/100 ({html.escape(str(article.get('risk_level','LOW')))})\n{html.escape(link)}")
-    print("[TEST PASS] TELEGRAM PAYLOAD"); print(f"[TEST] Telegram payload length : {len(payload)}")
-    print("[TEST] Supabase write            : SKIPPED"); print("[TEST] Telegram send             : SKIPPED")
-    print("=" * 70); print("TEST REAL NEW ARTICLE: PASSED"); print("Artikel nyata lolos duplicate gate dan diproses sampai Risk + Telegram payload tanpa perubahan database."); print("=" * 70)
-    return {"status":"PASSED","article":article,"reason":reason,"similarity":similarity}
+        # Jangan mengubah URL/title/content artikel nyata.
+        article.pop("_url_resolution_method", None)
+        saved = upsert_article(article)
+        write_succeeded = saved is not None
+        if not write_succeeded:
+            raise RuntimeError("upsert_article() mengembalikan None")
+
+        inserted_id = saved.get("id") if isinstance(saved, dict) else None
+        if inserted_id is None:
+            read_back = get_article_by_link(link)
+            inserted_id = read_back.get("id") if isinstance(read_back, dict) else None
+
+        print(f"[TEST PASS] SUPABASE UPSERT | id={inserted_id}")
+
+        read_back = get_article_by_link(link)
+        if not isinstance(read_back, dict):
+            raise RuntimeError("Read-back setelah upsert tidak menemukan artikel test.")
+        read_link = normalize_url(read_back.get("link") or "")
+        if read_link != link:
+            raise RuntimeError(
+                f"Read-back link mismatch: expected={link!r}, got={read_link!r}"
+            )
+        print("[TEST PASS] SUPABASE READ-BACK | artikel ditemukan tepat pada link test")
+
+        # Telegram diuji melalui mock agar tidak ada pesan nyata yang terkirim.
+        globals()["send_telegram_message"] = mock_send_telegram_message
+        telegram_test_article = dict(article)
+        telegram_test_article["category"] = "Perlu Penanganan"
+        telegram_test_article["published_at"] = datetime.now(timezone.utc).isoformat()
+        telegram_mock_succeeded = send_alert_if_needed(telegram_test_article)
+        if not telegram_mock_succeeded or len(mock_calls) != 1:
+            raise RuntimeError("Telegram mock tidak melewati send_alert_if_needed().")
+        print("[TEST PASS] TELEGRAM ROUTE | mock send berhasil; HTTP tidak dikirim")
+
+    finally:
+        globals()["send_telegram_message"] = original_sender
+
+        # Hanya hapus jika write test kita sendiri benar-benar sukses.
+        if write_succeeded:
+            if inserted_id is None:
+                # Tanpa ID kita tidak boleh menebak ID untuk delete.
+                print("[TEST FAIL] CLEANUP SAFETY | inserted_id tidak diketahui; delete dibatalkan")
+                cleanup_succeeded = False
+            else:
+                try:
+                    cleanup_succeeded = bool(delete_article_by_id(inserted_id))
+                    print(
+                        f"[TEST] CLEANUP DELETE | id={inserted_id} | "
+                        f"success={cleanup_succeeded}"
+                    )
+                except Exception as exc:
+                    cleanup_succeeded = False
+                    print(
+                        f"[TEST FAIL] CLEANUP DELETE | {type(exc).__name__}: {exc}"
+                    )
+
+    if write_succeeded and not cleanup_succeeded:
+        raise RuntimeError(
+            "TEST E2E gagal: artikel test berhasil ditulis tetapi cleanup gagal. "
+            "JANGAN menjalankan dedupe; periksa ID dan database terlebih dahulu."
+        )
+
+    if write_succeeded:
+        after = get_article_by_link(link)
+        if after is not None:
+            raise RuntimeError(
+                "TEST E2E gagal: artikel test masih ditemukan setelah cleanup."
+            )
+        print("[TEST PASS] CLEANUP READ-BACK | artikel test sudah hilang")
+
+        final_articles = get_all_articles()
+        if len(final_articles) != baseline_count:
+            raise RuntimeError(
+                f"TEST E2E gagal: jumlah DB berubah. before={baseline_count}, after={len(final_articles)}"
+            )
+        print(f"[TEST PASS] DATABASE COUNT RESTORED | {baseline_count} -> {len(final_articles)}")
+
+    print("=" * 70)
+    print("TEST REAL NEW ARTICLE E2E: PASSED")
+    print("Crawler -> NEW_ARTICLE -> Risk -> Supabase -> Read-back -> Telegram mock -> Cleanup")
+    print("Tidak ada pesan Telegram nyata yang dikirim.")
+    print("=" * 70)
+    return {
+        "status": "PASSED",
+        "baseline_count": baseline_count,
+        "candidate_count": len(candidates),
+        "valid_count": len(valid_articles),
+        "article_id": inserted_id,
+        "reason": "NEW_ARTICLE",
+        "risk_score": article.get("risk_score"),
+        "risk_level": article.get("risk_level"),
+        "supabase_write": write_succeeded,
+        "supabase_cleanup": cleanup_succeeded,
+        "telegram_mock": telegram_mock_succeeded,
+        "telegram_http_sent": False,
+    }
 
 
 # ============================================================
@@ -10757,6 +10926,15 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--test-real-new-article-e2e",
+        action="store_true",
+        help=(
+            "ambil artikel nyata, uji write/read-back Supabase, Telegram mock, "
+            "lalu cleanup otomatis tanpa mengirim Telegram nyata"
+        ),
+    )
+
+    parser.add_argument(
         "--test-new-article",
         action="store_true",
         help=(
@@ -10888,6 +11066,12 @@ def main() -> None:
     # --------------------------------------------------------
     # TEST REAL NEW ARTICLE — READ-ONLY
     # --------------------------------------------------------
+
+    if args.test_real_new_article_e2e:
+        result = test_real_new_article_e2e()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test real new article E2E gagal: {result.get('reason')}")
+        return
 
     if args.test_real_new_article:
         result = test_real_new_article()
