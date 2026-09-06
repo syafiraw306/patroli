@@ -4261,52 +4261,102 @@ EVENT_DETECTION_MIN_SIMILARITY = 0.62
 EVENT_DETECTION_MAX_RELATED = 20
 EVENT_DETECTION_MIN_ANCHORS = 1
 
+# Klasifikasi event dibuat konservatif: istilah yang benar-benar menunjukkan
+# jenis kejadian diprioritaskan, sedangkan kata institusi/lokasi umum tidak
+# boleh sendirian menentukan tipe event.
 EVENT_TYPE_ANCHORS = {
     "PENEGAKAN_HUKUM": {
         "korupsi", "narkotika", "narkoba", "tersangka", "terdakwa",
         "pidana", "penyidikan", "penyelidikan", "penuntutan", "perkara",
         "pengadilan", "sidang", "vonis", "dakwaan", "suap", "gratifikasi",
         "penggeledahan", "penyitaan", "penangkapan", "ditangkap",
-        "diamankan", "pelanggaran", "kode", "etik",
+        "diamankan", "pelanggaran", "penegakan", "hukum", "etik",
     },
     "KEGIATAN_KEBIJAKAN": {
-        "sertifikasi", "wakaf", "tanah", "bunga", "dana", "desa",
-        "pelantikan", "dilantik", "lantik", "plh", "integritas",
+        "sertifikasi", "wakaf", "tanah", "pelantikan", "dilantik", "lantik",
+        "plh", "integritas", "kebijakan", "sosialisasi", "kunjungan",
+        "rapat", "koordinasi", "kerjasama", "kerja", "sama", "peresmian",
+        "penghargaan", "apel", "upacara", "donor", "ziarah", "harlah",
+        "peringatan", "deklarasi", "launching", "peluncuran",
     },
 }
 
+# Kata yang tidak layak dijadikan nama event. Ini hanya dipakai untuk
+# pembentukan label observability, tidak memengaruhi dedupe/database.
+EVENT_NAME_STOPWORDS = {
+    "kejari", "kejaksaan", "jaksa", "agung", "negeri", "sumut", "sumatera",
+    "utara", "kabupaten", "kota", "provinsi", "deli", "deliserdang",
+    "deliserdang", "news", "com", "www", "dan", "hingga", "yang", "untuk",
+    "dari", "dengan", "dalam", "ke", "di", "pada", "oleh", "ini", "itu",
+    "sebagai", "gelar", "gelar", "teguh", "teguhkan", "putra", "sapta",
+}
 
-def _event_key(article: Dict[str, Any]) -> str:
-    """Event key deterministik; hanya untuk observability, bukan DB identity."""
-    anchors = sorted(_risk_event_anchors(article))
-    satkers = sorted(
+
+def _event_key(article: Dict[str, Any], event_articles: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Event key deterministik untuk observability; bukan identity database."""
+    items = event_articles or [article]
+    # Gunakan anchor yang muncul bersama pada cluster agar artikel lintas media
+    # tentang event yang sama cenderung mendapatkan key yang sama.
+    anchor_sets = [_risk_event_anchors(item) for item in items]
+    common = set.intersection(*anchor_sets) if anchor_sets and all(anchor_sets) else set()
+    if not common:
+        common = set.union(*anchor_sets) if anchor_sets else set()
+    satkers = sorted({
         normalize_text(x).lower()
-        for x in (article.get("satker_matches") or [])
+        for item in items
+        for x in (item.get("satker_matches") or [])
         if normalize_text(x)
-    )
-    basis = "|".join(anchors[:8] + satkers[:3]) or normalize_text(article.get("title")).lower()
+    })
+    basis = "|".join(sorted(common)[:8] + satkers[:3])
+    if not basis:
+        basis = normalize_text(article.get("title") or "").lower()
     digest = hashlib.sha1(basis.encode("utf-8", errors="ignore")).hexdigest()[:12]
     return f"EVT-{digest.upper()}"
 
 
-def _event_type(article: Dict[str, Any]) -> str:
-    anchors = _risk_event_anchors(article)
-    scores = {
-        name: len(anchors & terms)
-        for name, terms in EVENT_TYPE_ANCHORS.items()
-    }
+def _event_type(article: Dict[str, Any], event_articles: Optional[List[Dict[str, Any]]] = None) -> str:
+    items = event_articles or [article]
+    scores = {}
+    for name, terms in EVENT_TYPE_ANCHORS.items():
+        score = 0
+        for item in items:
+            anchors = _risk_event_anchors(item)
+            score += len(anchors & terms)
+        scores[name] = score
     best = max(scores, key=scores.get) if scores else None
     if best and scores[best] > 0:
         return best
     return "UMUM"
 
 
-def _event_name(article: Dict[str, Any]) -> str:
-    """Nama event konservatif dari anchor judul, bukan klaim entitas baru."""
-    anchors = sorted(_risk_event_anchors(article))
-    if not anchors:
+def _event_name(article: Dict[str, Any], event_articles: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Label event yang human-readable dari judul; bukan klaim entitas baru."""
+    title = normalize_text(article.get("title") or "").strip(" -:")
+    if not title:
         return "Event tidak teridentifikasi"
-    return " / ".join(anchors[:4])
+
+    # Buang suffix nama media yang umum setelah tanda '-' / '|'.
+    title = re.split(r"\s+(?:-|\|)\s+", title, maxsplit=1)[0].strip(" -:")
+    # Jika formatnya 'Nama : Judul', prioritaskan bagian judul bila cukup informatif.
+    if ":" in title:
+        left, right = [x.strip() for x in title.split(":", 1)]
+        if len(right.split()) >= 4:
+            title = right
+
+    # Jangan membuat nama dari nama orang/media saja. Jika judul punya anchor
+    # event yang jelas, tampilkan frasa judul yang bersih dan ringkas.
+    tokens = [t for t in re.findall(r"[A-Za-z0-9]+", title.lower())
+              if t not in EVENT_NAME_STOPWORDS and len(t) >= 3]
+    if not tokens:
+        return "Event tidak teridentifikasi"
+
+    # Pertahankan urutan judul agar label terbaca alami.
+    cleaned = []
+    for token in tokens:
+        if token not in cleaned:
+            cleaned.append(token)
+    label = " ".join(cleaned[:10]).strip()
+    return label.title() if label else "Event tidak teridentifikasi"
 
 
 def detect_article_event(
@@ -4344,6 +4394,9 @@ def detect_article_event(
         status = "UNCONFIRMED_NEW_EVENT"
 
     event_articles = [article] + [item for _, item in related]
+    event_key = _event_key(article, event_articles)
+    event_type = _event_type(article, event_articles)
+    event_name = _event_name(article, event_articles)
     media_sources = sorted({
         normalize_text(get_media_source(item))
         for item in event_articles
@@ -4367,9 +4420,9 @@ def detect_article_event(
     return {
         "status": status,
         "confidence": confidence,
-        "event_key": _event_key(article),
-        "event_name": _event_name(article),
-        "event_type": _event_type(article),
+        "event_key": event_key,
+        "event_name": event_name,
+        "event_type": event_type,
         "best_similarity": round(best_similarity, 4),
         "related_count": len(related),
         "media_count": len(media_sources),
@@ -4382,6 +4435,7 @@ def detect_article_event(
                 "id": item.get("id"),
                 "title": item.get("title", ""),
                 "media": get_media_source(item),
+                "link": item.get("link", ""),
                 "similarity": round(similarity, 4),
                 "published_date": item.get("published_date"),
             }
@@ -9592,6 +9646,9 @@ def test_event_detection_real_read_only() -> Dict[str, Any]:
         print("[TEST FAIL] Database artikel kosong.")
         return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
 
+    # Snapshot read-only: test wajib membuktikan ID database tidak berubah.
+    before_ids = sorted(str(a.get("id")) for a in articles if a.get("id") is not None)
+
     real_articles = [
         a for a in articles
         if normalize_text(a.get("title")) and not _is_event_detection_test_article(a)
@@ -9639,19 +9696,39 @@ def test_event_detection_real_read_only() -> Dict[str, Any]:
             print("[TEST FAIL] Event key tidak valid")
             return {"status": "FAILED", "reason": "INVALID_EVENT_KEY"}
 
+        if result.get("event_name") == "Event tidak teridentifikasi":
+            print("[TEST FAIL] Event name kosong/tidak teridentifikasi")
+            return {"status": "FAILED", "reason": "INVALID_EVENT_NAME"}
+
+        allowed_types = set(EVENT_TYPE_ANCHORS) | {"UMUM"}
+        if result.get("event_type") not in allowed_types:
+            print(f"[TEST FAIL] Event type tidak dikenal: {result.get('event_type')}")
+            return {"status": "FAILED", "reason": "INVALID_EVENT_TYPE"}
+
         for related in result.get("related_articles") or []:
-            related_article = related.get("article") if isinstance(related, dict) else None
-            if related_article and _is_event_detection_test_article(related_article):
+            related_probe = {
+                "title": related.get("title", ""),
+                "link": related.get("link", ""),
+                "source": related.get("media", ""),
+            }
+            if _is_event_detection_test_article(related_probe):
                 print("[TEST FAIL] Related article masih mengandung data test/E2E")
                 return {"status": "FAILED", "reason": "TEST_ARTICLE_LEAKED_IN_RELATED"}
 
     related_events = sum(1 for r in results if r.get("status") == "RELATED_EVENT")
     unconfirmed = sum(1 for r in results if r.get("status") == "UNCONFIRMED_NEW_EVENT")
 
+    # Read-back kedua hanya untuk verifikasi bahwa test benar-benar tidak menulis.
+    after_articles = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after_articles if a.get("id") is not None)
+    if before_ids != after_ids:
+        print("[TEST FAIL] READ-ONLY violation: ID database berubah")
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED", "before_count": len(before_ids), "after_count": len(after_ids)}
+
     print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
     print("[TEST PASS] EVENT DETECTION STRUCTURE")
     print(f"[TEST RESULT] RELATED_EVENT={related_events} | UNCONFIRMED_NEW_EVENT={unconfirmed}")
-    print("[TEST PASS] READ-ONLY | database tidak diubah")
+    print(f"[TEST PASS] READ-ONLY | database ID tetap {len(after_ids)} artikel")
     print("TEST EVENT / INCIDENT DETECTION REAL: PASSED")
     return {
         "status": "PASSED",
