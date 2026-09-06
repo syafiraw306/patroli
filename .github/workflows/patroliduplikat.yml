@@ -48,6 +48,7 @@ on:
           - test-early-warning-real
           - intelligence-alerts
           - test-intelligence-alerts-real
+          - intelligence-alerts-diagnostic-real
           - send-intelligence-alerts
 
 jobs:
@@ -182,6 +183,10 @@ jobs:
               echo "Menjalankan test Intelligence Alert & Prioritization REAL production (READ-ONLY)..."
               python patroli.py --test-intelligence-alerts-real
 
+            elif [ "${{ inputs.mode }}" = "intelligence-alerts-diagnostic-real" ]; then
+              echo "Menjalankan diagnostic Intelligence Alert REAL production (READ-ONLY)..."
+              python patroli.py --intelligence-alerts-diagnostic-real
+
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
               echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
               python patroli.py --send-intelligence-alerts
@@ -283,7 +288,7 @@ jobs:
       # UPLOAD FEATURE #6 — INTELLIGENCE ALERTS
       # ==========================================
       - name: Upload Intelligence Alerts
-        if: ${{ inputs.mode == 'intelligence-alerts' || inputs.mode == 'test-intelligence-alerts-real' }}
+        if: ${{ inputs.mode == 'intelligence-alerts' || inputs.mode == 'test-intelligence-alerts-real' || inputs.mode == 'intelligence-alerts-diagnostic-real' }}
         uses: actions/upload-artifact@v4
         with:
           name: intelligence-alerts
@@ -291,5 +296,8 @@ jobs:
             intelligence_alerts.json
             intelligence_alerts.html
             intelligence_alerts.csv
+            intelligence_alerts_diagnostic.json
+            intelligence_alerts_diagnostic.html
+            intelligence_alerts_diagnostic.csv
           if-no-files-found: warn
           retention-days: 30
