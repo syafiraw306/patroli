@@ -4466,6 +4466,420 @@ def test_trend_escalation_real_read_only() -> Dict[str, Any]:
     return {"status": "PASSED", "tested": len(sample), "counts": counts, "results": results}
 
 
+
+# ============================================================
+# FEATURE #5 — CYBER INTELLIGENCE / EARLY WARNING SYSTEM
+# ============================================================
+# Tujuan: mendeteksi isu yang mulai berkembang sebelum menjadi besar.
+# Deterministic + READ-ONLY. Tidak mengubah risk engine, dedupe,
+# database.py, Supabase, atau Telegram.
+#
+# Early Warning Score adalah skor observability baru untuk mengurutkan
+# event yang membutuhkan perhatian lebih awal. Ini BUKAN pengganti
+# risk_score dan BUKAN keputusan pengiriman Telegram.
+# ============================================================
+
+EWS_HIGH_THRESHOLD = 65
+EWS_WATCH_THRESHOLD = 50
+EWS_MONITOR_THRESHOLD = 35
+EWS_MAX_EVENTS = 25
+EWS_MAX_ARTICLES_PER_EVENT = 20
+
+
+def _ews_level(score: float) -> str:
+    if score >= EWS_HIGH_THRESHOLD:
+        return "HIGH"
+    if score >= EWS_WATCH_THRESHOLD:
+        return "WATCH"
+    if score >= EWS_MONITOR_THRESHOLD:
+        return "MONITOR"
+    return "LOW"
+
+
+def _ews_trend_signal(trend_status: str, confidence: float) -> tuple[float, str]:
+    """Nilai leading indicator dari Feature #3; confidence hanya penguat."""
+    base = {
+        "ESCALATING": 30.0,
+        "EMERGING": 26.0,
+        "RISING": 21.0,
+        "STABLE": 4.0,
+        "DECLINING": 0.0,
+        "INSUFFICIENT_DATA": 0.0,
+    }.get(trend_status, 0.0)
+    return round(base * max(0.0, min(1.0, confidence)), 2), trend_status
+
+
+def _ews_media_signal(media_count: int) -> float:
+    """Persebaran lintas media adalah leading indicator, bukan risk baru."""
+    return round(min(20.0, max(0, media_count) * 5.0), 2)
+
+
+def _ews_recency_signal(latest_seen: Optional[str]) -> float:
+    """Event yang baru terlihat mendapat sedikit bobot agar isu lama tidak mendominasi."""
+    if not latest_seen:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(latest_seen).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        age_days = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds() / 86400.0)
+    except Exception:
+        return 0.0
+    if age_days <= 1:
+        return 10.0
+    if age_days <= 3:
+        return 7.0
+    if age_days <= 7:
+        return 4.0
+    return 0.0
+
+
+def _ews_reason_list(
+    risk_score: int,
+    trend_status: str,
+    recent_count: int,
+    previous_count: int,
+    media_count: int,
+    related_count: int,
+) -> List[str]:
+    reasons: List[str] = []
+    if risk_score >= 50:
+        reasons.append(f"risk {risk_score}")
+    if trend_status == "EMERGING":
+        reasons.append(f"isu emerging ({recent_count} artikel baru, sebelumnya {previous_count})")
+    elif trend_status == "RISING":
+        reasons.append(f"trend rising ({recent_count} vs {previous_count})")
+    elif trend_status == "ESCALATING":
+        reasons.append(f"trend escalating ({recent_count} vs {previous_count})")
+    if media_count >= 2:
+        reasons.append(f"lintas {media_count} media")
+    if related_count >= 2:
+        reasons.append(f"cakupan event {related_count + 1} artikel terkait")
+    if not reasons:
+        reasons.append("indikator perkembangan masih terbatas")
+    return reasons[:5]
+
+
+def _ews_article_risk(article: Dict[str, Any], production: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return _dashboard_article_risk(article, production)
+
+
+def _ews_build_event_cards(production: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Bangun kartu EWS untuk seluruh event production, bukan hanya top-10 dashboard."""
+    cards: Dict[str, Dict[str, Any]] = {}
+
+    for article in production:
+        event = detect_article_event(article, production)
+        event_key = str(event.get("event_key") or "")
+        if not event_key:
+            continue
+        trend = analyze_event_trend(article, production)
+        risk = _ews_article_risk(article, production)
+        confidence = _dashboard_safe_float(trend.get("trend_confidence"))
+        trend_score, _ = _ews_trend_signal(str(trend.get("status") or ""), confidence)
+        media_count = _dashboard_safe_int(event.get("media_count"))
+        related_count = _dashboard_safe_int(event.get("related_count"))
+        recent_count = _dashboard_safe_int(trend.get("recent_count"))
+        previous_count = _dashboard_safe_int(trend.get("previous_count"))
+        risk_score = _dashboard_safe_int(risk.get("risk_score"))
+        recency_score = _ews_recency_signal(event.get("latest_seen"))
+
+        # Komponen maksimal: risk 30 + trend 30 + media 20 + related 10 + recency 10.
+        risk_component = min(30.0, risk_score * 0.30)
+        media_component = _ews_media_signal(media_count)
+        related_component = min(10.0, related_count * 2.5)
+        score = min(100.0, round(
+            risk_component + trend_score + media_component + related_component + recency_score,
+            2,
+        ))
+
+        card = cards.setdefault(event_key, {
+            "event_key": event_key,
+            "event_name": event.get("event_name") or "Event tidak teridentifikasi",
+            "event_type": event.get("event_type") or "UMUM",
+            "event_status": event.get("status") or "UNCONFIRMED_NEW_EVENT",
+            "early_warning_score": 0.0,
+            "early_warning_level": "LOW",
+            "risk_score": 0,
+            "risk_level": "LOW",
+            "trend_status": trend.get("status") or "INSUFFICIENT_DATA",
+            "trend_confidence": confidence,
+            "recent_count": recent_count,
+            "previous_count": previous_count,
+            "growth_ratio": _dashboard_safe_float(trend.get("growth_ratio")),
+            "media_count": media_count,
+            "related_count": related_count,
+            "media_sources": list(event.get("media_sources") or []),
+            "satker_matches": list(event.get("satker_matches") or []),
+            "first_seen": event.get("first_seen"),
+            "latest_seen": event.get("latest_seen"),
+            "article_ids": [],
+            "titles": [],
+            "trigger_reasons": [],
+        })
+
+        if risk_score > card["risk_score"]:
+            card["risk_score"] = risk_score
+            card["risk_level"] = str(risk.get("risk_level") or "LOW")
+            card["trend_status"] = trend.get("status") or card["trend_status"]
+            card["trend_confidence"] = confidence
+            card["recent_count"] = recent_count
+            card["previous_count"] = previous_count
+            card["growth_ratio"] = _dashboard_safe_float(trend.get("growth_ratio"))
+
+        if article.get("id") is not None:
+            card["article_ids"].append(article.get("id"))
+        title = normalize_text(article.get("title"))
+        if title and title not in card["titles"]:
+            card["titles"].append(title)
+
+        # Recalculate using strongest risk/trend evidence seen in the event.
+        current_score = min(100.0, round(
+            min(30.0, card["risk_score"] * 0.30)
+            + _ews_trend_signal(str(card["trend_status"]), card["trend_confidence"])[0]
+            + _ews_media_signal(card["media_count"])
+            + min(10.0, card["related_count"] * 2.5)
+            + _ews_recency_signal(card["latest_seen"]),
+            2,
+        ))
+        card["early_warning_score"] = current_score
+        card["early_warning_level"] = _ews_level(current_score)
+
+    result = []
+    for card in cards.values():
+        card["article_count"] = len(set(str(x) for x in card["article_ids"]))
+        card["article_ids"] = card["article_ids"][:EWS_MAX_ARTICLES_PER_EVENT]
+        card["titles"] = card["titles"][:5]
+        card["trigger_reasons"] = _ews_reason_list(
+            card["risk_score"], card["trend_status"], card["recent_count"],
+            card["previous_count"], card["media_count"], card["related_count"],
+        )
+        result.append(card)
+
+    result.sort(
+        key=lambda x: (
+            x["early_warning_score"], x["risk_score"],
+            x["recent_count"], x["media_count"], x["article_count"],
+        ),
+        reverse=True,
+    )
+    return result
+
+
+def build_early_warning_system(articles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Bangun Early Warning snapshot production secara deterministic + READ-ONLY."""
+    production = [
+        a for a in (articles or [])
+        if isinstance(a, dict)
+        and normalize_text(a.get("title"))
+        and not _is_event_detection_test_article(a)
+    ]
+    production = production[:DASHBOARD_MAX_ARTICLES]
+    if not production:
+        return {
+            "early_warning_version": "FEATURE5-READONLY-V1",
+            "mode": "READ-ONLY",
+            "database_write": False,
+            "telegram_send": False,
+            "status": "EMPTY",
+            "events": [],
+        }
+
+    events = _ews_build_event_cards(production)
+    high = sum(1 for x in events if x["early_warning_level"] == "HIGH")
+    watch = sum(1 for x in events if x["early_warning_level"] == "WATCH")
+    monitor = sum(1 for x in events if x["early_warning_level"] == "MONITOR")
+    rising = sum(1 for x in events if x["trend_status"] == "RISING")
+    emerging = sum(1 for x in events if x["trend_status"] == "EMERGING")
+    escalating = sum(1 for x in events if x["trend_status"] == "ESCALATING")
+
+    return {
+        "early_warning_version": "FEATURE5-READONLY-V1",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "source": "production_articles_in_memory",
+        "method": {
+            "purpose": "deteksi isu berkembang sebelum menjadi besar",
+            "score_max": 100,
+            "components": {
+                "risk": "30%",
+                "trend": "30 points",
+                "media_spread": "20 points",
+                "event_recurrence": "10 points",
+                "recency": "10 points",
+            },
+            "thresholds": {
+                "HIGH": EWS_HIGH_THRESHOLD,
+                "WATCH": EWS_WATCH_THRESHOLD,
+                "MONITOR": EWS_MONITOR_THRESHOLD,
+            },
+            "note": "Skor EWS adalah ranking observability, bukan risk_score baru dan bukan keputusan Telegram.",
+        },
+        "summary": {
+            "production_articles": len(production),
+            "unique_events": len(events),
+            "high": high,
+            "watch": watch,
+            "monitor": monitor,
+            "low": len(events) - high - watch - monitor,
+            "rising_events": rising,
+            "emerging_events": emerging,
+            "escalating_events": escalating,
+            "early_warning_events": high + watch,
+        },
+        "top_early_warnings": events[:EWS_MAX_EVENTS],
+    }
+
+
+def _write_early_warning_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    json_path = "early_warning.json"
+    html_path = "early_warning.html"
+    csv_path = "early_warning_events.csv"
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
+
+    rows = []
+    for event in snapshot.get("top_early_warnings", []):
+        reasons = "; ".join(event.get("trigger_reasons") or [])
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(event.get('early_warning_score')))}</td>"
+            f"<td>{html.escape(str(event.get('early_warning_level')))}</td>"
+            f"<td>{html.escape(str(event.get('event_name')))}</td>"
+            f"<td>{html.escape(str(event.get('event_type')))}</td>"
+            f"<td>{html.escape(str(event.get('risk_score')))} ({html.escape(str(event.get('risk_level')))})</td>"
+            f"<td>{html.escape(str(event.get('trend_status')))}</td>"
+            f"<td>{html.escape(str(event.get('recent_count')))} / {html.escape(str(event.get('previous_count')))}</td>"
+            f"<td>{html.escape(str(event.get('media_count')))}</td>"
+            f"<td>{html.escape(reasons)}</td>"
+            "</tr>"
+        )
+    summary = snapshot.get("summary", {})
+    html_doc = f"""<!doctype html>
+<html lang=\"id\"><head><meta charset=\"utf-8\"><title>Patroli Siber Early Warning</title>
+<style>body{{font-family:Arial,sans-serif;margin:32px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}.card{{background:white;padding:16px;border-radius:10px;box-shadow:0 1px 4px #ccc}}.value{{font-size:28px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:24px}}th,td{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}th{{background:#eee}}small{{color:#666}}</style></head>
+<body><h1>Patroli Siber — Cyber Intelligence / Early Warning System</h1>
+<p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p>
+<div class=\"grid\"><div class=\"card\">Early Warning<div class=\"value\">{summary.get('early_warning_events',0)}</div></div>
+<div class=\"card\">HIGH<div class=\"value\">{summary.get('high',0)}</div></div>
+<div class=\"card\">WATCH<div class=\"value\">{summary.get('watch',0)}</div></div>
+<div class=\"card\">Emerging / Rising<div class=\"value\">{summary.get('emerging_events',0)} / {summary.get('rising_events',0)}</div></div></div>
+<h2>Prioritas Early Warning</h2><table><thead><tr><th>EWS</th><th>Level</th><th>Event</th><th>Type</th><th>Risk</th><th>Trend</th><th>Recent/Prev</th><th>Media</th><th>Why</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan=\"9\">Tidak ada early warning.</td></tr>'}</tbody></table>
+<p><small>Early Warning Score hanya untuk decision support/observability. Tidak mengubah database dan tidak mengirim Telegram.</small></p></body></html>"""
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=[
+            "event_key", "event_name", "event_type", "event_status",
+            "early_warning_score", "early_warning_level", "risk_score", "risk_level",
+            "trend_status", "trend_confidence", "recent_count", "previous_count",
+            "growth_ratio", "media_count", "related_count", "first_seen", "latest_seen",
+            "trigger_reasons",
+        ])
+        writer.writeheader()
+        for event in snapshot.get("top_early_warnings", []):
+            row = dict(event)
+            row["trigger_reasons"] = "; ".join(event.get("trigger_reasons") or [])
+            writer.writerow({field: row.get(field) for field in writer.fieldnames})
+    return {"json": json_path, "html": html_path, "csv": csv_path}
+
+
+def early_warning_system() -> Dict[str, Any]:
+    """Generate Early Warning snapshot production secara READ-ONLY."""
+    print("=" * 70)
+    print("FEATURE #5 — CYBER INTELLIGENCE / EARLY WARNING SYSTEM / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        print("[EWS] Database artikel kosong.")
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    snapshot = build_early_warning_system(articles)
+    artifacts = _write_early_warning_artifacts(snapshot)
+    snapshot["artifacts"] = artifacts
+    print(f"[EWS] Production articles : {snapshot['summary']['production_articles']}")
+    print(f"[EWS] Unique events        : {snapshot['summary']['unique_events']}")
+    print(f"[EWS] Early warnings       : {snapshot['summary']['early_warning_events']}")
+    print(f"[EWS] HIGH / WATCH         : {snapshot['summary']['high']} / {snapshot['summary']['watch']}")
+    print(f"[EWS] EMERGING / RISING    : {snapshot['summary']['emerging_events']} / {snapshot['summary']['rising_events']}")
+    for idx, event in enumerate(snapshot.get("top_early_warnings", [])[:10], 1):
+        print(
+            f"[EWS {idx}] {event.get('event_name')} | "
+            f"score={event.get('early_warning_score')} ({event.get('early_warning_level')}) | "
+            f"risk={event.get('risk_score')} ({event.get('risk_level')}) | "
+            f"trend={event.get('trend_status')} | recent={event.get('recent_count')} | "
+            f"media={event.get('media_count')} | why={'; '.join(event.get('trigger_reasons') or [])}"
+        )
+    print(f"[EWS] Artifact JSON       : {artifacts['json']}")
+    print(f"[EWS] Artifact HTML       : {artifacts['html']}")
+    print(f"[EWS] Artifact CSV        : {artifacts['csv']}")
+    print("[EWS PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status": "PASSED", "snapshot": snapshot}
+
+
+def test_early_warning_system_real_read_only() -> Dict[str, Any]:
+    """Validasi Feature #5 terhadap production nyata dan memastikan DB tidak berubah."""
+    print("=" * 70)
+    print("TEST FEATURE #5 — CYBER INTELLIGENCE / EARLY WARNING / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    before = get_all_articles()
+    if not before:
+        print("[TEST FAIL] Database artikel kosong.")
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot = build_early_warning_system(before)
+    required = {"summary", "method", "top_early_warnings"}
+    missing = sorted(required - set(snapshot.keys()))
+    if missing:
+        print(f"[TEST FAIL] Field EWS hilang: {missing}")
+        return {"status": "FAILED", "reason": "MISSING_EWS_FIELDS"}
+
+    summary = snapshot["summary"]
+    if summary.get("production_articles") != len([
+        a for a in before
+        if isinstance(a, dict) and normalize_text(a.get("title"))
+        and not _is_event_detection_test_article(a)
+    ]):
+        print("[TEST FAIL] Filter production EWS tidak konsisten")
+        return {"status": "FAILED", "reason": "PRODUCTION_FILTER_MISMATCH"}
+
+    allowed_levels = {"HIGH", "WATCH", "MONITOR", "LOW"}
+    allowed_trends = {"EMERGING", "RISING", "ESCALATING", "STABLE", "DECLINING", "INSUFFICIENT_DATA"}
+    for event in snapshot.get("top_early_warnings", []):
+        score = _dashboard_safe_float(event.get("early_warning_score"), -1.0)
+        if not (0.0 <= score <= 100.0):
+            print("[TEST FAIL] EWS score di luar 0..100")
+            return {"status": "FAILED", "reason": "INVALID_EWS_SCORE"}
+        if event.get("early_warning_level") not in allowed_levels:
+            print("[TEST FAIL] EWS level tidak valid")
+            return {"status": "FAILED", "reason": "INVALID_EWS_LEVEL"}
+        if event.get("trend_status") not in allowed_trends:
+            print("[TEST FAIL] Trend status tidak valid")
+            return {"status": "FAILED", "reason": "INVALID_EWS_TREND"}
+        if not (0.0 <= _dashboard_safe_float(event.get("trend_confidence")) <= 1.0):
+            print("[TEST FAIL] Trend confidence tidak valid")
+            return {"status": "FAILED", "reason": "INVALID_EWS_CONFIDENCE"}
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        print("[TEST FAIL] Database berubah selama test EWS")
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+
+    print(f"[TEST] Production articles : {summary.get('production_articles')}")
+    print(f"[TEST] Unique events        : {summary.get('unique_events')}")
+    print(f"[TEST] Early warnings       : {summary.get('early_warning_events')}")
+    print(f"[TEST] HIGH / WATCH         : {summary.get('high')} / {summary.get('watch')}")
+    print(f"[TEST] EMERGING / RISING    : {summary.get('emerging_events')} / {summary.get('rising_events')}")
+    print("[TEST PASS] EWS STRUCTURE")
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("[TEST PASS] SCORE/LEVEL/TREND VALIDATION")
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+    print("TEST CYBER INTELLIGENCE / EARLY WARNING REAL: PASSED")
+    return {"status": "PASSED", "summary": summary, "top_early_warnings": snapshot.get("top_early_warnings", [])}
+
 # ============================================================
 # FEATURE #4 — INTELLIGENCE DASHBOARD / READ-ONLY AUDIT
 # ============================================================
@@ -12114,6 +12528,18 @@ def main() -> None:
         help="uji Intelligence Dashboard terhadap production nyata secara read-only",
     )
 
+    parser.add_argument(
+        "--early-warning",
+        action="store_true",
+        help="generate Cyber Intelligence / Early Warning snapshot production secara read-only",
+    )
+
+    parser.add_argument(
+        "--test-early-warning-real",
+        action="store_true",
+        help="uji Cyber Intelligence / Early Warning terhadap production nyata secara read-only",
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -12221,6 +12647,18 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_early_warning_real:
+        result = test_early_warning_system_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Early Warning REAL gagal: {result.get('reason')}")
+        return
+
+    if args.early_warning:
+        result = early_warning_system()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Early Warning System gagal: {result.get('reason')}")
         return
 
     if args.test_intelligence_dashboard_real:
