@@ -6129,8 +6129,20 @@ def test_real_new_article_e2e() -> Dict[str, Any]:
 
     try:
         # Jangan mengubah URL/title/content artikel nyata.
+        # Risk fields dipakai untuk verifikasi E2E, tetapi TIDAK dikirim
+        # ke database.py karena kontrak produksi tidak memerlukannya.
         article.pop("_url_resolution_method", None)
-        saved = upsert_article(article)
+        db_test_article = dict(article)
+        for _field in (
+            "risk_score",
+            "risk_level",
+            "risk_factors",
+            "risk_reasons",
+            "risk_context",
+        ):
+            db_test_article.pop(_field, None)
+
+        saved = upsert_article(db_test_article)
         write_succeeded = saved is not None
         if not write_succeeded:
             raise RuntimeError("upsert_article() mengembalikan None")
