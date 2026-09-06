@@ -52,6 +52,8 @@ on:
           - test-intelligence-alerts-controlled-fresh-real
           - incident-timeline
           - test-incident-timeline-real
+          - incident-lifecycle
+          - test-incident-lifecycle-real
           - send-intelligence-alerts
 
 jobs:
@@ -202,6 +204,14 @@ jobs:
               echo "Menjalankan test Incident Timeline & Cross-Media Correlation REAL production + Correlation Guard (READ-ONLY)..."
               python patroli.py --test-incident-timeline-real
 
+            elif [ "${{ inputs.mode }}" = "incident-lifecycle" ]; then
+              echo "Generate Incident Lifecycle & Follow-up Evidence REAL production (READ-ONLY)..."
+              python patroli.py --incident-lifecycle
+
+            elif [ "${{ inputs.mode }}" = "test-incident-lifecycle-real" ]; then
+              echo "Menjalankan test Incident Lifecycle & Follow-up Evidence REAL production (READ-ONLY)..."
+              python patroli.py --test-incident-lifecycle-real
+
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
               echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
               python patroli.py --send-intelligence-alerts
@@ -329,6 +339,20 @@ jobs:
             incident_timeline.json
             incident_timeline.html
             incident_timeline.csv
+          if-no-files-found: warn
+          retention-days: 30
+      # ==========================================
+      # UPLOAD FEATURE #8 — INCIDENT LIFECYCLE
+      # ==========================================
+      - name: Upload Incident Lifecycle
+        if: ${{ inputs.mode == 'incident-lifecycle' || inputs.mode == 'test-incident-lifecycle-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: incident-lifecycle
+          path: |
+            incident_lifecycle.json
+            incident_lifecycle.html
+            incident_lifecycle.csv
           if-no-files-found: warn
           retention-days: 30
 
