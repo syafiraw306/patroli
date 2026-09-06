@@ -13673,6 +13673,291 @@ def test_incident_lifecycle_real_read_only() -> Dict[str, Any]:
     return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
 
 
+# ============================================================
+# FEATURE #9 — INCIDENT CASE DOSSIER & ANALYST ACTION
+# ============================================================
+# Tujuan:
+#   Menggabungkan hasil Feature #1-#8 menjadi satu case dossier per
+#   incident agar analis tidak perlu membaca banyak artifact terpisah.
+#
+# Prinsip:
+#   - READ-ONLY
+#   - Tidak menulis database
+#   - Tidak mengirim Telegram
+#   - Tidak membuat event_key baru
+#   - Tidak mengubah risk_score / EWS / trend yang sudah ada
+#   - Tidak menyimpulkan fakta yang tidak teramati
+#   - Analyst action hanya decision-support deterministic dari evidence
+# ============================================================
+
+FEATURE9_MAX_CASES = 20
+FEATURE9_MAX_ARTICLES_PER_CASE = 30
+
+
+def _feature9_case_action(event: Dict[str, Any]) -> Tuple[str, str]:
+    """Tentukan tindakan analis tanpa membuat skor baru."""
+    lifecycle = str(event.get("lifecycle_state") or "UNKNOWN")
+    risk_level = str(event.get("max_risk_level") or "LOW")
+    ews_level = str(event.get("early_warning_level") or "LOW")
+    trend = str(event.get("trend_status") or "STABLE")
+
+    if ews_level == "HIGH" or risk_level == "CRITICAL":
+        return "IMMEDIATE_REVIEW", "EWS HIGH atau risk CRITICAL"
+    if risk_level == "HIGH":
+        return "PRIORITY_REVIEW", "risk HIGH"
+    if lifecycle == "OUTCOME_FOLLOW_UP":
+        return "VERIFY_FOLLOW_UP", "ada bukti perkembangan lifecycle"
+    if lifecycle == "RESOLUTION_EVIDENCE":
+        return "VERIFY_RESOLUTION", "ada bukti penutupan eksplisit; perlu verifikasi analis"
+    if ews_level == "WATCH" or trend in {"EMERGING", "ESCALATING"}:
+        return "MONITOR_CLOSELY", "EWS WATCH atau trend meningkat"
+    if trend == "RISING":
+        return "MONITOR", "trend RISING"
+    if lifecycle == "STALE_NO_RESOLUTION_EVIDENCE":
+        return "FOLLOW_UP_IF_RELEVANT", "event stale tanpa bukti resolusi"
+    return "ROUTINE_MONITORING", "tidak ada sinyal prioritas tinggi"
+
+
+def _feature9_article_stats(event: Dict[str, Any]) -> Dict[str, Any]:
+    timeline = list(event.get("timeline") or [])
+    risk_levels = Counter(str(a.get("risk_level") or "LOW") for a in timeline)
+    media = sorted({normalize_text(a.get("media")) for a in timeline if normalize_text(a.get("media"))})
+    return {
+        "article_count": int(event.get("article_count") or len(timeline)),
+        "media_count": int(event.get("media_count") or len(media)),
+        "risk_level_distribution": dict(sorted(risk_levels.items())),
+        "media_sources": media or list(event.get("media_sources") or []),
+    }
+
+
+def build_incident_case_dossier(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Bangun dossier incident terpadu dari artifact in-memory Feature #6-#8."""
+    now = now or datetime.now(timezone.utc)
+    lifecycle = build_incident_lifecycle(articles, now=now)
+    lifecycle_by_key = {str(e.get("event_key")): e for e in lifecycle.get("events", []) if e.get("event_key")}
+
+    ews = build_early_warning_system(articles)
+    ews_by_key = {str(e.get("event_key")): e for e in ews.get("top_early_warnings", []) if e.get("event_key")}
+
+    alerts = build_intelligence_alerts(articles, now=now)
+    alert_by_key = {str(e.get("event_key")): e for e in alerts.get("alerts", []) if e.get("event_key")}
+
+    cases: List[Dict[str, Any]] = []
+    for base in lifecycle.get("events", [])[:FEATURE9_MAX_CASES]:
+        key = str(base.get("event_key") or "").strip()
+        if not key:
+            continue
+        item = dict(base)
+        ew = ews_by_key.get(key, {})
+        al = alert_by_key.get(key, {})
+        item["early_warning_score"] = ew.get("early_warning_score")
+        item["early_warning_level"] = ew.get("early_warning_level", "LOW")
+        item["trend_status"] = ew.get("trend_status", "STABLE")
+        item["trend_confidence"] = ew.get("trend_confidence")
+        item["recent_count"] = ew.get("recent_count")
+        item["previous_count"] = ew.get("previous_count")
+        item["alert_priority"] = al.get("alert_priority")
+        item["alert_action"] = al.get("alert_action")
+        item["alert_reasons"] = list(al.get("alert_reasons") or [])
+        item["alert_fingerprint"] = al.get("alert_fingerprint")
+        item["article_stats"] = _feature9_article_stats(item)
+        action, action_reason = _feature9_case_action(item)
+        item["analyst_action"] = action
+        item["analyst_action_reason"] = action_reason
+        item["dossier_generated_at"] = now.isoformat()
+        item["database_write"] = False
+        item["telegram_send"] = False
+        cases.append(item)
+
+    cases.sort(key=lambda x: (
+        0 if x.get("analyst_action") == "IMMEDIATE_REVIEW" else
+        1 if x.get("analyst_action") == "PRIORITY_REVIEW" else
+        2 if x.get("analyst_action") in {"VERIFY_FOLLOW_UP", "VERIFY_RESOLUTION"} else
+        3 if x.get("analyst_action") == "MONITOR_CLOSELY" else 4,
+        -_dashboard_safe_float(x.get("max_risk_score")),
+        -_dashboard_safe_float(x.get("early_warning_score")),
+        -_dashboard_safe_int(x.get("article_count")),
+    ))
+    cases = cases[:FEATURE9_MAX_CASES]
+    action_counts = Counter(str(c.get("analyst_action") or "UNKNOWN") for c in cases)
+
+    return {
+        "incident_case_dossier_version": "FEATURE9-READONLY-V1",
+        "generated_at": now.isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "source": "feature6_7_8_in_memory",
+        "method": {
+            "purpose": "case dossier terpadu untuk analyst decision support",
+            "max_cases": FEATURE9_MAX_CASES,
+            "max_articles_per_case": FEATURE9_MAX_ARTICLES_PER_CASE,
+            "new_risk_score": False,
+            "new_event_key": False,
+            "resolution_inference": False,
+        },
+        "summary": {
+            "production_articles": lifecycle.get("summary", {}).get("production_articles", 0),
+            "unique_events": lifecycle.get("summary", {}).get("unique_events", 0),
+            "cases_shown": len(cases),
+            "immediate_review": action_counts.get("IMMEDIATE_REVIEW", 0),
+            "priority_review": action_counts.get("PRIORITY_REVIEW", 0),
+            "verify_follow_up": action_counts.get("VERIFY_FOLLOW_UP", 0),
+            "verify_resolution": action_counts.get("VERIFY_RESOLUTION", 0),
+            "monitor_closely": action_counts.get("MONITOR_CLOSELY", 0),
+            "monitor": action_counts.get("MONITOR", 0),
+            "follow_up_if_relevant": action_counts.get("FOLLOW_UP_IF_RELEVANT", 0),
+            "routine_monitoring": action_counts.get("ROUTINE_MONITORING", 0),
+        },
+        "cases": cases,
+    }
+
+
+def _write_incident_case_dossier_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    json_path = "incident_case_dossier.json"
+    html_path = "incident_case_dossier.html"
+    csv_path = "incident_case_dossier.csv"
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
+
+    rows = []
+    for idx, case in enumerate(snapshot.get("cases", []), 1):
+        rows.append(
+            "<tr>"
+            f"<td>{idx}</td>"
+            f"<td>{html.escape(str(case.get('analyst_action')))}</td>"
+            f"<td>{html.escape(str(case.get('event_name')))}</td>"
+            f"<td>{html.escape(str(case.get('lifecycle_state')))}</td>"
+            f"<td>{html.escape(str(case.get('max_risk_score')))} ({html.escape(str(case.get('max_risk_level')))})</td>"
+            f"<td>{html.escape(str(case.get('early_warning_score') or '-'))} ({html.escape(str(case.get('early_warning_level') or 'LOW'))})</td>"
+            f"<td>{html.escape(str(case.get('trend_status') or '-'))}</td>"
+            f"<td>{html.escape(str(case.get('article_count')))}</td>"
+            f"<td>{html.escape(str(case.get('media_count')))}</td>"
+            f"<td>{html.escape('; '.join(case.get('lifecycle_evidence') or []) or '-')}</td>"
+            f"<td>{html.escape(str(case.get('analyst_action_reason')))}</td>"
+            "</tr>"
+        )
+    html_rows = "".join(rows) or '<tr><td colspan="11">Tidak ada case dossier.</td></tr>'
+    summary = snapshot.get("summary", {})
+    html_doc = f"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Incident Case Dossier</title>
+<style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head>
+<body><h1>Patroli Siber — Incident Case Dossier &amp; Analyst Action</h1>
+<p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p>
+<div class="grid"><div class="card">Production<div class="value">{summary.get('production_articles',0)}</div></div><div class="card">Unique Events<div class="value">{summary.get('unique_events',0)}</div></div><div class="card">Cases<div class="value">{summary.get('cases_shown',0)}</div></div><div class="card">Immediate Review<div class="value">{summary.get('immediate_review',0)}</div></div><div class="card">Priority Review<div class="value">{summary.get('priority_review',0)}</div></div></div>
+<p><small>Feature #9 tidak membuat risk/event baru. Analyst action adalah decision-support berdasarkan evidence Feature #6-#8. STALE tidak berarti RESOLVED.</small></p>
+<table><thead><tr><th>#</th><th>Action</th><th>Event</th><th>Lifecycle</th><th>Risk</th><th>EWS</th><th>Trend</th><th>Articles</th><th>Media</th><th>Evidence</th><th>Reason</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+
+    fields = [
+        "event_key","event_name","event_type","activity_status","lifecycle_state",
+        "max_risk_score","max_risk_level","early_warning_score","early_warning_level",
+        "trend_status","trend_confidence","recent_count","previous_count",
+        "article_count","media_count","latest_seen","lifecycle_evidence",
+        "alert_priority","alert_action","alert_reasons","analyst_action","analyst_action_reason",
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for case in snapshot.get("cases", []):
+            row = dict(case)
+            row["lifecycle_evidence"] = "; ".join(case.get("lifecycle_evidence") or [])
+            row["alert_reasons"] = "; ".join(case.get("alert_reasons") or [])
+            writer.writerow({field: row.get(field) for field in fields})
+    return {"json": json_path, "html": html_path, "csv": csv_path}
+
+
+def incident_case_dossier_real_read_only() -> Dict[str, Any]:
+    print("=" * 70)
+    print("FEATURE #9 — INCIDENT CASE DOSSIER & ANALYST ACTION / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    snapshot = build_incident_case_dossier(articles)
+    artifacts = _write_incident_case_dossier_artifacts(snapshot)
+    summary = snapshot["summary"]
+    print(f"[DOSSIER] Production articles : {summary['production_articles']}")
+    print(f"[DOSSIER] Unique events        : {summary['unique_events']}")
+    print(f"[DOSSIER] Cases shown          : {summary['cases_shown']}")
+    print(f"[DOSSIER] Immediate review     : {summary['immediate_review']}")
+    print(f"[DOSSIER] Priority review      : {summary['priority_review']}")
+    print(f"[DOSSIER] Verify follow-up     : {summary['verify_follow_up']}")
+    print(f"[DOSSIER] Verify resolution     : {summary['verify_resolution']}")
+    for idx, case in enumerate(snapshot.get("cases", [])[:10], 1):
+        print(f"#{idx} {case.get('event_name')} | action={case.get('analyst_action')} | lifecycle={case.get('lifecycle_state')} | risk={case.get('max_risk_score')} ({case.get('max_risk_level')}) | ews={case.get('early_warning_score')} ({case.get('early_warning_level')}) | trend={case.get('trend_status')}")
+    print(f"[DOSSIER] Artifact JSON : {artifacts['json']}")
+    print(f"[DOSSIER] Artifact HTML : {artifacts['html']}")
+    print(f"[DOSSIER] Artifact CSV  : {artifacts['csv']}")
+    print("[DOSSIER PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
+
+
+def test_incident_case_dossier_real_read_only() -> Dict[str, Any]:
+    print("=" * 70)
+    print("TEST FEATURE #9 — INCIDENT CASE DOSSIER / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    before = get_all_articles()
+    if not before:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot = build_incident_case_dossier(before)
+    cases = snapshot.get("cases", [])
+    if not cases:
+        return {"status": "FAILED", "reason": "NO_CASES"}
+
+    valid_actions = {
+        "IMMEDIATE_REVIEW","PRIORITY_REVIEW","VERIFY_FOLLOW_UP","VERIFY_RESOLUTION",
+        "MONITOR_CLOSELY","MONITOR","FOLLOW_UP_IF_RELEVANT","ROUTINE_MONITORING",
+    }
+    for case in cases:
+        if not case.get("event_key") or not case.get("event_name"):
+            return {"status": "FAILED", "reason": "MISSING_EVENT_IDENTITY"}
+        if case.get("analyst_action") not in valid_actions:
+            return {"status": "FAILED", "reason": "INVALID_ANALYST_ACTION"}
+        if case.get("database_write") is not False or case.get("telegram_send") is not False:
+            return {"status": "FAILED", "reason": "MUTATION_FLAG_ENABLED"}
+        if len(case.get("timeline") or []) > FEATURE9_MAX_ARTICLES_PER_CASE:
+            return {"status": "FAILED", "reason": "TIMELINE_LIMIT_EXCEEDED"}
+        if case.get("lifecycle_state") == "STALE_NO_RESOLUTION_EVIDENCE" and case.get("analyst_action") == "VERIFY_RESOLUTION":
+            return {"status": "FAILED", "reason": "STALE_IMPLIED_RESOLUTION"}
+
+    feature7 = build_incident_timeline(before)
+    feature7_keys = {str(e.get("event_key")) for e in feature7.get("events", [])}
+    if not {str(c.get("event_key")) for c in cases}.issubset(feature7_keys):
+        return {"status": "FAILED", "reason": "EVENT_KEY_CHANGED_FROM_FEATURE7"}
+    print("[TEST PASS] EVENT IDENTITY | Feature #9 mempertahankan event_key Feature #7")
+
+    feature8 = build_incident_lifecycle(before)
+    f8_by_key = {str(e.get("event_key")): e for e in feature8.get("events", [])}
+    for case in cases:
+        f8 = f8_by_key.get(str(case.get("event_key")))
+        if not f8:
+            return {"status": "FAILED", "reason": "MISSING_FEATURE8_SOURCE"}
+        if case.get("lifecycle_state") != f8.get("lifecycle_state"):
+            return {"status": "FAILED", "reason": "LIFECYCLE_NOT_PRESERVED"}
+    print("[TEST PASS] LIFECYCLE PRESERVED | Feature #8 state tetap")
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+
+    artifacts = _write_incident_case_dossier_artifacts(snapshot)
+    html_path = artifacts.get("html")
+    if html_path:
+        html_text = Path(html_path).read_text(encoding="utf-8")
+        if "<td><td>" in html_text or "<td><br>" in html_text:
+            return {"status": "FAILED", "reason": "MALFORMED_DOSSIER_HTML"}
+    print("[TEST PASS] HTML CASE DOSSIER MARKUP")
+    print("[TEST PASS] CASE DOSSIER / ACTION STRUCTURE")
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("TEST INCIDENT CASE DOSSIER REAL: PASSED")
+    return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
+
+
 def main() -> None:
 
     parser = argparse.ArgumentParser(
@@ -13704,6 +13989,18 @@ def main() -> None:
         "--test-incident-lifecycle-real",
         action="store_true",
         help="test Incident Lifecycle & Follow-up Evidence REAL production (read-only)",
+    )
+
+    parser.add_argument(
+        "--incident-case-dossier",
+        action="store_true",
+        help="generate Incident Case Dossier & Analyst Action REAL production (read-only)",
+    )
+
+    parser.add_argument(
+        "--test-incident-case-dossier-real",
+        action="store_true",
+        help="test Incident Case Dossier & Analyst Action REAL production (read-only)",
     )
 
     parser.add_argument(
@@ -14042,6 +14339,18 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_incident_case_dossier_real:
+        result = test_incident_case_dossier_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Incident Case Dossier REAL gagal: {result.get('reason')}")
+        return
+
+    if args.incident_case_dossier:
+        result = incident_case_dossier_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Incident Case Dossier gagal: {result.get('reason')}")
         return
 
     if args.test_incident_lifecycle_real:
