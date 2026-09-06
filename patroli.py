@@ -6040,16 +6040,39 @@ def test_real_new_article_e2e() -> Dict[str, Any]:
         print(f"[TEST] {reason:<32}: {count}")
 
     if selected is None:
-        print("TEST REAL NEW ARTICLE E2E: NO_REAL_NEW")
-        print("Tidak ada artikel nyata yang lolos duplicate gate; tidak ada write test.")
-        return {
-            "status": "NO_REAL_NEW",
-            "baseline_count": baseline_count,
-            "candidate_count": len(candidates),
-            "valid_count": len(valid_articles),
-            "duplicate_counts": dict(duplicate_counts),
-            "database_write": False,
-        }
+        # ========================================================
+        # CONTROLLED FALLBACK
+        # ========================================================
+        # Jika crawler hari ini memang tidak menghasilkan NEW_ARTICLE,
+        # jangan memaksa artikel lama menjadi NEW_ARTICLE.
+        # Namun kita tetap perlu menguji jalur WRITE -> READ-BACK ->
+        # TELEGRAM MOCK -> CLEANUP menggunakan payload yang berasal
+        # dari artikel nyata hasil crawler.
+        #
+        # Identitas yang dapat mengubah dedupe dibuat unik:
+        # - URL test unik
+        # - title test unik
+        # - media test khusus
+        # Content asli tetap dipertahankan.
+        # Ini BUKAN artikel produksi dan TIDAK boleh dikirim Telegram.
+        # ========================================================
+        source_article = valid_articles[0]
+        test_article = dict(source_article)
+        test_stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+        source_title = str(source_article.get("title") or "Artikel Real Crawler").strip()
+        test_article["title"] = f"[E2E TEST - REAL PAYLOAD] {source_title}"
+        test_article["link"] = f"https://example.com/patroli-siber-e2e-test-{test_stamp}"
+        test_article["media"] = "PATROLI-E2E-TEST"
+        test_article["source"] = "PATROLI-E2E-TEST"
+        selected = (test_article, 0.0, None)
+        print()
+        print("[TEST] NO_REAL_NEW dari crawler production.")
+        print("[TEST] Mengaktifkan CONTROLLED REAL-PAYLOAD FALLBACK.")
+        print("[TEST] Payload berasal dari artikel nyata crawler; identitas test dibuat unik.")
+        print("[TEST] Tujuan: menguji WRITE -> READ-BACK -> TELEGRAM MOCK -> CLEANUP.")
+        controlled_fallback = True
+    else:
+        controlled_fallback = False
 
     article, similarity, matched = selected
     link = normalize_url(article.get("link") or "")
@@ -6063,8 +6086,11 @@ def test_real_new_article_e2e() -> Dict[str, Any]:
     print(f"[TEST] media       : {get_media_source(article)}")
     print(f"[TEST] URL         : {link}")
     print("[TEST] should_save : True")
-    print("[TEST] reason      : NEW_ARTICLE")
+    print("[TEST] reason      : NEW_ARTICLE (CONTROLLED TEST IDENTITY)")
     print(f"[TEST] similarity  : {similarity:.2%}")
+    if controlled_fallback:
+        print("[TEST] mode        : CONTROLLED_REAL_PAYLOAD_FALLBACK")
+        print("[TEST] production DB identity : TIDAK DIGUNAKAN")
 
     # Safety gate: link harus benar-benar belum ada sebelum write.
     before = get_article_by_link(link)
@@ -6181,11 +6207,14 @@ def test_real_new_article_e2e() -> Dict[str, Any]:
 
     print("=" * 70)
     print("TEST REAL NEW ARTICLE E2E: PASSED")
-    print("Crawler -> NEW_ARTICLE -> Risk -> Supabase -> Read-back -> Telegram mock -> Cleanup")
+    if controlled_fallback:
+        print("Mode: CONTROLLED REAL-PAYLOAD FALLBACK")
+    print("Crawler payload -> NEW_ARTICLE test identity -> Risk -> Supabase -> Read-back -> Telegram mock -> Cleanup")
     print("Tidak ada pesan Telegram nyata yang dikirim.")
     print("=" * 70)
     return {
         "status": "PASSED",
+        "mode": "CONTROLLED_REAL_PAYLOAD_FALLBACK" if controlled_fallback else "REAL_NEW_ARTICLE",
         "baseline_count": baseline_count,
         "candidate_count": len(candidates),
         "valid_count": len(valid_articles),
