@@ -1,4 +1,4 @@
-name: Patroli Siber 
+name: Patroli Siber — Feature 9 Incident Case Dossier
 
 on:
   # ==========================================
@@ -54,6 +54,8 @@ on:
           - test-incident-timeline-real
           - incident-lifecycle
           - test-incident-lifecycle-real
+          - incident-case-dossier
+          - test-incident-case-dossier-real
           - send-intelligence-alerts
 
 jobs:
@@ -212,6 +214,14 @@ jobs:
               echo "Menjalankan test Incident Lifecycle & Follow-up Evidence REAL production (READ-ONLY)..."
               python patroli.py --test-incident-lifecycle-real
 
+            elif [ "${{ inputs.mode }}" = "incident-case-dossier" ]; then
+              echo "Generate Incident Case Dossier & Analyst Action REAL production (READ-ONLY)..."
+              python patroli.py --incident-case-dossier
+
+            elif [ "${{ inputs.mode }}" = "test-incident-case-dossier-real" ]; then
+              echo "Menjalankan test Incident Case Dossier & Analyst Action REAL production (READ-ONLY)..."
+              python patroli.py --test-incident-case-dossier-real
+
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
               echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
               python patroli.py --send-intelligence-alerts
@@ -353,6 +363,21 @@ jobs:
             incident_lifecycle.json
             incident_lifecycle.html
             incident_lifecycle.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ==========================================
+      # UPLOAD FEATURE #9 — INCIDENT CASE DOSSIER
+      # ==========================================
+      - name: Upload Incident Case Dossier
+        if: ${{ inputs.mode == 'incident-case-dossier' || inputs.mode == 'test-incident-case-dossier-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: incident-case-dossier
+          path: |
+            incident_case_dossier.json
+            incident_case_dossier.html
+            incident_case_dossier.csv
           if-no-files-found: warn
           retention-days: 30
 
