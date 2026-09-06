@@ -14655,6 +14655,9 @@ FEATURE10_TOPIC_FAMILIES = {
 FEATURE10_NO_PERSON_MAX_DAYS = 7
 FEATURE10_SAME_EVENT_TITLE_RATIO_REJECT = 0.68
 FEATURE10_SAME_EVENT_TITLE_JACCARD_REJECT = 0.30
+FEATURE10_IDENTITY_MAX_DAYS = 14
+FEATURE10_IDENTITY_STRONG_TITLE_RATIO = 0.55
+FEATURE10_IDENTITY_STRONG_TITLE_JACCARD = 0.35
 FEATURE10_AUDIT_MAX_CANDIDATES = 200
 FEATURE10_AUDIT_MAX_REJECTED_SAMPLES = 50
 FEATURE10_AUDIT_NEAR_MISS_SCORE_THRESHOLD = 2
@@ -14892,173 +14895,127 @@ def _feature10_is_probable_same_incident(a: Dict[str, Any], b: Dict[str, Any], o
 
 
 def _feature10_relationship(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if a.get("event_key") == b.get("event_key"): return None
-    ov=_feature10_overlap(a,b)
-    days=_feature10_days_between(a,b)
+    if a.get("event_key") == b.get("event_key"):
+        return None
+    ov = _feature10_overlap(a, b)
+    days = _feature10_days_between(a, b)
 
-    # Safety guard: person overlap is only meaningful if the values themselves
-    # are valid person candidates. This is intentionally defensive even though
-    # extraction already filters them.
-    valid_persons=[]
-    for person in ov["persons"]:
-        if _feature10_clean_person_candidate(person):
-            valid_persons.append(person)
-    ov["persons"]=sorted(set(valid_persons))
+    valid_persons = [p for p in ov.get("persons", []) if _feature10_clean_person_candidate(p)]
+    ov["persons"] = sorted(set(valid_persons))
+    ratio, jaccard = _feature10_title_similarity(a, b)
 
-    # V21 semantic separation guard: jangan menyebut dua event_key berbeda
-    # sebagai cross-incident relationship jika event identity-nya masih sangat
-    # mirip. Ini bukan merge dan tidak mengubah event_key.
     if _feature10_is_probable_same_incident(a, b, ov):
         return None
+    if days is not None and days > FEATURE10_IDENTITY_MAX_DAYS:
+        return None
 
-    evidence=[]
+    specific_topics = {t for t in ov.get("topics", []) if t in FEATURE10_SPECIFIC_TOPIC_TERMS}
+    specific_families = {FEATURE10_TOPIC_FAMILIES.get(t, t) for t in specific_topics}
+
+    evidence = []
+    identity_strength = ""
+
+    # V23: relationship cross-incident harus memiliki identity evidence yang
+    # menghubungkan subjek/aktor, bukan sekadar topic atau prosedur yang sama.
+    # Person + independent context adalah jalur terkuat.
     if ov["persons"]:
         evidence.append("SAME_PERSON")
-    if ov["institutions"]:
-        evidence.append("SAME_INSTITUTION")
-    if ov["positions"]:
-        evidence.append("SAME_POSITION")
-    if ov["topics"]:
-        evidence.append("SAME_TOPIC")
-    if days is not None and days <= FEATURE10_TEMPORAL_DAYS_STRONG:
-        evidence.append("TEMPORAL_PROXIMITY")
+        independent = []
+        if ov.get("institutions"):
+            evidence.append("SAME_INSTITUTION")
+            independent.append("institution")
+        if ov.get("positions"):
+            evidence.append("SAME_POSITION")
+            independent.append("position")
+        if specific_families:
+            evidence.append("SAME_DISTINCTIVE_TOPIC_FAMILY")
+            independent.append("topic_family")
 
-    # Tanpa person nyata, V19 tidak lagi menerima institution + position +
-    # generic topic sebagai relationship. Harus ada topic yang distinctive.
-    # Minimal dua specific topics; atau satu specific topic + institution yang
-    # sama dan jarak waktu <= 7 hari. Ini mencegah pola generik seperti
-    # "KEJAGUNG + KAJARI + DIPERIKSA" menjadi relationship massal.
-    if ov["persons"]:
-        if not (ov["institutions"] or ov["positions"] or ov["topics"]):
+        # Orang yang sama pada dua incident yang berbeda harus punya konteks
+        # independen. Dua topic bersarang (etik/kode etik) tetap satu family.
+        if not independent:
             return None
+        # Jika konteksnya sangat mirip dan hanya topic yang sama, guard same-
+        # incident sudah menangani kasus kuat; sisanya tetap perlu sinyal judul
+        # atau konteks lain agar tidak menjadi hubungan massal.
+        if len(independent) == 1 and independent[0] == "topic_family":
+            if ratio < FEATURE10_IDENTITY_STRONG_TITLE_RATIO and jaccard < FEATURE10_IDENTITY_STRONG_TITLE_JACCARD:
+                return None
+        identity_strength = "STRONG_PERSON_IDENTITY" if len(independent) >= 2 or independent[0] in {"institution", "position"} else "PERSON_TOPIC_IDENTITY"
     else:
-        specific_topics = sorted(
-            t for t in ov["topics"]
-            if t in FEATURE10_SPECIFIC_TOPIC_TERMS
-        )
-        ratio, jaccard = _feature10_title_similarity(a, b)
-        specific_families = {FEATURE10_TOPIC_FAMILIES.get(t, t) for t in specific_topics}
-        if len(specific_families) >= 2:
-            pass
-        elif (
-            len(specific_families) >= 1
-            and ov["institutions"]
-            and days is not None
-            and days <= FEATURE10_NO_PERSON_MAX_DAYS
-            and (a.get("event_type") != b.get("event_type") or (ratio < 0.55 and jaccard < 0.30))
-        ):
-            pass
+        # Tanpa person valid, topic saja TIDAK cukup untuk cross-incident.
+        # Dua distinctive families + institution + temporal proximity adalah
+        # fallback yang lebih kuat, tetapi tetap MEDIUM.
+        if len(specific_families) >= 2 and ov.get("institutions"):
+            identity_strength = "MULTI_TOPIC_INSTITUTION"
+            evidence.extend(["SAME_INSTITUTION", "MULTIPLE_DISTINCTIVE_TOPIC_FAMILIES"])
         else:
             return None
 
-    if days is not None and days > FEATURE10_TEMPORAL_DAYS_STRONG:
-        return None
+    if days is not None and days <= FEATURE10_TEMPORAL_DAYS_STRONG:
+        evidence.append("TEMPORAL_PROXIMITY")
 
-    if ov["persons"] and ov["institutions"]:
-        relation_type="PERSON_INSTITUTION_LINK"
-    elif ov["persons"] and ov["positions"]:
-        relation_type="PERSON_POSITION_LINK"
-    elif ov["institutions"] and ov["positions"] and ov["topics"]:
-        relation_type="INSTITUTION_POSITION_TOPIC_LINK"
+    if ov["persons"] and ov.get("institutions"):
+        relation_type = "PERSON_INSTITUTION_LINK"
+    elif ov["persons"] and ov.get("positions"):
+        relation_type = "PERSON_POSITION_LINK"
+    elif ov["persons"] and specific_families:
+        relation_type = "PERSON_TOPIC_LINK"
+    elif ov.get("institutions") and len(specific_families) >= 2:
+        relation_type = "INSTITUTION_MULTI_TOPIC_LINK"
     else:
-        relation_type="MULTI_ANCHOR_LINK"
+        relation_type = "MULTI_ANCHOR_LINK"
 
-    # HIGH hanya bila ada person-name yang valid + independent identity anchor.
-    # Institution/position/topic-only relationships maksimum MEDIUM.
-    confidence="HIGH" if (ov["persons"] and (ov["institutions"] or ov["positions"])) else "MEDIUM"
+    confidence = "HIGH" if ov["persons"] and (ov.get("institutions") or ov.get("positions")) else "MEDIUM"
     return {
-        "relationship_id": "REL-" + hashlib.sha256((str(a["event_key"])+"|"+str(b["event_key"])).encode()).hexdigest()[:12].upper(),
-        "event_a": {k:a.get(k) for k in ("event_key","event_name","event_type","article_count","media_count","first_seen","latest_seen","max_risk_score","max_risk_level")},
-        "event_b": {k:b.get(k) for k in ("event_key","event_name","event_type","article_count","media_count","first_seen","latest_seen","max_risk_score","max_risk_level")},
+        "relationship_id": "REL-" + hashlib.sha256((str(a["event_key"]) + "|" + str(b["event_key"])).encode()).hexdigest()[:12].upper(),
+        "event_a": {k: a.get(k) for k in ("event_key", "event_name", "event_type", "article_count", "media_count", "first_seen", "latest_seen", "max_risk_score", "max_risk_level")},
+        "event_b": {k: b.get(k) for k in ("event_key", "event_name", "event_type", "article_count", "media_count", "first_seen", "latest_seen", "max_risk_score", "max_risk_level")},
         "relationship_type": relation_type,
         "confidence": confidence,
+        "identity_strength": identity_strength,
         "evidence": evidence,
-        "shared_entities": {k:v for k,v in ov.items() if v},
+        "shared_entities": {k: v for k, v in ov.items() if v},
         "temporal_distance_days": days,
-        "analyst_note": "Relationship evidence only; bukan bukti kausalitas atau keterlibatan hukum, dan event_key tidak digabung.",
+        "title_similarity": {"ratio": ratio, "jaccard": jaccard},
+        "analyst_note": "Identity evidence only; bukan bukti kausalitas atau keterlibatan hukum, dan event_key tidak digabung.",
     }
 
 
 def _feature10_audit_rejection_reason(a: Dict[str, Any], b: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
-    """Jelaskan kenapa pasangan event tidak menjadi relationship.
-
-    Audit ini sengaja hanya mengobservasi keputusan guard yang sudah ada.
-    Ia TIDAK mengubah aturan acceptance relationship.
-    """
     if a.get("event_key") == b.get("event_key"):
         return "SELF_RELATIONSHIP", {"score": 0, "days": _feature10_days_between(a, b)}
 
     ov = _feature10_overlap(a, b)
-    valid_persons = sorted({
-        person for person in ov.get("persons", [])
-        if _feature10_clean_person_candidate(person)
-    })
-    ov["persons"] = valid_persons
+    ov["persons"] = sorted({p for p in ov.get("persons", []) if _feature10_clean_person_candidate(p)})
     days = _feature10_days_between(a, b)
     ratio, jaccard = _feature10_title_similarity(a, b)
-    specific_topics = sorted({
-        t for t in ov.get("topics", [])
-        if t in FEATURE10_SPECIFIC_TOPIC_TERMS
-    })
-    specific_families = sorted({
-        FEATURE10_TOPIC_FAMILIES.get(t, t) for t in specific_topics
-    })
+    specific_topics = sorted({t for t in ov.get("topics", []) if t in FEATURE10_SPECIFIC_TOPIC_TERMS})
+    specific_families = sorted({FEATURE10_TOPIC_FAMILIES.get(t, t) for t in specific_topics})
 
     if _feature10_is_probable_same_incident(a, b, ov):
-        return "PROBABLE_SAME_INCIDENT", {
-            "score": 0,
-            "days": days,
-            "title_ratio": ratio,
-            "title_jaccard": jaccard,
-            "specific_topics": specific_topics,
-            "specific_topic_families": specific_families,
-        }
+        return "PROBABLE_SAME_INCIDENT", {"score": 0, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
+    if days is None or days > FEATURE10_IDENTITY_MAX_DAYS:
+        return "TEMPORAL_WINDOW_EXCEEDED", {"score": 0, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
 
-    if days is not None and days > FEATURE10_TEMPORAL_DAYS_STRONG:
-        return "TEMPORAL_WINDOW_EXCEEDED", {
-            "score": 0,
-            "days": days,
-            "title_ratio": ratio,
-            "title_jaccard": jaccard,
-            "specific_topics": specific_topics,
-            "specific_topic_families": specific_families,
-        }
+    if ov.get("persons"):
+        independent = []
+        if ov.get("institutions"): independent.append("institution")
+        if ov.get("positions"): independent.append("position")
+        if specific_families: independent.append("topic_family")
+        if not independent:
+            return "PERSON_WITHOUT_INDEPENDENT_CONTEXT", {"score": 1, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
+        if len(independent) == 1 and independent[0] == "topic_family" and ratio < FEATURE10_IDENTITY_STRONG_TITLE_RATIO and jaccard < FEATURE10_IDENTITY_STRONG_TITLE_JACCARD:
+            return "PERSON_TOPIC_IDENTITY_TOO_WEAK", {"score": 2, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
+        return "ACCEPTED", {"score": 6 + len(independent), "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
 
-    if not ov.get("persons"):
-        if len(specific_families) < 2 and not (
-            len(specific_families) >= 1
-            and ov.get("institutions")
-            and days is not None
-            and days <= FEATURE10_NO_PERSON_MAX_DAYS
-            and (a.get("event_type") != b.get("event_type") or (ratio < 0.55 and jaccard < 0.30))
-        ):
-            if not specific_families:
-                reason = "NO_DISTINCTIVE_TOPIC"
-            elif not ov.get("institutions"):
-                reason = "DISTINCTIVE_TOPIC_WITHOUT_INSTITUTION"
-            elif days is None or days > FEATURE10_NO_PERSON_MAX_DAYS:
-                reason = "DISTINCTIVE_TOPIC_TEMPORAL_TOO_WEAK"
-            else:
-                reason = "DISTINCTIVE_TOPIC_NOT_INDEPENDENT"
-            return reason, {
-                "score": 0,
-                "days": days,
-                "title_ratio": ratio,
-                "title_jaccard": jaccard,
-                "specific_topics": specific_topics,
-                "specific_topic_families": specific_families,
-            }
-
-    return "ACCEPTED", {
-        "score": len(ov.get("persons", [])) * 3 + len(ov.get("institutions", [])) +
-                 len(specific_families) * 2 + (1 if ov.get("positions") else 0) +
-                 (1 if days is not None and days <= FEATURE10_TEMPORAL_DAYS_STRONG else 0),
-        "days": days,
-        "title_ratio": ratio,
-        "title_jaccard": jaccard,
-        "specific_topics": specific_topics,
-        "specific_topic_families": specific_families,
-    }
+    if len(specific_families) >= 2 and ov.get("institutions"):
+        return "ACCEPTED", {"score": 5, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
+    if not specific_families:
+        return "NO_DISTINCTIVE_TOPIC", {"score": 0, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": [], "specific_topic_families": []}
+    if not ov.get("institutions"):
+        return "DISTINCTIVE_TOPIC_WITHOUT_INSTITUTION", {"score": 1, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
+    return "INSUFFICIENT_IDENTITY_EVIDENCE", {"score": 1, "days": days, "title_ratio": ratio, "title_jaccard": jaccard, "specific_topics": specific_topics, "specific_topic_families": specific_families}
 
 
 def build_cross_incident_candidate_audit(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -15112,12 +15069,15 @@ def build_cross_incident_candidate_audit(articles: List[Dict[str, Any]], now: Op
         "DISTINCTIVE_TOPIC_WITHOUT_INSTITUTION",
         "DISTINCTIVE_TOPIC_TEMPORAL_TOO_WEAK",
         "DISTINCTIVE_TOPIC_NOT_INDEPENDENT",
+        "PERSON_WITHOUT_INDEPENDENT_CONTEXT",
+        "PERSON_TOPIC_IDENTITY_TOO_WEAK",
+        "INSUFFICIENT_IDENTITY_EVIDENCE",
         "NO_DISTINCTIVE_TOPIC",
     }
     near_miss_count = sum(counts.get(k, 0) for k in near_miss_reasons)
 
     return {
-        "cross_incident_audit_version": "FEATURE10-AUDIT-V1-PRECISION-GUARD",
+        "cross_incident_audit_version": "FEATURE10-AUDIT-V2-IDENTITY-EVIDENCE-GUARD",
         "generated_at": now.isoformat(),
         "mode": "READ-ONLY",
         "database_write": False,
@@ -15184,7 +15144,7 @@ def _write_cross_incident_candidate_audit_artifacts(snapshot: Dict[str, Any]) ->
             idx += 1
     sample_html = "".join(sample_rows) or '<tr><td colspan="6">Tidak ada rejected sample.</td></tr>'
 
-    html_doc = f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Candidate Audit</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Candidate Audit</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-AUDIT-V1-PRECISION-GUARD</p><div class="grid"><div class="card">Events<div class="value">{summary.get('events_analyzed',0)}</div></div><div class="card">Candidate Pairs<div class="value">{summary.get('candidate_pairs',0)}</div></div><div class="card">Accepted<div class="value">{summary.get('accepted_relationships',0)}</div></div><div class="card">Rejected<div class="value">{summary.get('rejected_pairs',0)}</div></div><div class="card">Near Miss<div class="value">{summary.get('near_miss_pairs',0)}</div></div></div><p><small>Audit tidak mengubah relationship logic, event_key, risk, database, atau Telegram. Tujuannya menjelaskan alasan candidate pair diterima/ditolak.</small></p><h2>Rejection Counts</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{count_rows}</tbody></table><h2>Rejected Samples</h2><table><thead><tr><th>#</th><th>Reason</th><th>Event A</th><th>Event B</th><th>Days</th><th>Specific Topic Families</th></tr></thead><tbody>{sample_html}</tbody></table></body></html>"""
+    html_doc = f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Candidate Audit</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Candidate Audit</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-AUDIT-V2-IDENTITY-EVIDENCE-GUARD</p><div class="grid"><div class="card">Events<div class="value">{summary.get('events_analyzed',0)}</div></div><div class="card">Candidate Pairs<div class="value">{summary.get('candidate_pairs',0)}</div></div><div class="card">Accepted<div class="value">{summary.get('accepted_relationships',0)}</div></div><div class="card">Rejected<div class="value">{summary.get('rejected_pairs',0)}</div></div><div class="card">Near Miss<div class="value">{summary.get('near_miss_pairs',0)}</div></div></div><p><small>Audit tidak mengubah relationship logic, event_key, risk, database, atau Telegram. Tujuannya menjelaskan alasan candidate pair diterima/ditolak.</small></p><h2>Rejection Counts</h2><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>{count_rows}</tbody></table><h2>Rejected Samples</h2><table><thead><tr><th>#</th><th>Reason</th><th>Event A</th><th>Event B</th><th>Days</th><th>Specific Topic Families</th></tr></thead><tbody>{sample_html}</tbody></table></body></html>"""
     with open(html_path, "w", encoding="utf-8") as fh:
         fh.write(html_doc)
 
@@ -15270,7 +15230,7 @@ def build_cross_incident_relationships(articles: List[Dict[str, Any]], now: Opti
     relationships.sort(key=lambda r:(0 if r.get("confidence")=="HIGH" else 1, -len(r.get("evidence") or []), -_dashboard_safe_float((r.get("event_a") or {}).get("max_risk_score")), -_dashboard_safe_float((r.get("event_b") or {}).get("max_risk_score"))))
     relationships=relationships[:FEATURE10_MAX_RELATIONSHIPS]
     return {
-        "cross_incident_relationship_version":"FEATURE10-READONLY-V5-CROSS-INCIDENT-SEMANTIC-GUARD",
+        "cross_incident_relationship_version":"FEATURE10-READONLY-V6-IDENTITY-EVIDENCE-GUARD",
         "generated_at":now.isoformat(),
         "mode":"READ-ONLY",
         "database_write":False,
@@ -15316,7 +15276,7 @@ def _write_cross_incident_relationship_artifacts(snapshot: Dict[str, Any]) -> Di
         rows.append("<tr>" + f"<td>{i}</td><td>{html.escape(str(r.get('relationship_type')))}</td><td>{html.escape(str(r.get('confidence')))}</td>" + f"<td>{html.escape(str(a.get('event_name')))}</td><td>{html.escape(str(b.get('event_name')))}</td>" + f"<td>{html.escape('; '.join(shared) or '-')}</td><td>{html.escape(str(r.get('temporal_distance_days') if r.get('temporal_distance_days') is not None else '-'))}</td>" + "</tr>")
     html_rows="".join(rows) or '<tr><td colspan="7">Tidak ada relationship.</td></tr>'
     s=snapshot.get("summary",{})
-    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V5-CROSS-INCIDENT-SEMANTIC-GUARD &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V21: person extraction konservatif + distinctive topic guard + probable-same-incident semantic guard. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V6-IDENTITY-EVIDENCE-GUARD &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V23: person extraction konservatif + distinctive topic guard + probable-same-incident semantic guard + identity evidence guard. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
     with open(html_path,"w",encoding="utf-8") as fh: fh.write(html_doc)
     fields=["relationship_id","relationship_type","confidence","event_a_key","event_a_name","event_b_key","event_b_name","evidence","shared_entities","temporal_distance_days","analyst_note"]
     with open(csv_path,"w",encoding="utf-8",newline="") as fh:
@@ -15369,6 +15329,12 @@ def _feature10_regression_entity_guard() -> Dict[str, Any]:
     persons = _feature10_extract_persons(good)
     if "revanda sitepu" not in {_feature10_norm(p) for p in persons}:
         return {"status":"FAILED", "reason":"VALID_PERSON_NOT_EXTRACTED", "persons":persons}
+
+    cross_a = {"event_key":"XA","event_name":"Revanda Sitepu Diperiksa Kasus Korupsi","event_type":"PENEGAKAN_HUKUM","entities":{"persons":["revanda sitepu"],"institutions":["kejagung"],"positions":["kajari"],"topics":["korupsi"]},"latest_seen":"2026-01-20T08:00:00+00:00"}
+    cross_b = {"event_key":"XB","event_name":"Revanda Sitepu Hadiri Pelantikan Kajari Baru","event_type":"KEGIATAN_KEBIJAKAN","entities":{"persons":["revanda sitepu"],"institutions":["kejati"],"positions":["kajari"],"topics":["pelantikan"]},"latest_seen":"2026-01-25T08:00:00+00:00"}
+    rel = _feature10_relationship(cross_a, cross_b)
+    if not rel or rel.get("identity_strength") != "STRONG_PERSON_IDENTITY":
+        return {"status":"FAILED", "reason":"VALID_CROSS_INCIDENT_IDENTITY_NOT_ACCEPTED", "relationship":rel}
     return {"status":"PASSED", "persons":persons}
 
 
@@ -15420,7 +15386,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
                 if not _feature10_clean_person_candidate(person):
                     return {"status":"FAILED","reason":"INVALID_PERSON_IN_RELATIONSHIP","person":person}
         else:
-            # V21 generation rule: without a valid person, a relationship is
+            # V23 generation rule: without a valid person, a relationship is
             # allowed only when it has distinctive topic evidence: either
             # >=2 specific topics, or >=1 specific topic + shared institution
             # within the 7-day no-person window. Do not require position/topic
