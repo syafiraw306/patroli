@@ -46,6 +46,9 @@ on:
           - test-intelligence-dashboard-real
           - early-warning
           - test-early-warning-real
+          - intelligence-alerts
+          - test-intelligence-alerts-real
+          - send-intelligence-alerts
 
 jobs:
   patroli:
@@ -171,6 +174,18 @@ jobs:
               echo "Generate Cyber Intelligence / Early Warning REAL production (READ-ONLY)..."
               python patroli.py --early-warning
 
+            elif [ "${{ inputs.mode }}" = "intelligence-alerts" ]; then
+              echo "Generate Intelligence Alert & Prioritization REAL production (READ-ONLY)..."
+              python patroli.py --intelligence-alerts
+
+            elif [ "${{ inputs.mode }}" = "test-intelligence-alerts-real" ]; then
+              echo "Menjalankan test Intelligence Alert & Prioritization REAL production (READ-ONLY)..."
+              python patroli.py --test-intelligence-alerts-real
+
+            elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
+              echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
+              python patroli.py --send-intelligence-alerts
+
             elif [ "${{ inputs.mode }}" = "test-early-warning-real" ]; then
               echo "Menjalankan test Cyber Intelligence / Early Warning REAL production (READ-ONLY)..."
               python patroli.py --test-early-warning-real
@@ -261,5 +276,20 @@ jobs:
             intelligence_dashboard.json
             intelligence_dashboard.html
             intelligence_dashboard_events.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      # ==========================================
+      # UPLOAD FEATURE #6 — INTELLIGENCE ALERTS
+      # ==========================================
+      - name: Upload Intelligence Alerts
+        if: ${{ inputs.mode == 'intelligence-alerts' || inputs.mode == 'test-intelligence-alerts-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: intelligence-alerts
+          path: |
+            intelligence_alerts.json
+            intelligence_alerts.html
+            intelligence_alerts.csv
           if-no-files-found: warn
           retention-days: 30
