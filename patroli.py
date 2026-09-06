@@ -13,6 +13,7 @@ from difflib import SequenceMatcher
 from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from audit_event_duplicates import (
     audit_event_duplicates,
