@@ -32,6 +32,7 @@ on:
           - audit-exact-duplicates
           - audit-event-duplicates
           - audit-event-quality
+          - test-real-new-article
           - test-new-article
           - test-telegram
           - database-audit
@@ -138,8 +139,12 @@ jobs:
               echo "Menjalankan audit event quality..."
               python patroli.py --audit-event-quality
 
+            elif [ "${{ inputs.mode }}" = "test-real-new-article" ]; then
+              echo "Menjalankan test REAL new article (SAFE / READ-ONLY)..."
+              python patroli.py --test-real-new-article
+
             elif [ "${{ inputs.mode }}" = "test-new-article" ]; then
-              echo "Menjalankan test new article..."
+              echo "Menjalankan test synthetic new article..."
               python patroli.py --test-new-article
 
             elif [ "${{ inputs.mode }}" = "test-telegram" ]; then
