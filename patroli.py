@@ -13338,6 +13338,7 @@ def test_incident_timeline_real_read_only() -> Dict[str, Any]:
 #   - Tidak mengubah event_key Feature #7
 #   - STALE bukan RESOLVED
 #   - RESOLUTION_EVIDENCE hanya jika ada frasa penutupan eksplisit
+#   - OUTCOME_FOLLOW_UP menyimpan evidence tahap/perkembangan yang terdeteksi
 # ============================================================
 
 FEATURE8_MAX_EVENTS = 20
@@ -13476,7 +13477,7 @@ def build_incident_lifecycle(
 
     counts = Counter(item.get("lifecycle_state") for item in lifecycle_events)
     return {
-        "incident_lifecycle_version": "FEATURE8-READONLY-V1",
+        "incident_lifecycle_version": "FEATURE8-READONLY-V2-EVIDENCE-FIX",
         "generated_at": now.isoformat(),
         "mode": "READ-ONLY",
         "database_write": False,
@@ -13626,9 +13627,10 @@ def test_incident_lifecycle_real_read_only() -> Dict[str, Any]:
             return {"status": "FAILED", "reason": "TIMELINE_LIMIT_EXCEEDED"}
         if event.get("lifecycle_state") == "RESOLUTION_EVIDENCE" and not event.get("lifecycle_evidence"):
             return {"status": "FAILED", "reason": "RESOLUTION_STATE_WITHOUT_EVIDENCE"}
-        if event.get("lifecycle_state") != "RESOLUTION_EVIDENCE" and event.get("lifecycle_evidence"):
-            # Evidence is only populated for explicit resolution in this version.
-            return {"status": "FAILED", "reason": "UNEXPECTED_RESOLUTION_EVIDENCE"}
+        if event.get("lifecycle_state") in {"ACTIVE_NO_EXPLICIT_RESOLUTION", "STALE_NO_RESOLUTION_EVIDENCE", "UNKNOWN"} and event.get("lifecycle_evidence"):
+            return {"status": "FAILED", "reason": "UNEXPECTED_LIFECYCLE_EVIDENCE"}
+        if event.get("lifecycle_state") == "OUTCOME_FOLLOW_UP" and not event.get("lifecycle_evidence"):
+            return {"status": "FAILED", "reason": "OUTCOME_STATE_WITHOUT_EVIDENCE"}
 
     # Regression: stale event must never be relabeled as resolved solely from age.
     stale_events = [
