@@ -12334,6 +12334,305 @@ def dedupe() -> Dict[str, Any]:
 # ============================================================
 
 
+
+# ============================================================
+# FEATURE #6 — INTELLIGENCE ALERT & PRIORITIZATION
+# ============================================================
+# Tujuan: mengubah hasil EWS menjadi kandidat alert yang terurut,
+# dapat dijelaskan, dan aman untuk operational review.
+#
+# DEFAULT = READ-ONLY / DRY-RUN.
+# Tidak mengubah database dan tidak mengirim Telegram.
+# Pengiriman nyata hanya terjadi bila CLI --send-intelligence-alerts
+# dipanggil secara eksplisit.
+# ============================================================
+
+INTEL_ALERT_HIGH_THRESHOLD = 65
+INTEL_ALERT_WATCH_THRESHOLD = 50
+INTEL_ALERT_MAX_ITEMS = 5
+INTEL_ALERT_MAX_AGE_DAYS = 7
+
+
+def _intel_alert_latest_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _intel_alert_is_fresh(event: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    latest = _intel_alert_latest_datetime(event.get("latest_seen"))
+    if latest is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    age = now - latest
+    return age.total_seconds() >= 0 and age <= timedelta(days=INTEL_ALERT_MAX_AGE_DAYS)
+
+
+def _intel_alert_priority(event: Dict[str, Any]) -> float:
+    score = _dashboard_safe_float(event.get("early_warning_score"))
+    risk = _dashboard_safe_float(event.get("risk_score"))
+    trend = str(event.get("trend_status") or "")
+    media = _dashboard_safe_int(event.get("media_count"))
+    related = _dashboard_safe_int(event.get("related_count"))
+
+    bonus = 0.0
+    if trend == "ESCALATING":
+        bonus += 12.0
+    elif trend == "EMERGING":
+        bonus += 8.0
+    elif trend == "RISING":
+        bonus += 5.0
+    if media >= 3:
+        bonus += 4.0
+    if related >= 3:
+        bonus += 3.0
+    if risk >= 65:
+        bonus += 5.0
+
+    return round(min(120.0, score + bonus), 2)
+
+
+def _intel_alert_reason_list(event: Dict[str, Any]) -> List[str]:
+    reasons = list(event.get("trigger_reasons") or [])
+    trend = str(event.get("trend_status") or "")
+    risk_level = str(event.get("risk_level") or "")
+    media = _dashboard_safe_int(event.get("media_count"))
+    recent = _dashboard_safe_int(event.get("recent_count"))
+    previous = _dashboard_safe_int(event.get("previous_count"))
+
+    if risk_level in {"HIGH", "MEDIUM"}:
+        reasons.append(f"risk {risk_level.lower()}")
+    if trend in {"EMERGING", "RISING", "ESCALATING"}:
+        reasons.append(f"trend {trend.lower()}")
+    if media >= 2:
+        reasons.append(f"lintas {media} media")
+    if recent > previous:
+        reasons.append(f"recent {recent} vs previous {previous}")
+    return list(dict.fromkeys(reasons))[:6]
+
+
+def build_intelligence_alerts(
+    articles: List[Dict[str, Any]],
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Bangun kandidat alert dari EWS secara deterministic + READ-ONLY."""
+    snapshot = build_early_warning_system(articles)
+    now = now or datetime.now(timezone.utc)
+    candidates: List[Dict[str, Any]] = []
+    seen_keys = set()
+
+    for event in snapshot.get("top_early_warnings", []):
+        key = str(event.get("event_key") or "").strip()
+        level = str(event.get("early_warning_level") or "LOW")
+        if not key or key in seen_keys:
+            continue
+        if level not in {"HIGH", "WATCH"}:
+            continue
+        if not _intel_alert_is_fresh(event, now):
+            continue
+        seen_keys.add(key)
+        alert = dict(event)
+        alert["alert_priority"] = _intel_alert_priority(event)
+        alert["alert_reasons"] = _intel_alert_reason_list(event)
+        alert["alert_action"] = (
+            "IMMEDIATE_REVIEW" if level == "HIGH" else "MONITOR_CLOSELY"
+        )
+        alert["alert_fingerprint"] = hashlib.sha256(
+            f"{key}|{level}|{event.get('latest_seen')}".encode("utf-8")
+        ).hexdigest()[:16]
+        candidates.append(alert)
+
+    candidates.sort(
+        key=lambda x: (
+            x["alert_priority"],
+            _dashboard_safe_float(x.get("early_warning_score")),
+            _dashboard_safe_int(x.get("risk_score")),
+            _dashboard_safe_int(x.get("media_count")),
+        ),
+        reverse=True,
+    )
+    candidates = candidates[:INTEL_ALERT_MAX_ITEMS]
+
+    return {
+        "intelligence_alert_version": "FEATURE6-READONLY-V1",
+        "generated_at": now.isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "source": "early_warning_in_memory",
+        "method": {
+            "purpose": "prioritasi kandidat alert dari Early Warning System",
+            "eligibility": "HIGH/WATCH + event masih fresh <= 7 hari",
+            "max_alerts": INTEL_ALERT_MAX_ITEMS,
+            "cooldown": "not persisted in database; explicit send is required",
+            "note": "Alert priority adalah decision support, bukan risk_score baru.",
+        },
+        "summary": {
+            "production_articles": snapshot.get("summary", {}).get("production_articles", 0),
+            "unique_events": snapshot.get("summary", {}).get("unique_events", 0),
+            "eligible_alerts": len(candidates),
+            "high_alerts": sum(1 for x in candidates if x.get("early_warning_level") == "HIGH"),
+            "watch_alerts": sum(1 for x in candidates if x.get("early_warning_level") == "WATCH"),
+        },
+        "alerts": candidates,
+    }
+
+
+def _write_intelligence_alert_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    json_path = "intelligence_alerts.json"
+    html_path = "intelligence_alerts.html"
+    csv_path = "intelligence_alerts.csv"
+
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
+
+    rows = []
+    for event in snapshot.get("alerts", []):
+        rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(event.get('alert_priority')))}</td>"
+            f"<td>{html.escape(str(event.get('early_warning_level')))}</td>"
+            f"<td>{html.escape(str(event.get('event_name')))}</td>"
+            f"<td>{html.escape(str(event.get('risk_score')))} ({html.escape(str(event.get('risk_level')))})</td>"
+            f"<td>{html.escape(str(event.get('trend_status')))}</td>"
+            f"<td>{html.escape(str(event.get('media_count')))}</td>"
+            f"<td>{html.escape('; '.join(event.get('alert_reasons') or []))}</td>"
+            f"<td>{html.escape(str(event.get('alert_action')))}</td>"
+            "</tr>"
+        )
+    empty = '<tr><td colspan="8">Tidak ada kandidat alert yang fresh dan memenuhi threshold.</td></tr>'
+    html_rows = "".join(rows) or empty
+    summary = snapshot.get("summary", {})
+    html_doc = f"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Intelligence Alerts</title>
+<style>body{{font-family:Arial,sans-serif;margin:32px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}.card{{background:white;padding:16px;border-radius:10px;box-shadow:0 1px 4px #ccc}}.value{{font-size:28px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:24px}}th,td{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}th{{background:#eee}}small{{color:#666}}</style></head>
+<body><h1>Patroli Siber — Intelligence Alert &amp; Prioritization</h1>
+<p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p>
+<div class="grid"><div class="card">Eligible Alerts<div class="value">{summary.get('eligible_alerts',0)}</div></div><div class="card">HIGH<div class="value">{summary.get('high_alerts',0)}</div></div><div class="card">WATCH<div class="value">{summary.get('watch_alerts',0)}</div></div></div>
+<h2>Prioritas Alert</h2><table><thead><tr><th>Priority</th><th>Level</th><th>Event</th><th>Risk</th><th>Trend</th><th>Media</th><th>Why</th><th>Action</th></tr></thead><tbody>{html_rows}</tbody></table>
+<p><small>Mode default hanya menghasilkan kandidat alert. Tidak mengubah database dan tidak mengirim Telegram.</small></p></body></html>"""
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+
+    fields = ["event_key","event_name","event_type","early_warning_score","early_warning_level","risk_score","risk_level","trend_status","trend_confidence","recent_count","previous_count","media_count","related_count","latest_seen","alert_priority","alert_action","alert_fingerprint","alert_reasons"]
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for event in snapshot.get("alerts", []):
+            row = dict(event)
+            row["alert_reasons"] = "; ".join(event.get("alert_reasons") or [])
+            writer.writerow({field: row.get(field) for field in fields})
+    return {"json": json_path, "html": html_path, "csv": csv_path}
+
+
+def intelligence_alerts() -> Dict[str, Any]:
+    """Generate kandidat alert production secara READ-ONLY."""
+    print("=" * 70)
+    print("FEATURE #6 — INTELLIGENCE ALERT & PRIORITIZATION / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    snapshot = build_intelligence_alerts(articles)
+    artifacts = _write_intelligence_alert_artifacts(snapshot)
+    print(f"[ALERT] Production articles : {snapshot['summary']['production_articles']}")
+    print(f"[ALERT] Unique events        : {snapshot['summary']['unique_events']}")
+    print(f"[ALERT] Eligible alerts      : {snapshot['summary']['eligible_alerts']}")
+    print(f"[ALERT] HIGH / WATCH         : {snapshot['summary']['high_alerts']} / {snapshot['summary']['watch_alerts']}")
+    for idx, event in enumerate(snapshot.get("alerts", []), 1):
+        print(f"[ALERT {idx}] {event.get('event_name')} | priority={event.get('alert_priority')} | level={event.get('early_warning_level')} | risk={event.get('risk_score')} ({event.get('risk_level')}) | trend={event.get('trend_status')} | action={event.get('alert_action')} | why={'; '.join(event.get('alert_reasons') or [])}")
+    print(f"[ALERT] Artifact JSON : {artifacts['json']}")
+    print(f"[ALERT] Artifact HTML : {artifacts['html']}")
+    print(f"[ALERT] Artifact CSV  : {artifacts['csv']}")
+    print("[ALERT PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status": "PASSED", "snapshot": snapshot}
+
+
+def test_intelligence_alerts_real_read_only() -> Dict[str, Any]:
+    """Validasi Feature #6 pada production nyata tanpa write/delete/Telegram."""
+    print("=" * 70)
+    print("TEST FEATURE #6 — INTELLIGENCE ALERT & PRIORITIZATION / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    before = get_all_articles()
+    if not before:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot = build_intelligence_alerts(before)
+    summary = snapshot.get("summary", {})
+    for alert in snapshot.get("alerts", []):
+        if alert.get("early_warning_level") not in {"HIGH", "WATCH"}:
+            return {"status": "FAILED", "reason": "INVALID_ALERT_LEVEL"}
+        if not (0 <= _dashboard_safe_float(alert.get("alert_priority")) <= 120):
+            return {"status": "FAILED", "reason": "INVALID_ALERT_PRIORITY"}
+        if not alert.get("alert_fingerprint"):
+            return {"status": "FAILED", "reason": "MISSING_ALERT_FINGERPRINT"}
+        if not _intel_alert_is_fresh(alert):
+            return {"status": "FAILED", "reason": "STALE_ALERT_SELECTED"}
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+    print(f"[TEST] Production articles : {summary.get('production_articles')}")
+    print(f"[TEST] Unique events        : {summary.get('unique_events')}")
+    print(f"[TEST] Eligible alerts      : {summary.get('eligible_alerts')}")
+    print(f"[TEST] HIGH / WATCH         : {summary.get('high_alerts')} / {summary.get('watch_alerts')}")
+    print("[TEST PASS] ALERT STRUCTURE")
+    print("[TEST PASS] FRESHNESS / THRESHOLD FILTER")
+    print("[TEST PASS] PRIORITIZATION / FINGERPRINT")
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+    print("TEST INTELLIGENCE ALERT & PRIORITIZATION REAL: PASSED")
+    return {"status": "PASSED", "summary": summary, "alerts": snapshot.get("alerts", [])}
+
+
+def send_intelligence_alerts() -> Dict[str, Any]:
+    """Kirim alert EWS yang eligible hanya jika dipanggil eksplisit."""
+    print("=" * 70)
+    print("FEATURE #6 — SEND INTELLIGENCE ALERTS / EXPLICIT ACTION")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    snapshot = build_intelligence_alerts(articles)
+    alerts = snapshot.get("alerts", [])[:INTEL_ALERT_MAX_ITEMS]
+    if not alerts:
+        print("[ALERT SEND] Tidak ada kandidat alert fresh yang memenuhi threshold.")
+        return {"status": "PASSED", "sent": 0, "skipped": 0}
+    sent = 0
+    skipped = 0
+    for event in alerts:
+        level = html.escape(str(event.get("early_warning_level")))
+        event_name = html.escape(str(event.get("event_name")))
+        risk = html.escape(f"{event.get('risk_score')} ({event.get('risk_level')})")
+        trend = html.escape(str(event.get("trend_status")))
+        recent = html.escape(f"{event.get('recent_count')}/{event.get('previous_count')}")
+        media = html.escape(str(event.get("media_count")))
+        reasons = html.escape("; ".join(event.get("alert_reasons") or []))
+        text = (f"<b>🚨 PATROLI SIBER — INTELLIGENCE ALERT</b>\n"
+                f"<b>Level:</b> {level}\n"
+                f"<b>Event:</b> {event_name}\n"
+                f"<b>EWS:</b> {event.get('early_warning_score')} / 100\n"
+                f"<b>Risk:</b> {risk}\n"
+                f"<b>Trend:</b> {trend}\n"
+                f"<b>Recent/Previous:</b> {recent}\n"
+                f"<b>Media:</b> {media}\n"
+                f"<b>Why:</b> {reasons}\n"
+                f"<b>Action:</b> {html.escape(str(event.get('alert_action')))}")
+        if send_telegram_message(text):
+            sent += 1
+        else:
+            skipped += 1
+    print(f"[ALERT SEND] Sent={sent} | Skipped={skipped}")
+    return {"status": "PASSED" if skipped == 0 else "PARTIAL", "sent": sent, "skipped": skipped}
+
 def main() -> None:
 
     parser = argparse.ArgumentParser(
@@ -12542,6 +12841,24 @@ def main() -> None:
         help="uji Cyber Intelligence / Early Warning terhadap production nyata secara read-only",
     )
 
+    parser.add_argument(
+        "--intelligence-alerts",
+        action="store_true",
+        help="generate Intelligence Alert & Prioritization candidates secara read-only",
+    )
+
+    parser.add_argument(
+        "--test-intelligence-alerts-real",
+        action="store_true",
+        help="uji Intelligence Alert & Prioritization pada production nyata secara read-only",
+    )
+
+    parser.add_argument(
+        "--send-intelligence-alerts",
+        action="store_true",
+        help="KIRIM kandidat Intelligence Alert ke Telegram secara eksplisit",
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -12649,6 +12966,26 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_intelligence_alerts_real:
+        result = test_intelligence_alerts_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Intelligence Alerts REAL gagal: {result.get('reason')}")
+        return
+
+    if args.intelligence_alerts:
+        result = intelligence_alerts()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Intelligence Alerts gagal: {result.get('reason')}")
+        return
+
+    if args.send_intelligence_alerts:
+        result = send_intelligence_alerts()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Pengiriman Intelligence Alerts gagal: {result.get('reason')}")
+        if result.get("status") == "PARTIAL":
+            raise RuntimeError("Sebagian Intelligence Alert gagal dikirim")
         return
 
     if args.test_early_warning_real:
