@@ -9562,6 +9562,107 @@ def _cluster_average_similarity(cluster):
     return sum(similarities) / len(similarities) if similarities else 0.0
 
 
+def _is_event_detection_test_article(article: Dict[str, Any]) -> bool:
+    """Identifikasi record synthetic/E2E agar validasi event tidak memakai data test."""
+    fields = [
+        normalize_text(article.get("title")),
+        normalize_text(article.get("link")),
+        normalize_text(article.get("source")),
+        normalize_text(article.get("publisher")),
+    ]
+    text = " ".join(x.lower() for x in fields if x)
+    markers = (
+        "test patroli",
+        "patroli siber end to end",
+        "patroli-e2e-test",
+        "e2e test",
+        "example.com/patroli-siber-e2e-test",
+    )
+    return any(marker in text for marker in markers)
+
+
+def test_event_detection_real_read_only() -> Dict[str, Any]:
+    """Validasi Event/Incident Detection pada artikel production nyata secara READ-ONLY."""
+    print("=" * 70)
+    print("TEST EVENT / INCIDENT DETECTION — REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+
+    articles = get_all_articles()
+    if not articles:
+        print("[TEST FAIL] Database artikel kosong.")
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+
+    real_articles = [
+        a for a in articles
+        if normalize_text(a.get("title")) and not _is_event_detection_test_article(a)
+    ]
+    real_articles.sort(
+        key=lambda a: _risk_published_datetime(a) or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+
+    if not real_articles:
+        print("[TEST FAIL] Tidak ditemukan artikel production nyata setelah filter test/E2E.")
+        return {"status": "FAILED", "reason": "NO_REAL_ARTICLES"}
+
+    # Pool related juga harus bebas dari synthetic/E2E agar hasil benar-benar production.
+    real_pool = [a for a in articles if not _is_event_detection_test_article(a)]
+    sample = real_articles[:5]
+
+    print(f"[TEST] Total database artikel       : {len(articles)}")
+    print(f"[TEST] Artikel production nyata    : {len(real_articles)}")
+    print(f"[TEST] Artikel diuji               : {len(sample)}")
+    print("[TEST] Mode                        : READ-ONLY")
+
+    results = []
+    required = {
+        "status", "confidence", "event_key", "event_name", "event_type",
+        "related_count", "media_count", "related_articles",
+    }
+
+    for idx, article in enumerate(sample, start=1):
+        result = detect_article_event(article, real_pool)
+        results.append(result)
+        print(f"[TEST REAL {idx}] Artikel: {article.get('title', '')[:160]}")
+        print_event_detection(article, result)
+
+        missing = sorted(required - set(result))
+        if missing:
+            print(f"[TEST FAIL] Field event missing: {missing}")
+            return {"status": "FAILED", "reason": "MISSING_EVENT_FIELDS", "missing": missing}
+
+        if not (0.0 <= float(result["confidence"]) <= 1.0):
+            print("[TEST FAIL] Confidence di luar rentang 0..1")
+            return {"status": "FAILED", "reason": "INVALID_CONFIDENCE"}
+
+        if not str(result.get("event_key", "")).startswith("EVT-"):
+            print("[TEST FAIL] Event key tidak valid")
+            return {"status": "FAILED", "reason": "INVALID_EVENT_KEY"}
+
+        for related in result.get("related_articles") or []:
+            related_article = related.get("article") if isinstance(related, dict) else None
+            if related_article and _is_event_detection_test_article(related_article):
+                print("[TEST FAIL] Related article masih mengandung data test/E2E")
+                return {"status": "FAILED", "reason": "TEST_ARTICLE_LEAKED_IN_RELATED"}
+
+    related_events = sum(1 for r in results if r.get("status") == "RELATED_EVENT")
+    unconfirmed = sum(1 for r in results if r.get("status") == "UNCONFIRMED_NEW_EVENT")
+
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("[TEST PASS] EVENT DETECTION STRUCTURE")
+    print(f"[TEST RESULT] RELATED_EVENT={related_events} | UNCONFIRMED_NEW_EVENT={unconfirmed}")
+    print("[TEST PASS] READ-ONLY | database tidak diubah")
+    print("TEST EVENT / INCIDENT DETECTION REAL: PASSED")
+    return {
+        "status": "PASSED",
+        "tested": len(sample),
+        "real_articles": len(real_articles),
+        "related_events": related_events,
+        "unconfirmed_new_event": unconfirmed,
+        "events": results,
+    }
+
+
 def test_event_detection_read_only() -> Dict[str, Any]:
     """Smoke test event detection dengan data production secara READ-ONLY."""
     print("=" * 70)
@@ -11352,6 +11453,14 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--test-event-detection-real",
+        action="store_true",
+        help=(
+            "uji Event/Incident Detection pada artikel production nyata, tanpa data test, secara read-only"
+        ),
+    )
+
     args = parser.parse_args()
 
     # --------------------------------------------------------
@@ -11459,6 +11568,12 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_event_detection_real:
+        result = test_event_detection_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Event/Incident Detection REAL gagal: {result.get('reason')}")
         return
 
     if args.test_event_detection:
