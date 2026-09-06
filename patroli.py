@@ -5793,6 +5793,163 @@ def run_once() -> Dict[str, Any]:
 
 
 
+
+# ============================================================
+# SAFE TEST — NEW ARTICLE (READ-ONLY)
+# ============================================================
+
+def test_new_article() -> Dict[str, Any]:
+    """
+    Menguji jalur artikel baru TANPA INSERT/UPDATE/DELETE database
+    dan TANPA mengirim Telegram.
+
+    Yang diuji:
+    - pembacaan database existing
+    - duplicate prevention / should_save_article()
+    - risk analysis
+    - pembentukan payload Telegram
+
+    Database.py tidak diubah dan tidak ada write ke Supabase.
+    """
+    print("=" * 70)
+    print("TEST NEW ARTICLE — SAFE / READ-ONLY")
+    print("=" * 70)
+    print("Database write : SKIPPED")
+    print("Telegram send  : SKIPPED")
+
+    try:
+        existing_articles = get_all_articles()
+    except Exception as exc:
+        print(
+            f"[TEST FAIL] Gagal membaca database: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        raise RuntimeError("TEST NEW ARTICLE gagal membaca database.") from exc
+
+    # URL sengaja dibuat unik setiap test run dan berasal dari publisher
+    # URL biasa, bukan Google News. Tidak pernah ditulis ke database.
+    test_id = str(time.time_ns())
+    test_link = f"https://example.com/patroli-siber-safe-test-{test_id}"
+
+    test_article: Dict[str, Any] = {
+        "title": f"TEST SAFE NEW ARTICLE Patroli Siber {test_id}",
+        "content": (
+            "Ini adalah artikel pengujian internal untuk memverifikasi jalur "
+            "deteksi artikel baru pada sistem Patroli Siber. Artikel ini sengaja "
+            "menggunakan URL, judul, dan isi yang unik agar tidak cocok dengan "
+            "artikel yang sudah ada di database. Pengujian ini hanya berjalan "
+            "di memory dan tidak boleh membuat perubahan pada Supabase."
+        ),
+        "link": test_link,
+        "publisher": "TEST-PATROLI-SAFE",
+        "media_name": "TEST-PATROLI-SAFE",
+        "category": "Perlu Penanganan",
+        "priority": "Tinggi",
+        "published": datetime.now(timezone.utc).isoformat(),
+        "published_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Build the same duplicate indexes used by production, entirely in memory.
+    existing_link_index = {
+        normalize_url(article.get("link") or "")
+        for article in existing_articles
+        if normalize_url(article.get("link") or "")
+    }
+    existing_title_index = build_existing_title_index(existing_articles)
+    existing_content_index = build_existing_content_index(existing_articles)
+
+    print()
+    print(f"[TEST] Database existing articles : {len(existing_articles)}")
+    print(f"[TEST] Test URL                    : {test_link}")
+    print(f"[TEST] Test media                  : TEST-PATROLI-SAFE")
+
+    should_save, reason, similarity, matched_article = should_save_article(
+        test_article,
+        existing_link_index,
+        existing_title_index,
+        existing_content_index,
+    )
+
+    print()
+    print("[TEST] DUPLICATE DECISION")
+    print(f"[TEST] should_save : {should_save}")
+    print(f"[TEST] reason      : {reason}")
+    print(f"[TEST] similarity  : {similarity:.2%}")
+
+    if not should_save or reason != "NEW_ARTICLE":
+        matched_id = matched_article.get("id") if isinstance(matched_article, dict) else None
+        print(f"[TEST FAIL] Artikel test dianggap duplicate. matched_id={matched_id}")
+        raise RuntimeError(
+            f"TEST NEW ARTICLE gagal: expected NEW_ARTICLE, got {reason!r}."
+        )
+
+    print("[TEST PASS] NEW_ARTICLE detection")
+
+    # Risk analysis tetap dijalankan, tetapi hasil hanya disimpan di memory.
+    risk_pool = existing_articles + [test_article]
+    try:
+        risk_result = calculate_article_risk(test_article, risk_pool)
+        test_article["risk_score"] = risk_result["risk_score"]
+        test_article["risk_level"] = risk_result["risk_level"]
+        test_article["risk_factors"] = risk_result["factors"]
+        test_article["risk_reasons"] = risk_result["reasons"]
+        test_article["risk_context"] = risk_result["context"]
+    except Exception as exc:
+        print(
+            f"[TEST FAIL] Risk analysis gagal: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        raise RuntimeError("TEST NEW ARTICLE gagal pada risk analysis.") from exc
+
+    score = test_article.get("risk_score")
+    level = test_article.get("risk_level")
+    if not isinstance(score, (int, float)) or not 0 <= float(score) <= 100:
+        raise RuntimeError(f"TEST NEW ARTICLE gagal: risk_score invalid: {score!r}")
+    if level not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+        raise RuntimeError(f"TEST NEW ARTICLE gagal: risk_level invalid: {level!r}")
+
+    print()
+    print(
+        f"[TEST PASS] RISK ANALYSIS | "
+        f"score={score}/100 | level={level}"
+    )
+
+    # Bentuk payload Telegram untuk memastikan jalurnya dapat dibuat.
+    # send_telegram_message() sengaja TIDAK dipanggil.
+    try:
+        telegram_payload = telegram_text(test_article)
+    except Exception as exc:
+        print(
+            f"[TEST FAIL] Telegram payload gagal dibuat: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        raise RuntimeError("TEST NEW ARTICLE gagal pada Telegram payload.") from exc
+
+    if not telegram_payload or test_link not in telegram_payload:
+        raise RuntimeError("TEST NEW ARTICLE gagal: Telegram payload tidak valid.")
+
+    print("[TEST PASS] TELEGRAM PAYLOAD")
+    print("[TEST] Telegram send : SKIPPED (intentional — read-only test)")
+    print("[TEST] Supabase write: SKIPPED (intentional — read-only test)")
+
+    print("=" * 70)
+    print("TEST NEW ARTICLE: PASSED")
+    print("Tidak ada INSERT, UPDATE, DELETE, atau pengiriman Telegram.")
+    print("=" * 70)
+
+    return {
+        "status": "PASSED",
+        "database_articles": len(existing_articles),
+        "should_save": should_save,
+        "reason": reason,
+        "risk_score": score,
+        "risk_level": level,
+        "telegram_payload_built": True,
+        "database_write": False,
+        "telegram_sent": False,
+    }
+
+
 # ============================================================
 # PRODUCTION AUDIT
 # ============================================================
@@ -10510,6 +10667,15 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--test-new-article",
+        action="store_true",
+        help=(
+            "uji deteksi NEW_ARTICLE, risk, dan Telegram payload secara read-only; "
+            "tanpa write database dan tanpa kirim Telegram"
+        ),
+    )
+
+    parser.add_argument(
         "--database-audit",
         action="store_true",
         help=(
@@ -10626,6 +10792,16 @@ def main() -> None:
     if args.production_audit:
 
         production_audit()
+
+        return
+
+    # --------------------------------------------------------
+    # SAFE TEST — NEW ARTICLE (READ-ONLY)
+    # --------------------------------------------------------
+
+    if args.test_new_article:
+
+        test_new_article()
 
         return
 
