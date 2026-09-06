@@ -14542,7 +14542,7 @@ def main() -> None:
 #   Menemukan hubungan antar-incident yang sudah memiliki event_key
 #   berbeda, tanpa menggabungkan event dan tanpa membuat skor baru.
 #
-# V18 QUALITY GUARD:
+# V19 QUALITY GUARD:
 #   - Person extraction sangat konservatif.
 #   - Jabatan, institusi, lokasi, frasa generik, dan frasa spekulatif
 #     TIDAK boleh masuk ke entity persons.
@@ -14603,6 +14603,18 @@ FEATURE10_TOPIC_TERMS = (
     "diperiksa", "sertifikasi", "tanah wakaf", "pelantikan", "kebijakan",
     "sosialisasi", "kunjungan", "rapat", "koordinasi", "peresmian",
 )
+
+# V19: topic dibagi menjadi generic/procedural dan specific/distinctive.
+# Kata seperti "diperiksa" atau "dipanggil" terlalu umum untuk menjadi
+# identity link antar-incident tanpa dukungan topic yang lebih spesifik.
+FEATURE10_GENERIC_TOPIC_TERMS = {
+    "dipanggil", "diperiksa", "ditunjuk", "diganti", "digantikan",
+    "pelantikan", "lantik", "menjabat", "mutasi", "kunjungan",
+    "rapat", "koordinasi", "sosialisasi",
+}
+
+FEATURE10_SPECIFIC_TOPIC_TERMS = set(FEATURE10_TOPIC_TERMS) - FEATURE10_GENERIC_TOPIC_TERMS
+FEATURE10_NO_PERSON_MAX_DAYS = 7
 
 
 def _feature10_norm(value: Any) -> str:
@@ -14817,16 +14829,29 @@ def _feature10_relationship(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[Di
     if days is not None and days <= FEATURE10_TEMPORAL_DAYS_STRONG:
         evidence.append("TEMPORAL_PROXIMITY")
 
-    # Tanpa person nyata, minimal institution + position + topic diperlukan.
-    # Ini mencegah dua artikel tentang jabatan yang sama menjadi relationship
-    # hanya karena office/location overlap.
+    # Tanpa person nyata, V19 tidak lagi menerima institution + position +
+    # generic topic sebagai relationship. Harus ada topic yang distinctive.
+    # Minimal dua specific topics; atau satu specific topic + institution yang
+    # sama dan jarak waktu <= 7 hari. Ini mencegah pola generik seperti
+    # "KEJAGUNG + KAJARI + DIPERIKSA" menjadi relationship massal.
     if ov["persons"]:
-        # Same person wajib memiliki independent support.
         if not (ov["institutions"] or ov["positions"] or ov["topics"]):
             return None
-        # Person + topic tanpa institution/position boleh MEDIUM, tetapi tidak HIGH.
     else:
-        if not (ov["institutions"] and ov["positions"] and ov["topics"]):
+        specific_topics = sorted(
+            t for t in ov["topics"]
+            if t in FEATURE10_SPECIFIC_TOPIC_TERMS
+        )
+        if len(specific_topics) >= 2:
+            pass
+        elif (
+            len(specific_topics) >= 1
+            and ov["institutions"]
+            and days is not None
+            and days <= FEATURE10_NO_PERSON_MAX_DAYS
+        ):
+            pass
+        else:
             return None
 
     if days is not None and days > FEATURE10_TEMPORAL_DAYS_STRONG:
@@ -14868,7 +14893,7 @@ def build_cross_incident_relationships(articles: List[Dict[str, Any]], now: Opti
     relationships.sort(key=lambda r:(0 if r.get("confidence")=="HIGH" else 1, -len(r.get("evidence") or []), -_dashboard_safe_float((r.get("event_a") or {}).get("max_risk_score")), -_dashboard_safe_float((r.get("event_b") or {}).get("max_risk_score"))))
     relationships=relationships[:FEATURE10_MAX_RELATIONSHIPS]
     return {
-        "cross_incident_relationship_version":"FEATURE10-READONLY-V2-ENTITY-GUARD-FIX",
+        "cross_incident_relationship_version":"FEATURE10-READONLY-V3-SPECIFIC-TOPIC-GUARD",
         "generated_at":now.isoformat(),
         "mode":"READ-ONLY",
         "database_write":False,
@@ -14910,7 +14935,7 @@ def _write_cross_incident_relationship_artifacts(snapshot: Dict[str, Any]) -> Di
         rows.append("<tr>" + f"<td>{i}</td><td>{html.escape(str(r.get('relationship_type')))}</td><td>{html.escape(str(r.get('confidence')))}</td>" + f"<td>{html.escape(str(a.get('event_name')))}</td><td>{html.escape(str(b.get('event_name')))}</td>" + f"<td>{html.escape('; '.join(shared) or '-')}</td><td>{html.escape(str(r.get('temporal_distance_days') if r.get('temporal_distance_days') is not None else '-'))}</td>" + "</tr>")
     html_rows="".join(rows) or '<tr><td colspan="7">Tidak ada relationship.</td></tr>'
     s=snapshot.get("summary",{})
-    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V2-ENTITY-GUARD-FIX &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V18: person extraction konservatif. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V3-SPECIFIC-TOPIC-GUARD &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V19: person extraction konservatif + specific topic guard. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
     with open(html_path,"w",encoding="utf-8") as fh: fh.write(html_doc)
     fields=["relationship_id","relationship_type","confidence","event_a_key","event_a_name","event_b_key","event_b_name","evidence","shared_entities","temporal_distance_days","analyst_note"]
     with open(csv_path,"w",encoding="utf-8",newline="") as fh:
@@ -14934,6 +14959,12 @@ def _feature10_regression_entity_guard() -> Dict[str, Any]:
         forbidden = {"deli serdang", "kajari deli", "kasi pidsus", "diduga terkait", "dua kajari", "jaksa agung", "kajari serdang"}
         if any(_feature10_norm(p) in forbidden for p in persons):
             return {"status":"FAILED", "reason":"INVALID_PERSON_ENTITY", "article":article.get("title"), "persons":persons}
+
+    # Generic-only link must be rejected at relationship level.
+    generic_a = {"event_key":"A","entities":{"persons":[],"institutions":["kejagung"],"positions":["kajari"],"topics":["diperiksa"]},"latest_seen":"2026-01-29T08:00:00+00:00"}
+    generic_b = {"event_key":"B","entities":{"persons":[],"institutions":["kejagung"],"positions":["kajari"],"topics":["diperiksa"]},"latest_seen":"2026-01-29T08:00:00+00:00"}
+    if _feature10_relationship(generic_a, generic_b) is not None:
+        return {"status":"FAILED", "reason":"GENERIC_TOPIC_RELATIONSHIP_NOT_REJECTED"}
 
     good = {"title":"Kajari Serdang Revanda Sitepu Diperiksa Kejagung", "content":"Revanda Sitepu diperiksa oleh Kejagung."}
     persons = _feature10_extract_persons(good)
