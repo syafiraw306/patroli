@@ -5951,6 +5951,87 @@ def test_new_article() -> Dict[str, Any]:
 
 
 # ============================================================
+# TEST REAL NEW ARTICLE — SAFE / READ-ONLY
+# ============================================================
+
+def test_real_new_article() -> Dict[str, Any]:
+    """Ambil kandidat nyata dari crawler dan uji sampai risk + Telegram payload.
+    Tidak INSERT, UPDATE, DELETE, dan tidak mengirim Telegram.
+    """
+    print("=" * 70); print("TEST REAL NEW ARTICLE — SAFE / READ-ONLY"); print("=" * 70)
+    print("Sumber            : crawler production")
+    print("Database write    : SKIPPED")
+    print("Telegram send     : SKIPPED")
+    print("=" * 70)
+    try:
+        existing_articles = get_all_articles()
+    except Exception as exc:
+        print(f"[TEST FAIL] DATABASE READ | {type(exc).__name__}: {exc}")
+        return {"status":"FAILED","reason":"DATABASE_READ"}
+    print(f"[TEST] Database existing articles : {len(existing_articles)}")
+    existing_link_index = {normalize_url(a.get("link")) for a in existing_articles if normalize_url(a.get("link"))}
+    existing_title_index = build_existing_title_index(existing_articles)
+    existing_content_index = build_existing_content_index(existing_articles)
+    try:
+        candidates = collect_candidates()
+    except Exception as exc:
+        print(f"[TEST FAIL] CRAWLER COLLECT | {type(exc).__name__}: {exc}")
+        return {"status":"FAILED","reason":"CRAWLER_COLLECT"}
+    print(f"[TEST] Real crawler candidates       : {len(candidates)}")
+    if not candidates:
+        print("[TEST RESULT] NO_CANDIDATES")
+        return {"status":"NO_CANDIDATES"}
+    valid_articles=[]; worker_errors=0
+    with ThreadPoolExecutor(max_workers=max(1,MAX_WORKERS)) as executor:
+        futures=[executor.submit(process_candidate,c) for c in candidates]
+        for future in as_completed(futures):
+            try:
+                r=future.result()
+                if r.get("ok") and r.get("article"): valid_articles.append(r["article"])
+            except Exception as exc:
+                worker_errors += 1; print(f"[TEST WORKER ERROR] {type(exc).__name__}: {exc}")
+    print(f"[TEST] Real valid articles          : {len(valid_articles)}")
+    print(f"[TEST] Worker errors                 : {worker_errors}")
+    if worker_errors: return {"status":"FAILED","reason":"WORKER_ERRORS"}
+    if not valid_articles:
+        print("[TEST RESULT] NO_VALID_REAL_ARTICLE"); return {"status":"NO_VALID_REAL_ARTICLE"}
+    duplicate_counts=Counter(); selected=None
+    for article in valid_articles:
+        ok,reason,similarity,matched=should_save_article(article,existing_link_index,existing_title_index,existing_content_index)
+        duplicate_counts[reason]+=1
+        if ok and selected is None: selected=(article,reason,similarity,matched)
+    print("[TEST] REAL DUPLICATE SUMMARY")
+    for reason,count in duplicate_counts.most_common(): print(f"[TEST] {reason:<32}: {count}")
+    if selected is None:
+        print("TEST REAL NEW ARTICLE: NO_REAL_NEW")
+        print("Tidak ditemukan artikel nyata yang benar-benar baru; test tidak memaksa NEW_ARTICLE.")
+        return {"status":"NO_REAL_NEW","candidate_count":len(candidates),"valid_count":len(valid_articles),"duplicate_counts":dict(duplicate_counts)}
+    article,reason,similarity,matched=selected
+    print("[TEST] REAL ARTICLE SELECTED")
+    print(f"[TEST] title       : {article.get('title','')[:180]}")
+    print(f"[TEST] media       : {article.get('media',article.get('source',''))}")
+    print(f"[TEST] URL         : {article.get('link','')}")
+    print(f"[TEST] should_save : True")
+    print(f"[TEST] reason      : {reason}")
+    print(f"[TEST] similarity  : {similarity:.2%}")
+    try:
+        risk_result=calculate_article_risk(article,existing_articles+[article])
+        article["risk_score"]=risk_result["risk_score"]; article["risk_level"]=risk_result["risk_level"]
+        article["risk_factors"]=risk_result["factors"]; article["risk_reasons"]=risk_result["reasons"]; article["risk_context"]=risk_result["context"]
+        print(f"[TEST PASS] RISK ANALYSIS | score={risk_result['risk_score']}/100 | level={risk_result['risk_level']}")
+    except Exception as exc:
+        print(f"[TEST FAIL] RISK ANALYSIS | {type(exc).__name__}: {exc}"); return {"status":"FAILED","reason":"RISK_ANALYSIS"}
+    title=str(article.get("title") or "").strip(); link=str(article.get("link") or "").strip(); category=str(article.get("category") or "Netral").strip()
+    if not title or not link or not category:
+        print("[TEST FAIL] TELEGRAM PAYLOAD | field wajib kosong"); return {"status":"FAILED","reason":"TELEGRAM_PAYLOAD"}
+    payload=(f"<b>{html.escape(title)}</b>\nKategori: {html.escape(category)}\nRisk: {article.get('risk_score',0)}/100 ({html.escape(str(article.get('risk_level','LOW')))})\n{html.escape(link)}")
+    print("[TEST PASS] TELEGRAM PAYLOAD"); print(f"[TEST] Telegram payload length : {len(payload)}")
+    print("[TEST] Supabase write            : SKIPPED"); print("[TEST] Telegram send             : SKIPPED")
+    print("=" * 70); print("TEST REAL NEW ARTICLE: PASSED"); print("Artikel nyata lolos duplicate gate dan diproses sampai Risk + Telegram payload tanpa perubahan database."); print("=" * 70)
+    return {"status":"PASSED","article":article,"reason":reason,"similarity":similarity}
+
+
+# ============================================================
 # PRODUCTION AUDIT
 # ============================================================
 
@@ -10667,6 +10748,15 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--test-real-new-article",
+        action="store_true",
+        help=(
+            "ambil artikel nyata dari crawler dan uji sampai risk + "
+            "Telegram payload tanpa mengubah database"
+        ),
+    )
+
+    parser.add_argument(
         "--test-new-article",
         action="store_true",
         help=(
@@ -10796,6 +10886,15 @@ def main() -> None:
         return
 
     # --------------------------------------------------------
+    # TEST REAL NEW ARTICLE — READ-ONLY
+    # --------------------------------------------------------
+
+    if args.test_real_new_article:
+        result = test_real_new_article()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test real new article gagal: {result.get('reason')}")
+        return
+
     # SAFE TEST — NEW ARTICLE (READ-ONLY)
     # --------------------------------------------------------
 
