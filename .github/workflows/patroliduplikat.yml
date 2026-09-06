@@ -50,6 +50,8 @@ on:
           - test-intelligence-alerts-real
           - intelligence-alerts-diagnostic-real
           - test-intelligence-alerts-controlled-fresh-real
+          - incident-timeline
+          - test-incident-timeline-real
           - send-intelligence-alerts
 
 jobs:
@@ -192,6 +194,14 @@ jobs:
               echo "Menjalankan E2E Intelligence Alert dengan event production nyata, controlled fresh IN-MEMORY, Telegram MOCK..."
               python patroli.py --test-intelligence-alerts-controlled-fresh-real
 
+            elif [ "${{ inputs.mode }}" = "incident-timeline" ]; then
+              echo "Generate Incident Timeline & Cross-Media Correlation REAL production (READ-ONLY)..."
+              python patroli.py --incident-timeline
+
+            elif [ "${{ inputs.mode }}" = "test-incident-timeline-real" ]; then
+              echo "Menjalankan test Incident Timeline & Cross-Media Correlation REAL production (READ-ONLY)..."
+              python patroli.py --test-incident-timeline-real
+
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
               echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
               python patroli.py --send-intelligence-alerts
@@ -306,3 +316,19 @@ jobs:
             intelligence_alerts_diagnostic.csv
           if-no-files-found: warn
           retention-days: 30
+
+      # ==========================================
+      # UPLOAD FEATURE #7 — INCIDENT TIMELINE
+      # ==========================================
+      - name: Upload Incident Timeline
+        if: ${{ inputs.mode == 'incident-timeline' || inputs.mode == 'test-incident-timeline-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: incident-timeline
+          path: |
+            incident_timeline.json
+            incident_timeline.html
+            incident_timeline.csv
+          if-no-files-found: warn
+          retention-days: 30
+
