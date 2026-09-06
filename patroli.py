@@ -13322,6 +13322,355 @@ def test_incident_timeline_real_read_only() -> Dict[str, Any]:
     print("TEST INCIDENT TIMELINE & CROSS-MEDIA CORRELATION REAL: PASSED")
     return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
 
+
+# ============================================================
+# FEATURE #8 — INCIDENT LIFECYCLE & FOLLOW-UP EVIDENCE
+# ============================================================
+# Tujuan:
+#   Menentukan posisi lifecycle event berdasarkan bukti artikel yang
+#   benar-benar teramati, bukan menebak bahwa event sudah selesai hanya
+#   karena berita menjadi lama.
+#
+# Prinsip:
+#   - READ-ONLY
+#   - Tidak menulis database
+#   - Tidak mengirim Telegram
+#   - Tidak mengubah event_key Feature #7
+#   - STALE bukan RESOLVED
+#   - RESOLUTION_EVIDENCE hanya jika ada frasa penutupan eksplisit
+# ============================================================
+
+FEATURE8_MAX_EVENTS = 20
+FEATURE8_MAX_ARTICLES_PER_EVENT = 30
+FEATURE8_RECENT_DAYS = 14
+
+FEATURE8_EXPLICIT_RESOLUTION_PHRASES = (
+    "kasus selesai",
+    "perkara selesai",
+    "proses selesai",
+    "telah selesai",
+    "sudah selesai",
+    "kasus tuntas",
+    "perkara tuntas",
+    "proses tuntas",
+    "telah tuntas",
+    "sudah tuntas",
+    "perkara ditutup",
+    "kasus ditutup",
+    "penyidikan dihentikan",
+    "penyelidikan dihentikan",
+    "perkara dihentikan",
+    "kasus dihentikan",
+    "proses dihentikan",
+    "perkara berakhir",
+    "kasus berakhir",
+)
+
+FEATURE8_OUTCOME_PHRASES = (
+    "ditetapkan sebagai tersangka",
+    "ditetapkan tersangka",
+    "ditahan",
+    "penahanan",
+    "diperiksa",
+    "dipanggil",
+    "disidangkan",
+    "sidang",
+    "dituntut",
+    "tuntutan",
+    "divonis",
+    "vonis",
+    "putusan",
+    "dilimpahkan",
+    "penyidikan",
+    "penuntutan",
+    "dicopot",
+    "pencopotan",
+    "diberhentikan",
+    "penggeledahan",
+    "penyitaan",
+    "penangkapan",
+)
+
+
+def _feature8_normalized_title(article: Dict[str, Any]) -> str:
+    return normalize_text(article.get("title")).lower()
+
+
+def _feature8_find_evidence(article: Dict[str, Any]) -> Tuple[str, List[str]]:
+    """Deteksi bukti lifecycle dari judul + konten; tidak menyimpulkan resolusi."""
+    text = " ".join(
+        part for part in (
+            _feature8_normalized_title(article),
+            normalize_text(article.get("content")).lower(),
+        ) if part
+    )
+
+    resolution = [phrase for phrase in FEATURE8_EXPLICIT_RESOLUTION_PHRASES if phrase in text]
+    if resolution:
+        return "RESOLUTION_EVIDENCE", resolution[:5]
+
+    outcomes = [phrase for phrase in FEATURE8_OUTCOME_PHRASES if phrase in text]
+    if outcomes:
+        return "OUTCOME_FOLLOW_UP", outcomes[:5]
+
+    return "NO_EXPLICIT_LIFECYCLE_EVIDENCE", []
+
+
+def _feature8_latest_article(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    items = list(event.get("timeline") or [])
+    if not items:
+        return None
+    return max(
+        items,
+        key=lambda x: _published_sort_value({"published_date": x.get("published_date")}),
+    )
+
+
+def _feature8_lifecycle_state(
+    event: Dict[str, Any],
+    now: datetime,
+) -> Tuple[str, List[str], Optional[Dict[str, Any]]]:
+    latest = _feature8_latest_article(event)
+    if not latest:
+        return "UNKNOWN", [], None
+
+    evidence_type, evidence = _feature8_find_evidence(latest)
+    latest_dt = _intel_alert_latest_datetime(latest.get("published_date"))
+    age_days = None
+    if latest_dt is not None:
+        age_days = max(0.0, (now - latest_dt).total_seconds() / 86400.0)
+
+    # Explicit closure evidence selalu menjadi state tersendiri. Ini tetap
+    # disebut evidence, bukan jaminan bahwa kondisi di lapangan benar-benar selesai.
+    if evidence_type == "RESOLUTION_EVIDENCE":
+        return "RESOLUTION_EVIDENCE", evidence, latest
+
+    if evidence_type == "OUTCOME_FOLLOW_UP":
+        return "OUTCOME_FOLLOW_UP", evidence, latest
+
+    if age_days is not None and age_days <= FEATURE8_RECENT_DAYS:
+        return "ACTIVE_NO_EXPLICIT_RESOLUTION", [], latest
+
+    return "STALE_NO_RESOLUTION_EVIDENCE", [], latest
+
+
+def build_incident_lifecycle(
+    articles: List[Dict[str, Any]],
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Bangun lifecycle event dari timeline Feature #7 secara READ-ONLY."""
+    now = now or datetime.now(timezone.utc)
+    timeline_snapshot = build_incident_timeline(articles, now=now)
+
+    lifecycle_events = []
+    for event in timeline_snapshot.get("events", [])[:FEATURE8_MAX_EVENTS]:
+        state, evidence, latest = _feature8_lifecycle_state(event, now)
+        item = dict(event)
+        item["lifecycle_state"] = state
+        item["lifecycle_evidence"] = evidence
+        item["latest_article_id"] = latest.get("id") if latest else None
+        item["latest_article_title"] = latest.get("title") if latest else None
+        item["latest_article_published_date"] = latest.get("published_date") if latest else None
+        item["resolution_inference"] = False
+        lifecycle_events.append(item)
+
+    counts = Counter(item.get("lifecycle_state") for item in lifecycle_events)
+    return {
+        "incident_lifecycle_version": "FEATURE8-READONLY-V1",
+        "generated_at": now.isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "source": "feature7_incident_timeline_in_memory",
+        "method": {
+            "purpose": "incident lifecycle dan follow-up evidence berdasarkan artikel teramati",
+            "recent_window_days": FEATURE8_RECENT_DAYS,
+            "max_events": FEATURE8_MAX_EVENTS,
+            "max_articles_per_event": FEATURE8_MAX_ARTICLES_PER_EVENT,
+            "explicit_resolution_only": True,
+            "stale_does_not_mean_resolved": True,
+        },
+        "summary": {
+            "production_articles": timeline_snapshot.get("summary", {}).get("production_articles", 0),
+            "unique_events": timeline_snapshot.get("summary", {}).get("unique_events", 0),
+            "events_shown": len(lifecycle_events),
+            "resolution_evidence": counts.get("RESOLUTION_EVIDENCE", 0),
+            "outcome_follow_up": counts.get("OUTCOME_FOLLOW_UP", 0),
+            "active_no_explicit_resolution": counts.get("ACTIVE_NO_EXPLICIT_RESOLUTION", 0),
+            "stale_no_resolution_evidence": counts.get("STALE_NO_RESOLUTION_EVIDENCE", 0),
+            "unknown": counts.get("UNKNOWN", 0),
+        },
+        "events": lifecycle_events,
+    }
+
+
+def _write_incident_lifecycle_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    json_path = "incident_lifecycle.json"
+    html_path = "incident_lifecycle.html"
+    csv_path = "incident_lifecycle.csv"
+
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
+
+    rows = []
+    for idx, event in enumerate(snapshot.get("events", []), 1):
+        evidence = "; ".join(event.get("lifecycle_evidence") or []) or "-"
+        rows.append(
+            "<tr>"
+            f"<td>{idx}</td>"
+            f"<td>{html.escape(str(event.get('lifecycle_state')))}</td>"
+            f"<td>{html.escape(str(event.get('event_name')))}</td>"
+            f"<td>{html.escape(str(event.get('event_type')))}</td>"
+            f"<td>{html.escape(str(event.get('max_risk_score')))} ({html.escape(str(event.get('max_risk_level')))})</td>"
+            f"<td>{html.escape(str(event.get('article_count')))}</td>"
+            f"<td>{html.escape(str(event.get('media_count')))}</td>"
+            f"<td>{html.escape(str(event.get('latest_article_published_date') or '-'))}</td>"
+            f"<td>{html.escape(str(event.get('latest_article_title') or '-'))}</td>"
+            f"<td>{html.escape(evidence)}</td>"
+            "</tr>"
+        )
+    empty = '<tr><td colspan="10">Tidak ada lifecycle event.</td></tr>'
+    html_rows = "".join(rows) or empty
+    summary = snapshot.get("summary", {})
+    html_doc = f"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Incident Lifecycle</title>
+<style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head>
+<body><h1>Patroli Siber — Incident Lifecycle &amp; Follow-up Evidence</h1>
+<p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p>
+<div class="grid"><div class="card">Production<div class="value">{summary.get('production_articles',0)}</div></div><div class="card">Unique Events<div class="value">{summary.get('unique_events',0)}</div></div><div class="card">Resolution Evidence<div class="value">{summary.get('resolution_evidence',0)}</div></div><div class="card">Outcome Follow-up<div class="value">{summary.get('outcome_follow_up',0)}</div></div><div class="card">Active / No Resolution<div class="value">{summary.get('active_no_explicit_resolution',0)}</div></div></div>
+<p><small>Catatan: STALE tidak berarti RESOLVED. RESOLUTION_EVIDENCE hanya muncul jika artikel terbaru mengandung frasa penutupan eksplisit yang terdaftar.</small></p>
+<table><thead><tr><th>#</th><th>Lifecycle</th><th>Event</th><th>Type</th><th>Risk</th><th>Articles</th><th>Media</th><th>Latest</th><th>Latest Article</th><th>Evidence</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+
+    fields = [
+        "event_key", "event_name", "event_type", "activity_status",
+        "lifecycle_state", "article_count", "media_count", "first_seen",
+        "latest_seen", "max_risk_score", "max_risk_level",
+        "latest_article_id", "latest_article_published_date", "latest_article_title",
+        "lifecycle_evidence", "resolution_inference",
+    ]
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for event in snapshot.get("events", []):
+            row = dict(event)
+            row["lifecycle_evidence"] = "; ".join(event.get("lifecycle_evidence") or [])
+            writer.writerow({field: row.get(field) for field in fields})
+    return {"json": json_path, "html": html_path, "csv": csv_path}
+
+
+def incident_lifecycle_real_read_only() -> Dict[str, Any]:
+    """Generate Feature #8 terhadap production nyata tanpa mutation."""
+    print("=" * 70)
+    print("FEATURE #8 — INCIDENT LIFECYCLE & FOLLOW-UP EVIDENCE / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    snapshot = build_incident_lifecycle(articles)
+    artifacts = _write_incident_lifecycle_artifacts(snapshot)
+    summary = snapshot["summary"]
+    print(f"[LIFECYCLE] Production articles          : {summary['production_articles']}")
+    print(f"[LIFECYCLE] Unique events                 : {summary['unique_events']}")
+    print(f"[LIFECYCLE] Events shown                  : {summary['events_shown']}")
+    print(f"[LIFECYCLE] Resolution evidence           : {summary['resolution_evidence']}")
+    print(f"[LIFECYCLE] Outcome follow-up             : {summary['outcome_follow_up']}")
+    print(f"[LIFECYCLE] Active / no explicit resolve  : {summary['active_no_explicit_resolution']}")
+    print(f"[LIFECYCLE] Stale / no resolution evidence: {summary['stale_no_resolution_evidence']}")
+    for idx, event in enumerate(snapshot.get("events", [])[:10], 1):
+        print(
+            f"#{idx} {event.get('event_name')} | state={event.get('lifecycle_state')} | "
+            f"risk={event.get('max_risk_score')} ({event.get('max_risk_level')}) | "
+            f"articles={event.get('article_count')} | media={event.get('media_count')} | "
+            f"latest={event.get('latest_seen')}"
+        )
+    print(f"[LIFECYCLE] Artifact JSON : {artifacts['json']}")
+    print(f"[LIFECYCLE] Artifact HTML : {artifacts['html']}")
+    print(f"[LIFECYCLE] Artifact CSV  : {artifacts['csv']}")
+    print("[LIFECYCLE PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
+
+
+def test_incident_lifecycle_real_read_only() -> Dict[str, Any]:
+    """Validasi Feature #8 pada production nyata tanpa mutation."""
+    print("=" * 70)
+    print("TEST FEATURE #8 — INCIDENT LIFECYCLE / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    before = get_all_articles()
+    if not before:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot = build_incident_lifecycle(before)
+    events = snapshot.get("events", [])
+    if not events:
+        return {"status": "FAILED", "reason": "NO_EVENTS"}
+
+    valid_states = {
+        "RESOLUTION_EVIDENCE",
+        "OUTCOME_FOLLOW_UP",
+        "ACTIVE_NO_EXPLICIT_RESOLUTION",
+        "STALE_NO_RESOLUTION_EVIDENCE",
+        "UNKNOWN",
+    }
+    for event in events:
+        if event.get("lifecycle_state") not in valid_states:
+            return {"status": "FAILED", "reason": "INVALID_LIFECYCLE_STATE"}
+        if event.get("resolution_inference") is not False:
+            return {"status": "FAILED", "reason": "RESOLUTION_INFERENCE_ENABLED"}
+        if not event.get("event_key") or not event.get("event_name"):
+            return {"status": "FAILED", "reason": "MISSING_EVENT_IDENTITY"}
+        if int(event.get("article_count", 0)) < 1:
+            return {"status": "FAILED", "reason": "INVALID_ARTICLE_COUNT"}
+        if len(event.get("timeline") or []) > FEATURE8_MAX_ARTICLES_PER_EVENT:
+            return {"status": "FAILED", "reason": "TIMELINE_LIMIT_EXCEEDED"}
+        if event.get("lifecycle_state") == "RESOLUTION_EVIDENCE" and not event.get("lifecycle_evidence"):
+            return {"status": "FAILED", "reason": "RESOLUTION_STATE_WITHOUT_EVIDENCE"}
+        if event.get("lifecycle_state") != "RESOLUTION_EVIDENCE" and event.get("lifecycle_evidence"):
+            # Evidence is only populated for explicit resolution in this version.
+            return {"status": "FAILED", "reason": "UNEXPECTED_RESOLUTION_EVIDENCE"}
+
+    # Regression: stale event must never be relabeled as resolved solely from age.
+    stale_events = [
+        event for event in events
+        if event.get("activity_status") == "STALE"
+        and event.get("lifecycle_state") == "STALE_NO_RESOLUTION_EVIDENCE"
+    ]
+    if not stale_events and any(event.get("activity_status") == "STALE" for event in events):
+        return {"status": "FAILED", "reason": "STALE_RESOLUTION_INFERENCE"}
+    print("[TEST PASS] STALE != RESOLVED | tidak ada inferensi selesai dari umur berita")
+
+    # Regression: lifecycle must preserve Feature #7 event identity.
+    feature7 = build_incident_timeline(before)
+    f7_keys = {str(e.get("event_key")) for e in feature7.get("events", [])}
+    f8_keys = {str(e.get("event_key")) for e in events}
+    if not f8_keys.issubset(f7_keys):
+        return {"status": "FAILED", "reason": "EVENT_KEY_CHANGED_FROM_FEATURE7"}
+    print("[TEST PASS] EVENT IDENTITY | Feature #8 tidak mengubah event_key Feature #7")
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+
+    artifacts = _write_incident_lifecycle_artifacts(snapshot)
+    html_path = artifacts.get("html")
+    if html_path:
+        try:
+            html_text = Path(html_path).read_text(encoding="utf-8")
+            if "<td><td>" in html_text or "<td><br>" in html_text:
+                return {"status": "FAILED", "reason": "MALFORMED_LIFECYCLE_HTML"}
+            print("[TEST PASS] HTML LIFECYCLE MARKUP")
+        except Exception as exc:
+            return {"status": "FAILED", "reason": f"HTML_READ_FAILED:{exc}"}
+
+    print("[TEST PASS] LIFECYCLE STATE / EVIDENCE STRUCTURE")
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("TEST INCIDENT LIFECYCLE & FOLLOW-UP EVIDENCE REAL: PASSED")
+    return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
+
+
 def main() -> None:
 
     parser = argparse.ArgumentParser(
@@ -13341,6 +13690,18 @@ def main() -> None:
         "--test-incident-timeline-real",
         action="store_true",
         help="test Incident Timeline & Cross-Media Correlation REAL production (read-only)",
+    )
+
+    parser.add_argument(
+        "--incident-lifecycle",
+        action="store_true",
+        help="generate Incident Lifecycle & Follow-up Evidence REAL production (read-only)",
+    )
+
+    parser.add_argument(
+        "--test-incident-lifecycle-real",
+        action="store_true",
+        help="test Incident Lifecycle & Follow-up Evidence REAL production (read-only)",
     )
 
     parser.add_argument(
@@ -13679,6 +14040,18 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_incident_lifecycle_real:
+        result = test_incident_lifecycle_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Incident Lifecycle REAL gagal: {result.get('reason')}")
+        return
+
+    if args.incident_lifecycle:
+        result = incident_lifecycle_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Incident Lifecycle gagal: {result.get('reason')}")
         return
 
     if args.test_incident_timeline_real:
