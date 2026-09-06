@@ -15004,6 +15004,75 @@ def _feature10_person_text_provenance(person: str, event: Dict[str, Any]) -> boo
             return True
     return False
 
+
+FEATURE10_PERSON_CONTEXT_MAX_DISTANCE = 70
+FEATURE10_SAME_INCIDENT_PERSON_DAYS = 1.5
+FEATURE10_PROCEDURAL_SAME_INCIDENT_TERMS = {
+    "diperiksa", "dipanggil", "ditunjuk", "diganti", "dicopot",
+    "plh", "penggantinya", "pemeriksaan", "pelantikan"
+}
+
+def _feature10_person_provenance_detail(person: str, event: Dict[str, Any]) -> List[Dict[str, Any]]:
+    key = _feature10_norm(person)
+    details = []
+    if not key:
+        return details
+    for article in event.get("articles") or []:
+        if not isinstance(article, dict):
+            continue
+        for field_name in ("title", "content"):
+            field_text = str(article.get(field_name) or "")
+            if field_name == "content":
+                field_text = field_text[:5000]
+            extracted = {_feature10_norm(p) for p in _feature10_extract_persons(
+                {"title": field_text if field_name == "title" else "",
+                 "content": field_text if field_name == "content" else ""}
+            ) if p}
+            if key not in extracted:
+                continue
+            low = _feature10_norm(field_text)
+            pos = low.find(key)
+            context = low[max(0, pos-70):min(len(low), pos+len(key)+70)] if pos >= 0 else ""
+            details.append({"article_id": article.get("id") or article.get("article_id"),
+                            "field": field_name, "context": context})
+    return details
+
+def _feature10_person_is_central(person: str, event: Dict[str, Any]) -> bool:
+    key = _feature10_norm(person)
+    if not key:
+        return False
+    for article in event.get("articles") or []:
+        if not isinstance(article, dict):
+            continue
+        title_persons = {_feature10_norm(p) for p in _feature10_extract_persons(article) if p}
+        if key in title_persons:
+            return True
+        content = str(article.get("content") or "")[:5000]
+        content_persons = {_feature10_norm(p) for p in _feature10_extract_persons({"title":"", "content":content}) if p}
+        if key not in content_persons:
+            continue
+        low = _feature10_norm(content)
+        pos = low.find(key)
+        if pos < 0:
+            continue
+        window = low[max(0, pos-55):min(len(low), pos+len(key)+55)]
+        if any(re.search(rf"\b{re.escape(term)}\b", window)
+               for term in (FEATURE10_HUMAN_ROLE_TERMS | FEATURE10_HUMAN_VERBS | FEATURE10_HUMAN_CUES)):
+            return True
+    return False
+
+def _feature10_is_probable_same_person_incident(a: Dict[str, Any], b: Dict[str, Any], ov: Dict[str, List[str]]) -> bool:
+    if not (ov.get("persons") and ov.get("institutions") and ov.get("positions")):
+        return False
+    days = _feature10_days_between(a, b)
+    if days is None or days > FEATURE10_SAME_INCIDENT_PERSON_DAYS:
+        return False
+    shared_proc = set(ov.get("topics") or []) & FEATURE10_PROCEDURAL_SAME_INCIDENT_TERMS
+    if not shared_proc:
+        return False
+    ratio, jaccard = _feature10_title_similarity(a, b)
+    return ratio >= 0.35 or jaccard >= 0.18
+
 def _feature10_relationship_person_guard(a: Dict[str, Any], b: Dict[str, Any], persons: List[str]) -> bool:
     """Validate shared persons against source metadata and article text."""
     source_terms = _feature10_event_source_terms(a) | _feature10_event_source_terms(b)
@@ -15018,6 +15087,10 @@ def _feature10_relationship_person_guard(a: Dict[str, Any], b: Dict[str, Any], p
         if not _feature10_person_text_provenance(person, a):
             return False
         if not _feature10_person_text_provenance(person, b):
+            return False
+        if not _feature10_person_is_central(person, a):
+            return False
+        if not _feature10_person_is_central(person, b):
             return False
     return True
 
@@ -15034,6 +15107,8 @@ def _feature10_relationship(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[Di
         return None
     ratio, jaccard = _feature10_title_similarity(a, b)
 
+    if _feature10_is_probable_same_person_incident(a, b, ov):
+        return None
     if _feature10_is_probable_same_incident(a, b, ov):
         return None
     if days is not None and days > FEATURE10_IDENTITY_MAX_DAYS:
@@ -15106,6 +15181,13 @@ def _feature10_relationship(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[Di
         "identity_strength": identity_strength,
         "evidence": evidence,
         "shared_entities": {k: v for k, v in ov.items() if v},
+        "person_provenance": {
+            p: {
+                "event_a": _feature10_person_provenance_detail(p, a),
+                "event_b": _feature10_person_provenance_detail(p, b),
+            }
+            for p in ov.get("persons", [])
+        },
         "temporal_distance_days": days,
         "title_similarity": {"ratio": ratio, "jaccard": jaccard},
         "analyst_note": "Identity evidence only; bukan bukti kausalitas atau keterlibatan hukum, dan event_key tidak digabung.",
@@ -15360,7 +15442,7 @@ def build_cross_incident_relationships(articles: List[Dict[str, Any]], now: Opti
     relationships.sort(key=lambda r:(0 if r.get("confidence")=="HIGH" else 1, -len(r.get("evidence") or []), -_dashboard_safe_float((r.get("event_a") or {}).get("max_risk_score")), -_dashboard_safe_float((r.get("event_b") or {}).get("max_risk_score"))))
     relationships=relationships[:FEATURE10_MAX_RELATIONSHIPS]
     return {
-        "cross_incident_relationship_version":"FEATURE10-READONLY-V10-PERSON-CONTEXT-GUARD",
+        "cross_incident_relationship_version":"FEATURE10-READONLY-V11-PERSON-CENTRALITY-GUARD",
         "generated_at":now.isoformat(),
         "mode":"READ-ONLY",
         "database_write":False,
@@ -15408,7 +15490,7 @@ def _write_cross_incident_relationship_artifacts(snapshot: Dict[str, Any]) -> Di
         rows.append("<tr>" + f"<td>{i}</td><td>{html.escape(str(r.get('relationship_type')))}</td><td>{html.escape(str(r.get('confidence')))}</td>" + f"<td>{html.escape(str(a.get('event_name')))}</td><td>{html.escape(str(b.get('event_name')))}</td>" + f"<td>{html.escape('; '.join(shared) or '-')}</td><td>{html.escape(str(r.get('temporal_distance_days') if r.get('temporal_distance_days') is not None else '-'))}</td>" + "</tr>")
     html_rows="".join(rows) or '<tr><td colspan="7">Tidak ada relationship.</td></tr>'
     s=snapshot.get("summary",{})
-    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V10-PERSON-CONTEXT-GUARD &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V26: proper-name + human-context person extraction + source/publisher guard + article-text provenance guard + distinctive topic guard + probable-same-incident semantic guard + identity evidence guard. False person artifact ditolak pada regression dan real validation. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V11-PERSON-CENTRALITY-GUARD &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V26: proper-name + human-context person extraction + source/publisher guard + article-text provenance guard + distinctive topic guard + probable-same-incident semantic guard + identity evidence guard. False person artifact ditolak pada regression dan real validation. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
     with open(html_path,"w",encoding="utf-8") as fh: fh.write(html_doc)
     fields=["relationship_id","relationship_type","confidence","event_a_key","event_a_name","event_b_key","event_b_name","evidence","shared_entities","temporal_distance_days","analyst_note"]
     with open(csv_path,"w",encoding="utf-8",newline="") as fh:
@@ -15451,6 +15533,23 @@ def _feature10_regression_entity_guard() -> Dict[str, Any]:
         bad = sorted(persons & forbidden_patterns)
         if bad:
             return {"status":"FAILED", "reason":"SEMANTIC_FALSE_PERSON", "article":article.get("title"), "persons":sorted(persons), "forbidden":bad}
+
+    # V27 regression: same-person procedural variants in a short window
+    # must not become a cross-incident relationship.
+    same_a = {
+        "event_key":"SA", "event_name":"Kajari Revanda Sitepu Diperiksa Kejagung",
+        "entities":{"persons":["revanda sitepu"],"institutions":["kejagung"],"positions":["kajari"],"topics":["diperiksa"]},
+        "latest_seen":"2026-01-29T08:00:00+00:00",
+        "articles":[{"id":1,"title":"Kajari Revanda Sitepu Diperiksa Kejagung","content":"Revanda Sitepu diperiksa Kejagung."}],
+    }
+    same_b = {
+        "event_key":"SB", "event_name":"Kajari Serdang Dipanggil Kejagung",
+        "entities":{"persons":["revanda sitepu"],"institutions":["kejagung"],"positions":["kajari"],"topics":["diperiksa","dipanggil"]},
+        "latest_seen":"2026-01-29T08:00:00+00:00",
+        "articles":[{"id":2,"title":"Kajari Serdang Dipanggil Kejagung","content":"Revanda Sitepu diperiksa Kejagung."}],
+    }
+    if _feature10_relationship(same_a, same_b) is not None:
+        return {"status":"FAILED","reason":"SAME_PERSON_SAME_PROCEDURAL_INCIDENT_NOT_REJECTED"}
 
     # Satker role/location must not become an institution by itself.
     inst_article = {"title":"Kajari Deli Serdang Diperiksa Kejagung", "content":"", "satker_matches":["Kajari Deli Serdang"]}
