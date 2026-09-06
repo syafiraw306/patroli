@@ -42,6 +42,8 @@ on:
           - database-audit
           - resolve-existing-urls-dry-run
           - resolve-existing-urls
+          - intelligence-dashboard
+          - test-intelligence-dashboard-real
 
 jobs:
   patroli:
@@ -155,6 +157,14 @@ jobs:
               echo "Menjalankan test Trend & Escalation Detection REAL production (READ-ONLY)..."
               python patroli.py --test-trend-escalation-real
 
+            elif [ "${{ inputs.mode }}" = "intelligence-dashboard" ]; then
+              echo "Generate Intelligence Dashboard REAL production (READ-ONLY)..."
+              python patroli.py --intelligence-dashboard
+
+            elif [ "${{ inputs.mode }}" = "test-intelligence-dashboard-real" ]; then
+              echo "Menjalankan test Intelligence Dashboard REAL production (READ-ONLY)..."
+              python patroli.py --test-intelligence-dashboard-real
+
             elif [ "${{ inputs.mode }}" = "test-real-new-article-e2e" ]; then
               echo "Menjalankan test E2E REAL new article (WRITE -> READ-BACK -> TELEGRAM MOCK -> CLEANUP)..."
               python patroli.py --test-real-new-article-e2e
@@ -225,5 +235,21 @@ jobs:
           path: |
             existing_url_repair.csv
             existing_url_repair.json
+          if-no-files-found: warn
+          retention-days: 30
+
+
+      # ==========================================
+      # UPLOAD INTELLIGENCE DASHBOARD
+      # ==========================================
+      - name: Upload Intelligence Dashboard
+        if: ${{ inputs.mode == 'intelligence-dashboard' || inputs.mode == 'test-intelligence-dashboard-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: intelligence-dashboard
+          path: |
+            intelligence_dashboard.json
+            intelligence_dashboard.html
+            intelligence_dashboard_events.csv
           if-no-files-found: warn
           retention-days: 30
