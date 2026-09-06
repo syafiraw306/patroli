@@ -9859,32 +9859,38 @@ def _published_sort_value(article):
 
 def _historical_keeper_score(article):
     """
-    V5 keeper ranking: normal canonical > /all > AMP > Google News.
-    Photo/gallery tetap dipertahankan dari auto-delete title/content.
+    V6 HARD keeper ranking.
+
+    IMPORTANT: use the RAW stored URL, never normalize_url(), when deciding
+    which URL variant is the keeper. This prevents an AMP URL such as
+    /amp/berita/... from being treated as a normal canonical URL.
+
+    Rank (highest first): normal publisher > /all > AMP > Google News.
     """
     content = _article_content_key(article)
     title = normalize_text(article.get("title") or "")
     published = parse_date_safe(article.get("published_date"))
-    # Gunakan URL ASLI untuk mendeteksi varian AMP /all.
-    # Jangan memakai normalize_url() karena database.py dapat menormalkan
-    # path AMP sehingga /amp/berita/... terlihat sama dengan URL canonical.
-    link = str(article.get("link") or "").strip()
-    parsed = urllib.parse.urlsplit(link) if link else None
+
+    raw_link = str(article.get("link") or article.get("url") or "").strip()
+    try:
+        parsed = urllib.parse.urlsplit(raw_link) if raw_link else None
+    except Exception:
+        parsed = None
+
     host = (parsed.netloc or "").lower().split(":", 1)[0] if parsed else ""
     host = host[4:] if host.startswith("www.") else host
     path = (parsed.path or "") if parsed else ""
+
     is_google = host == "news.google.com"
-    # AMP dapat muncul sebagai /amp/berita/... atau /berita/.../amp.
+    # Detect AMP as an actual path segment in BOTH common forms:
+    #   /amp/berita/...
+    #   /berita/.../amp
     is_amp = bool(re.search(r"(?:^|/)amp(?:/|$)", path, flags=re.I))
-    is_all = bool(re.search(r"/all(?:/)?$", path, flags=re.I))
+    is_all = bool(re.search(r"(?:^|/)all(?:/|$)", path, flags=re.I))
     is_photo = _is_photo_or_gallery_article(article)
 
-    # HARD SAFETY RANKING:
-    # - canonical publisher URL (normal path) is always preferred
-    # - /all is below canonical
-    # - /amp is below /all
-    # - Google News is never a keeper over a publisher URL
-    # AMP detection must work for /amp/berita/... (not only URLs ending /amp).
+    # HARD URL VARIANT RANK. This tuple is intentionally the first
+    # component so content length/date can NEVER make AMP beat canonical.
     if is_google:
         url_rank = 0
     elif is_amp:
@@ -9904,6 +9910,24 @@ def _historical_keeper_score(article):
         -_safe_int_id(article.get("id")),
     )
 
+
+def _historical_keeper_label(article):
+    """Return a human-readable URL variant label for audit/debug output."""
+    raw_link = str(article.get("link") or article.get("url") or "").strip()
+    try:
+        parsed = urllib.parse.urlsplit(raw_link) if raw_link else None
+    except Exception:
+        parsed = None
+    host = (parsed.netloc or "").lower().split(":", 1)[0] if parsed else ""
+    host = host[4:] if host.startswith("www.") else host
+    path = (parsed.path or "") if parsed else ""
+    if host == "news.google.com":
+        return "GOOGLE_NEWS"
+    if re.search(r"(?:^|/)amp(?:/|$)", path, flags=re.I):
+        return "AMP"
+    if re.search(r"(?:^|/)all(?:/|$)", path, flags=re.I):
+        return "ALL"
+    return "CANONICAL_PUBLISHER"
 
 def _pair_event_safety(article_a, article_b):
     """Safety gate: media berbeda tidak boleh dihapus sebagai duplicate."""
