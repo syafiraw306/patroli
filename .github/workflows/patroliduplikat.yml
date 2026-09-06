@@ -36,6 +36,7 @@ on:
           - database-audit
           - resolve-existing-urls-dry-run
           - resolve-existing-urls
+          - production-audit
 
 jobs:
   patroli:
@@ -152,6 +153,10 @@ jobs:
             elif [ "${{ inputs.mode }}" = "resolve-existing-urls" ]; then
               echo "Menjalankan resolve-existing-urls..."
               python patroli.py --resolve-existing-urls
+
+            elif [ "${{ inputs.mode }}" = "production-audit" ]; then
+              echo "Menjalankan production audit..."
+              python patroli.py --production-audit
               
             else
           
