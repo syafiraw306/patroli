@@ -44,6 +44,8 @@ on:
           - resolve-existing-urls
           - intelligence-dashboard
           - test-intelligence-dashboard-real
+          - early-warning
+          - test-early-warning-real
 
 jobs:
   patroli:
@@ -164,6 +166,14 @@ jobs:
             elif [ "${{ inputs.mode }}" = "test-intelligence-dashboard-real" ]; then
               echo "Menjalankan test Intelligence Dashboard REAL production (READ-ONLY)..."
               python patroli.py --test-intelligence-dashboard-real
+
+            elif [ "${{ inputs.mode }}" = "early-warning" ]; then
+              echo "Generate Cyber Intelligence / Early Warning REAL production (READ-ONLY)..."
+              python patroli.py --early-warning
+
+            elif [ "${{ inputs.mode }}" = "test-early-warning-real" ]; then
+              echo "Menjalankan test Cyber Intelligence / Early Warning REAL production (READ-ONLY)..."
+              python patroli.py --test-early-warning-real
 
             elif [ "${{ inputs.mode }}" = "test-real-new-article-e2e" ]; then
               echo "Menjalankan test E2E REAL new article (WRITE -> READ-BACK -> TELEGRAM MOCK -> CLEANUP)..."
