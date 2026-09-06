@@ -12931,6 +12931,310 @@ def send_intelligence_alerts() -> Dict[str, Any]:
     print(f"[ALERT SEND] Sent={sent} | Skipped={skipped}")
     return {"status": "PASSED" if skipped == 0 else "PARTIAL", "sent": sent, "skipped": skipped}
 
+
+# ============================================================
+# FEATURE #7 — INCIDENT TIMELINE & CROSS-MEDIA CORRELATION
+# ============================================================
+# Tujuan:
+#   Mengubah event intelligence menjadi timeline kejadian yang dapat
+#   ditelusuri, dengan korelasi lintas media, first/last seen, jumlah
+#   artikel, dan status aktivitas saat ini.
+#
+# Prinsip:
+#   - READ-ONLY
+#   - Tidak menulis database
+#   - Tidak mengirim Telegram
+#   - Tidak mengklaim event "selesai" karena sistem tidak memiliki
+#     bukti resolusi.
+# ============================================================
+
+FEATURE7_MAX_EVENTS = 20
+FEATURE7_MAX_ARTICLES_PER_EVENT = 30
+FEATURE7_RECENT_DAYS = 7
+
+
+def _feature7_activity_status(latest_seen: Any, article_count: int, media_count: int, now: datetime) -> str:
+    latest = _intel_alert_latest_datetime(latest_seen)
+    if latest is None:
+        return "UNKNOWN"
+    age = now - latest
+    if age <= timedelta(days=FEATURE7_RECENT_DAYS):
+        if article_count >= 2 and media_count >= 2:
+            return "ACTIVE_MULTI_MEDIA"
+        if article_count >= 2:
+            return "ACTIVE_RECURRING"
+        return "RECENT"
+    return "STALE"
+
+
+def build_incident_timeline(
+    articles: List[Dict[str, Any]],
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Bangun timeline event production secara deterministic + READ-ONLY."""
+    now = now or datetime.now(timezone.utc)
+    production = [
+        a for a in (articles or [])
+        if isinstance(a, dict)
+        and normalize_text(a.get("title"))
+        and not _is_event_detection_test_article(a)
+    ]
+    production = production[:DASHBOARD_MAX_ARTICLES]
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    for article in production:
+        event = detect_article_event(article, production)
+        key = str(event.get("event_key") or "").strip()
+        if not key:
+            continue
+        group = groups.setdefault(key, {
+            "event_key": key,
+            "event_name": event.get("event_name") or "Event tidak teridentifikasi",
+            "event_type": event.get("event_type") or "UMUM",
+            "status": event.get("status") or "UNCONFIRMED_NEW_EVENT",
+            "article_ids": set(),
+            "articles": [],
+            "media_sources": set(),
+            "satker_matches": set(),
+            "dates": [],
+            "max_risk_score": 0.0,
+            "max_risk_level": "LOW",
+        })
+
+        aid = article.get("id")
+        if aid is not None:
+            group["article_ids"].add(str(aid))
+        media = normalize_text(get_media_source(article))
+        if media:
+            group["media_sources"].add(media)
+        for match in article.get("satker_matches") or []:
+            match_text = normalize_text(match)
+            if match_text:
+                group["satker_matches"].add(match_text)
+        dt = _risk_published_datetime(article)
+        if dt:
+            group["dates"].append(dt)
+
+        risk = _dashboard_article_risk(article, production)
+        if _dashboard_safe_float(risk.get("risk_score")) > group["max_risk_score"]:
+            group["max_risk_score"] = _dashboard_safe_float(risk.get("risk_score"))
+            group["max_risk_level"] = risk.get("risk_level") or "LOW"
+
+        title = normalize_text(article.get("title"))
+        group["articles"].append({
+            "id": aid,
+            "title": title,
+            "media": media,
+            "published_date": article.get("published_date"),
+            "link": article.get("link"),
+            "risk_score": risk.get("risk_score"),
+            "risk_level": risk.get("risk_level"),
+        })
+
+    timeline = []
+    for group in groups.values():
+        dates = sorted(group["dates"])
+        articles_sorted = sorted(
+            group["articles"],
+            key=lambda x: _published_sort_value({"published_date": x.get("published_date")}),
+        )
+        article_count = len(group["article_ids"]) if group["article_ids"] else len(articles_sorted)
+        media_count = len(group["media_sources"])
+        first_seen = dates[0].isoformat() if dates else None
+        latest_seen = dates[-1].isoformat() if dates else None
+        activity_status = _feature7_activity_status(latest_seen, article_count, media_count, now)
+
+        # No inference of resolution; the timeline only reports observed activity.
+        timeline.append({
+            "event_key": group["event_key"],
+            "event_name": group["event_name"],
+            "event_type": group["event_type"],
+            "status": group["status"],
+            "activity_status": activity_status,
+            "article_count": article_count,
+            "media_count": media_count,
+            "media_sources": sorted(group["media_sources"]),
+            "satker_matches": sorted(group["satker_matches"]),
+            "first_seen": first_seen,
+            "latest_seen": latest_seen,
+            "max_risk_score": round(group["max_risk_score"], 2),
+            "max_risk_level": group["max_risk_level"],
+            "timeline": articles_sorted[:FEATURE7_MAX_ARTICLES_PER_EVENT],
+        })
+
+    timeline.sort(
+        key=lambda x: (
+            0 if x.get("activity_status") == "ACTIVE_MULTI_MEDIA" else
+            1 if x.get("activity_status") == "ACTIVE_RECURRING" else
+            2 if x.get("activity_status") == "RECENT" else 3,
+            -_dashboard_safe_float(x.get("max_risk_score")),
+            -_dashboard_safe_int(x.get("article_count")),
+        )
+    )
+    timeline = timeline[:FEATURE7_MAX_EVENTS]
+
+    return {
+        "incident_timeline_version": "FEATURE7-READONLY-V1",
+        "generated_at": now.isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "source": "production_articles_in_memory",
+        "method": {
+            "purpose": "timeline dan korelasi lintas media untuk event production",
+            "recent_window_days": FEATURE7_RECENT_DAYS,
+            "max_events": FEATURE7_MAX_EVENTS,
+            "max_articles_per_event": FEATURE7_MAX_ARTICLES_PER_EVENT,
+            "resolution_inference": False,
+        },
+        "summary": {
+            "production_articles": len(production),
+            "unique_events": len(groups),
+            "events_shown": len(timeline),
+            "active_multi_media": sum(1 for x in timeline if x["activity_status"] == "ACTIVE_MULTI_MEDIA"),
+            "active_recurring": sum(1 for x in timeline if x["activity_status"] == "ACTIVE_RECURRING"),
+            "recent": sum(1 for x in timeline if x["activity_status"] == "RECENT"),
+            "stale": sum(1 for x in timeline if x["activity_status"] == "STALE"),
+        },
+        "events": timeline,
+    }
+
+
+def _write_incident_timeline_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    json_path = "incident_timeline.json"
+    html_path = "incident_timeline.html"
+    csv_path = "incident_timeline.csv"
+
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
+
+    rows = []
+    for idx, event in enumerate(snapshot.get("events", []), 1):
+        timeline_lines = []
+        for item in event.get("timeline", [])[:8]:
+            timeline_lines.append(
+                f"{item.get('published_date') or '-'} | {item.get('media') or '-'} | {item.get('title') or '-'}"
+            )
+        rows.append(
+            "<tr>"
+            f"<td>{idx}</td>"
+            f"<td>{html.escape(str(event.get('activity_status')))}</td>"
+            f"<td>{html.escape(str(event.get('event_name')))}</td>"
+            f"<td>{html.escape(str(event.get('event_type')))}</td>"
+            f"<td>{html.escape(str(event.get('max_risk_score')))} ({html.escape(str(event.get('max_risk_level')))})</td>"
+            f"<td>{html.escape(str(event.get('article_count')))}</td>"
+            f"<td>{html.escape(str(event.get('media_count')))}</td>"
+            f"<td>{html.escape(str(event.get('first_seen')))}</td>"
+            f"<td>{html.escape(str(event.get('latest_seen')))}</td>"
+            f"<td><br>".join(html.escape(x) for x in timeline_lines) + "</td>"
+            "</tr>"
+        )
+    empty = '<tr><td colspan="10">Tidak ada event timeline.</td></tr>'
+    html_rows = "".join(rows) or empty
+    summary = snapshot.get("summary", {})
+    html_doc = f"""<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Incident Timeline</title>
+<style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:24px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head>
+<body><h1>Patroli Siber — Incident Timeline &amp; Cross-Media Correlation</h1>
+<p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p>
+<div class="grid"><div class="card">Production<div class="value">{summary.get('production_articles',0)}</div></div><div class="card">Unique Events<div class="value">{summary.get('unique_events',0)}</div></div><div class="card">Active Multi-Media<div class="value">{summary.get('active_multi_media',0)}</div></div><div class="card">Recent<div class="value">{summary.get('recent',0)}</div></div></div>
+<p><small>Timeline hanya merepresentasikan aktivitas yang teramati. Sistem tidak menyimpulkan bahwa event telah selesai/resolved.</small></p>
+<table><thead><tr><th>#</th><th>Activity</th><th>Event</th><th>Type</th><th>Risk</th><th>Articles</th><th>Media</th><th>First Seen</th><th>Last Seen</th><th>Timeline (max 8)</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+
+    fields = ["event_key","event_name","event_type","status","activity_status","article_count","media_count","media_sources","satker_matches","first_seen","latest_seen","max_risk_score","max_risk_level"]
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for event in snapshot.get("events", []):
+            row = dict(event)
+            row["media_sources"] = "; ".join(event.get("media_sources") or [])
+            row["satker_matches"] = "; ".join(event.get("satker_matches") or [])
+            writer.writerow({field: row.get(field) for field in fields})
+    return {"json": json_path, "html": html_path, "csv": csv_path}
+
+
+def incident_timeline_real_read_only() -> Dict[str, Any]:
+    """Generate Incident Timeline REAL production tanpa mutation."""
+    print("=" * 70)
+    print("FEATURE #7 — INCIDENT TIMELINE & CROSS-MEDIA CORRELATION / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    snapshot = build_incident_timeline(articles)
+    artifacts = _write_incident_timeline_artifacts(snapshot)
+    print(f"[TIMELINE] Production articles : {snapshot['summary']['production_articles']}")
+    print(f"[TIMELINE] Unique events        : {snapshot['summary']['unique_events']}")
+    print(f"[TIMELINE] Events shown         : {snapshot['summary']['events_shown']}")
+    print(f"[TIMELINE] Active multi-media   : {snapshot['summary']['active_multi_media']}")
+    print(f"[TIMELINE] Active recurring     : {snapshot['summary']['active_recurring']}")
+    print(f"[TIMELINE] Recent               : {snapshot['summary']['recent']}")
+    print(f"[TIMELINE] Stale                : {snapshot['summary']['stale']}")
+    for idx, event in enumerate(snapshot.get("events", [])[:10], 1):
+        print(
+            f"#{idx} {event.get('event_name')} | activity={event.get('activity_status')} | "
+            f"articles={event.get('article_count')} | media={event.get('media_count')} | "
+            f"risk={event.get('max_risk_score')} ({event.get('max_risk_level')}) | "
+            f"first={event.get('first_seen')} | last={event.get('latest_seen')}"
+        )
+    print(f"[TIMELINE] Artifact JSON : {artifacts['json']}")
+    print(f"[TIMELINE] Artifact HTML : {artifacts['html']}")
+    print(f"[TIMELINE] Artifact CSV  : {artifacts['csv']}")
+    print("[TIMELINE PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status": "PASSED", "snapshot": snapshot}
+
+
+def test_incident_timeline_real_read_only() -> Dict[str, Any]:
+    """Validasi Feature #7 terhadap production nyata tanpa mutation."""
+    print("=" * 70)
+    print("TEST FEATURE #7 — INCIDENT TIMELINE / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    before = get_all_articles()
+    if not before:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot = build_incident_timeline(before)
+    events = snapshot.get("events", [])
+    if not events:
+        return {"status": "FAILED", "reason": "NO_EVENTS"}
+
+    for event in events:
+        if event.get("activity_status") not in {"ACTIVE_MULTI_MEDIA","ACTIVE_RECURRING","RECENT","STALE","UNKNOWN"}:
+            return {"status": "FAILED", "reason": "INVALID_ACTIVITY_STATUS"}
+        if not event.get("event_key") or not event.get("event_name"):
+            return {"status": "FAILED", "reason": "MISSING_EVENT_IDENTITY"}
+        if int(event.get("article_count", 0)) < 1:
+            return {"status": "FAILED", "reason": "INVALID_ARTICLE_COUNT"}
+        if int(event.get("media_count", 0)) < 0:
+            return {"status": "FAILED", "reason": "INVALID_MEDIA_COUNT"}
+        if event.get("first_seen") and event.get("latest_seen"):
+            first = _intel_alert_latest_datetime(event.get("first_seen"))
+            latest = _intel_alert_latest_datetime(event.get("latest_seen"))
+            if first and latest and first > latest:
+                return {"status": "FAILED", "reason": "INVALID_TIMELINE_ORDER"}
+        if len(event.get("timeline") or []) > FEATURE7_MAX_ARTICLES_PER_EVENT:
+            return {"status": "FAILED", "reason": "TIMELINE_LIMIT_EXCEEDED"}
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+
+    artifacts = _write_incident_timeline_artifacts(snapshot)
+    print(f"[TEST] Production articles : {snapshot['summary']['production_articles']}")
+    print(f"[TEST] Unique events        : {snapshot['summary']['unique_events']}")
+    print(f"[TEST] Events shown         : {snapshot['summary']['events_shown']}")
+    print(f"[TEST] Active multi-media   : {snapshot['summary']['active_multi_media']}")
+    print("[TEST PASS] EVENT IDENTITY / TIMELINE STRUCTURE")
+    print("[TEST PASS] CROSS-MEDIA CORRELATION")
+    print("[TEST PASS] TIMELINE ORDER / LIMITS")
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+    print("TEST INCIDENT TIMELINE & CROSS-MEDIA CORRELATION REAL: PASSED")
+    return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
+
 def main() -> None:
 
     parser = argparse.ArgumentParser(
@@ -12940,6 +13244,18 @@ def main() -> None:
         )
     )
         
+    parser.add_argument(
+        "--incident-timeline",
+        action="store_true",
+        help="generate Incident Timeline & Cross-Media Correlation REAL production (read-only)",
+    )
+
+    parser.add_argument(
+        "--test-incident-timeline-real",
+        action="store_true",
+        help="test Incident Timeline & Cross-Media Correlation REAL production (read-only)",
+    )
+
     parser.add_argument(
         "--once",
         action="store_true",
@@ -13276,6 +13592,18 @@ def main() -> None:
 
         audit_negative_articles()
 
+        return
+
+    if args.test_incident_timeline_real:
+        result = test_incident_timeline_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Incident Timeline REAL gagal: {result.get('reason')}")
+        return
+
+    if args.incident_timeline:
+        result = incident_timeline_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Incident Timeline gagal: {result.get('reason')}")
         return
 
     if args.intelligence_alerts_diagnostic_real:
