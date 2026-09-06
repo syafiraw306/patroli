@@ -14689,13 +14689,20 @@ def _feature10_clean_person_candidate(value: str) -> Optional[str]:
     if any(term in low_phrase for term in FEATURE10_POSITION_TERMS):
         return None
 
-    # Nama harus benar-benar terdiri dari token alfabet/proper-name sederhana.
+    # Nama harus terdiri dari token alfabet/proper-name sederhana.
     # Angka, URL, simbol, dan token sangat pendek ditolak.
+    #
+    # Penting: entity pada event record sudah dinormalisasi lowercase oleh
+    # _feature10_event_entities(). Karena itu fungsi validator ini tidak boleh
+    # mensyaratkan huruf kapital ketika memvalidasi entity yang SUDAH diekstrak.
+    # Syarat proper-name capitalization tetap diterapkan pada tahap ekstraksi
+    # (_feature10_extract_persons), sehingga perubahan ini tidak melonggarkan
+    # sumber ekstraksi; hanya mencegah valid person hilang saat overlap.
     if any(re.search(r"\d|[@:/]", t) for t in tokens):
         return None
     if any(len(re.sub(r"[^A-Za-zÀ-ÿ'-]", "", t)) < 2 for t in tokens):
         return None
-    if not all(re.match(r"^[A-ZÀ-Ý][A-Za-zÀ-ÿ.'-]*$", t) for t in tokens):
+    if any(not re.match(r"^[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ.'-]*$", t) for t in tokens):
         return None
 
     return candidate
