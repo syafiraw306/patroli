@@ -4757,6 +4757,8 @@ def _write_early_warning_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
             "</tr>"
         )
     summary = snapshot.get("summary", {})
+    empty_warning_row = '<tr><td colspan="9">Tidak ada early warning.</td></tr>'
+    html_rows = ''.join(rows) or empty_warning_row
     html_doc = f"""<!doctype html>
 <html lang=\"id\"><head><meta charset=\"utf-8\"><title>Patroli Siber Early Warning</title>
 <style>body{{font-family:Arial,sans-serif;margin:32px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}}.card{{background:white;padding:16px;border-radius:10px;box-shadow:0 1px 4px #ccc}}.value{{font-size:28px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:24px}}th,td{{padding:9px;border-bottom:1px solid #ddd;text-align:left}}th{{background:#eee}}small{{color:#666}}</style></head>
@@ -4766,7 +4768,7 @@ def _write_early_warning_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
 <div class=\"card\">HIGH<div class=\"value\">{summary.get('high',0)}</div></div>
 <div class=\"card\">WATCH<div class=\"value\">{summary.get('watch',0)}</div></div>
 <div class=\"card\">Emerging / Rising<div class=\"value\">{summary.get('emerging_events',0)} / {summary.get('rising_events',0)}</div></div></div>
-<h2>Prioritas Early Warning</h2><table><thead><tr><th>EWS</th><th>Level</th><th>Event</th><th>Type</th><th>Risk</th><th>Trend</th><th>Recent/Prev</th><th>Media</th><th>Why</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan=\"9\">Tidak ada early warning.</td></tr>'}</tbody></table>
+<h2>Prioritas Early Warning</h2><table><thead><tr><th>EWS</th><th>Level</th><th>Event</th><th>Type</th><th>Risk</th><th>Trend</th><th>Recent/Prev</th><th>Media</th><th>Why</th></tr></thead><tbody>{html_rows}</tbody></table>
 <p><small>Early Warning Score hanya untuk decision support/observability. Tidak mengubah database dan tidak mengirim Telegram.</small></p></body></html>"""
     with open(html_path, "w", encoding="utf-8") as fh:
         fh.write(html_doc)
