@@ -14590,7 +14590,15 @@ FEATURE10_LOCATION_TERMS = {
 
 # Kata/frasa yang sering muncul dalam headline tetapi bukan nama orang.
 FEATURE10_NON_PERSON_TERMS = {
+    # Publisher/source/feed names and crawler artifacts.
     "google", "google news", "google berita", "google news rss", "kalimantan kita",
+    "antara", "antara news", "harian mistar", "media online", "media online jurnal",
+    # Headline fragments / generic nouns / verbs that are not person names.
+    "jabat", "jabatnya", "pimpin", "dipimpin", "kunjungi", "mengunjungi",
+    "hentikan", "menghentikan", "lewat", "restorative", "justice",
+    "bunga", "papan bunga", "sindiran", "pelakor", "penggantinya",
+    "copot", "empat", "aras", "kabu", "lokong", "dana", "desa",
+    "online", "jurnal", "news",
     "terkuak", "alasan", "setelah", "setelahnya", "diduga", "terkait", "laporan",
     "warga", "dua", "tiga", "siapa", "saja", "buntut", "akibat", "pelanggaran",
     "kode", "etik", "penyebab", "belum", "terungkap", "dikabarkan", "diamankan",
@@ -14927,10 +14935,10 @@ def _feature10_event_source_terms(event: Dict[str, Any]) -> set:
 
 
 def _feature10_person_text_provenance(person: str, event: Dict[str, Any]) -> bool:
-    """Require a person entity to occur in actual article title/content.
+    """Require a person to be produced by the conservative extractor itself.
 
-    This is intentionally evidence-preserving: a person must be traceable to
-    article text, not merely to a precomputed event entity or crawler metadata.
+    Raw substring occurrence is insufficient: noun phrases, locations,
+    publisher names, and headline fragments must not become person entities.
     """
     key = _feature10_norm(person)
     if not key or not _feature10_clean_person_candidate(person):
@@ -14938,11 +14946,10 @@ def _feature10_person_text_provenance(person: str, event: Dict[str, Any]) -> boo
     for article in event.get("articles") or []:
         if not isinstance(article, dict):
             continue
-        text = _feature10_norm(f"{article.get('title') or ''} {article.get('content') or ''}")
-        if key and key in text:
+        extracted = {_feature10_norm(p) for p in _feature10_extract_persons(article) if p}
+        if key in extracted:
             return True
     return False
-
 
 def _feature10_relationship_person_guard(a: Dict[str, Any], b: Dict[str, Any], persons: List[str]) -> bool:
     """Validate shared persons against source metadata and article text."""
@@ -15300,7 +15307,7 @@ def build_cross_incident_relationships(articles: List[Dict[str, Any]], now: Opti
     relationships.sort(key=lambda r:(0 if r.get("confidence")=="HIGH" else 1, -len(r.get("evidence") or []), -_dashboard_safe_float((r.get("event_a") or {}).get("max_risk_score")), -_dashboard_safe_float((r.get("event_b") or {}).get("max_risk_score"))))
     relationships=relationships[:FEATURE10_MAX_RELATIONSHIPS]
     return {
-        "cross_incident_relationship_version":"FEATURE10-READONLY-V8-ENTITY-PROVENANCE-GUARD",
+        "cross_incident_relationship_version":"FEATURE10-READONLY-V9-ENTITY-PROVENANCE-FIX",
         "generated_at":now.isoformat(),
         "mode":"READ-ONLY",
         "database_write":False,
@@ -15346,7 +15353,7 @@ def _write_cross_incident_relationship_artifacts(snapshot: Dict[str, Any]) -> Di
         rows.append("<tr>" + f"<td>{i}</td><td>{html.escape(str(r.get('relationship_type')))}</td><td>{html.escape(str(r.get('confidence')))}</td>" + f"<td>{html.escape(str(a.get('event_name')))}</td><td>{html.escape(str(b.get('event_name')))}</td>" + f"<td>{html.escape('; '.join(shared) or '-')}</td><td>{html.escape(str(r.get('temporal_distance_days') if r.get('temporal_distance_days') is not None else '-'))}</td>" + "</tr>")
     html_rows="".join(rows) or '<tr><td colspan="7">Tidak ada relationship.</td></tr>'
     s=snapshot.get("summary",{})
-    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V8-ENTITY-PROVENANCE-GUARD &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V24: person extraction konservatif + source/publisher guard + article-text provenance guard + distinctive topic guard + probable-same-incident semantic guard + identity evidence guard. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> FEATURE10-READONLY-V9-ENTITY-PROVENANCE-FIX &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>V24: person extraction konservatif + source/publisher guard + article-text provenance guard + distinctive topic guard + probable-same-incident semantic guard + identity evidence guard. Jabatan/lokasi/institusi/frasa generik tidak dianggap person. Relationship tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
     with open(html_path,"w",encoding="utf-8") as fh: fh.write(html_doc)
     fields=["relationship_id","relationship_type","confidence","event_a_key","event_a_name","event_b_key","event_b_name","evidence","shared_entities","temporal_distance_days","analyst_note"]
     with open(csv_path,"w",encoding="utf-8",newline="") as fh:
@@ -15479,6 +15486,24 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
             if event_a is not None and event_b is not None:
                 if not _feature10_relationship_person_guard(event_a, event_b, list(shared["persons"])):
                     return {"status":"FAILED","reason":"PERSON_PROVENANCE_GUARD","persons":shared["persons"]}
+                # Hard artifact gate: every relationship person must be
+                # reproducible by the conservative extractor in BOTH events.
+                for person in shared["persons"]:
+                    person_key = _feature10_norm(person)
+                    for event_obj in (event_a, event_b):
+                        extracted = {
+                            _feature10_norm(p)
+                            for article in (event_obj.get("articles") or [])
+                            if isinstance(article, dict)
+                            for p in _feature10_extract_persons(article)
+                            if p
+                        }
+                        if person_key not in extracted:
+                            return {
+                                "status":"FAILED",
+                                "reason":"PERSON_EXTRACTOR_PROVENANCE_GUARD",
+                                "person":person,
+                            }
         else:
             # V23 generation rule: without a valid person, a relationship is
             # allowed only when it has distinctive topic evidence: either
