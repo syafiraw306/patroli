@@ -49,6 +49,7 @@ on:
           - intelligence-alerts
           - test-intelligence-alerts-real
           - intelligence-alerts-diagnostic-real
+          - test-intelligence-alerts-controlled-fresh-real
           - send-intelligence-alerts
 
 jobs:
@@ -187,6 +188,10 @@ jobs:
               echo "Menjalankan diagnostic Intelligence Alert REAL production (READ-ONLY)..."
               python patroli.py --intelligence-alerts-diagnostic-real
 
+            elif [ "${{ inputs.mode }}" = "test-intelligence-alerts-controlled-fresh-real" ]; then
+              echo "Menjalankan E2E Intelligence Alert dengan event production nyata, controlled fresh IN-MEMORY, Telegram MOCK..."
+              python patroli.py --test-intelligence-alerts-controlled-fresh-real
+
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
               echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
               python patroli.py --send-intelligence-alerts
@@ -288,7 +293,7 @@ jobs:
       # UPLOAD FEATURE #6 — INTELLIGENCE ALERTS
       # ==========================================
       - name: Upload Intelligence Alerts
-        if: ${{ inputs.mode == 'intelligence-alerts' || inputs.mode == 'test-intelligence-alerts-real' || inputs.mode == 'intelligence-alerts-diagnostic-real' }}
+        if: ${{ inputs.mode == 'intelligence-alerts' || inputs.mode == 'test-intelligence-alerts-real' || inputs.mode == 'intelligence-alerts-diagnostic-real' || inputs.mode == 'test-intelligence-alerts-controlled-fresh-real' }}
         uses: actions/upload-artifact@v4
         with:
           name: intelligence-alerts
