@@ -5233,6 +5233,15 @@ EVENT_DETECTION_MIN_SIMILARITY = 0.62
 EVENT_DETECTION_MAX_RELATED = 20
 EVENT_DETECTION_MIN_ANCHORS = 1
 
+# Location/institution tokens must never be sufficient by themselves to
+# correlate two different incidents. They remain useful context, but are
+# excluded from fallback event anchors.
+EVENT_LOCATION_TOKENS = {
+    "lubuk", "pakam", "medan", "deliserdang", "deli", "serdang",
+    "sumut", "sumatera", "utara", "palas", "padang", "labuhan",
+    "belawan", "perbaungan", "galang", "batang", "kuis", "tanjung",
+}
+
 # Klasifikasi event dibuat konservatif: istilah yang benar-benar menunjukkan
 # jenis kejadian diprioritaskan, sedangkan kata institusi/lokasi umum tidak
 # boleh sendirian menentukan tipe event.
@@ -5477,8 +5486,12 @@ def _risk_event_anchors(article: Dict[str, Any]) -> set:
     anchors = tokens & RISK_EVENT_ANCHOR_TOKENS
     if anchors:
         return anchors
-    # Untuk event non-hukum, token non-generik tetap dapat menjadi anchor.
-    return {token for token in tokens if len(token) >= 6}
+    # Untuk event non-hukum, token non-generik tetap dapat menjadi anchor,
+    # tetapi lokasi/institusi tidak boleh menjadi satu-satunya pengikat event.
+    return {
+        token for token in tokens
+        if len(token) >= 6 and token not in EVENT_LOCATION_TOKENS
+    }
 
 
 def _risk_event_similarity(article_a: Dict[str, Any], article_b: Dict[str, Any]) -> float:
@@ -5539,6 +5552,19 @@ def _risk_is_related_event(article: Dict[str, Any], other: Dict[str, Any]) -> Tu
     anchors_a = _risk_event_anchors(article)
     anchors_b = _risk_event_anchors(other)
     anchor_overlap = anchors_a & anchors_b
+
+    # Safety guard: shared location/institution terms alone are never enough
+    # to correlate incidents. Strong title similarity can still establish a
+    # relation because it reflects the same concrete headline/event wording.
+    location_a = _risk_tokens(article.get("title")) & EVENT_LOCATION_TOKENS
+    location_b = _risk_tokens(other.get("title")) & EVENT_LOCATION_TOKENS
+    non_location_overlap = anchor_overlap - EVENT_LOCATION_TOKENS
+    if anchor_overlap and not non_location_overlap:
+        title_a0 = normalize_text(article.get("title"))
+        title_b0 = normalize_text(other.get("title"))
+        title_ratio0 = SequenceMatcher(None, title_a0.lower(), title_b0.lower()).ratio()
+        if title_ratio0 < RISK_STRONG_TITLE_SIMILARITY:
+            return False, similarity
 
     # Judul yang sangat kuat boleh lolos tanpa anchor eksplisit.
     title_a = normalize_text(article.get("title"))
@@ -12934,6 +12960,7 @@ def send_intelligence_alerts() -> Dict[str, Any]:
 
 # ============================================================
 # FEATURE #7 — INCIDENT TIMELINE & CROSS-MEDIA CORRELATION
+# V11 QUALITY FIX: prevent location-only false correlation + repair HTML timeline cells.
 # ============================================================
 # Tujuan:
 #   Mengubah event intelligence menjadi timeline kejadian yang dapat
@@ -13126,7 +13153,7 @@ def _write_incident_timeline_artifacts(snapshot: Dict[str, Any]) -> Dict[str, st
             f"<td>{html.escape(str(event.get('media_count')))}</td>"
             f"<td>{html.escape(str(event.get('first_seen')))}</td>"
             f"<td>{html.escape(str(event.get('latest_seen')))}</td>"
-            f"<td><br>".join(html.escape(x) for x in timeline_lines) + "</td>"
+            f"<td>{'<br>'.join(html.escape(x) for x in timeline_lines)}</td>"
             "</tr>"
         )
     empty = '<tr><td colspan="10">Tidak ada event timeline.</td></tr>'
