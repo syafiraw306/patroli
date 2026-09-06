@@ -9767,15 +9767,17 @@ def _normalized_title_for_historical(article):
 def _is_photo_or_gallery_article(article):
     title = normalize_text(article.get("title") or "").lower().strip() if isinstance(article, dict) else ""
     title = re.sub(r"\s+", " ", title)
+    # Conservative detection: only explicit photo/gallery markers at the
+    # beginning of the title are treated as photo/gallery records. Do not
+    # classify a normal news article merely because its title contains a
+    # word such as "photo" later in the sentence.
     patterns = (
         r"^foto\s*[:\-]",
         r"^foto\b",
-        r"\bfoto\s*[:\-]",
-        r"\bfoto\s+",
-        r"\bgallery\b",
-        r"\bgaleri\b",
-        r"\bphoto\s*gallery\b",
-        r"\bphoto\b",
+        r"^photo\s*[:\-]",
+        r"^photo\b",
+        r"^gallery\b",
+        r"^galeri\b",
     )
     return any(re.search(pattern, title, flags=re.I) for pattern in patterns)
 
@@ -9950,11 +9952,39 @@ def _historical_duplicate_plan(articles):
             if pair_key(rec, keeper) in seen_pairs:
                 continue
             seen_pairs.add(pair_key(rec, keeper))
-            # Foto/gallery remains REVIEW.
+            # Historical cleanup is intentionally more conservative than
+            # ingestion: title+media alone is NOT sufficient to auto-delete
+            # an existing record when content differs. This protects cases
+            # such as /all vs canonical pages that share a headline but have
+            # different extracted content.
             if rec["photo_gallery"] or keeper["photo_gallery"]:
                 add_review(rec, "PHOTO_OR_GALLERY_REVIEW", keeper)
                 continue
-            mark_delete(rec, keeper, "DUPLICATE_TITLE_SAME_MEDIA")
+
+            rec_content = rec.get("content") or ""
+            keeper_content = keeper.get("content") or ""
+            if not rec_content or not keeper_content:
+                add_review(rec, "TITLE_MEDIA_REVIEW_CONTENT_UNAVAILABLE", keeper)
+                continue
+
+            content_similarity = calculate_content_similarity(
+                rec_content, keeper_content
+            )
+            if content_similarity < 0.999999:
+                add_review(
+                    rec,
+                    "TITLE_MEDIA_REVIEW_CONTENT_DIFFERENT",
+                    keeper,
+                    content_similarity,
+                )
+                continue
+
+            mark_delete(
+                rec,
+                keeper,
+                "EXACT_TITLE_CONTENT_SAME_MEDIA",
+                content_similarity,
+            )
 
     # --------------------------------------------------------
     # 3. EXACT TITLE + CONTENT + SAME MEDIA
