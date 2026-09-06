@@ -9865,7 +9865,10 @@ def _historical_keeper_score(article):
     content = _article_content_key(article)
     title = normalize_text(article.get("title") or "")
     published = parse_date_safe(article.get("published_date"))
-    link = normalize_url(article.get("link") or "")
+    # Gunakan URL ASLI untuk mendeteksi varian AMP /all.
+    # Jangan memakai normalize_url() karena database.py dapat menormalkan
+    # path AMP sehingga /amp/berita/... terlihat sama dengan URL canonical.
+    link = str(article.get("link") or "").strip()
     parsed = urllib.parse.urlsplit(link) if link else None
     host = (parsed.netloc or "").lower().split(":", 1)[0] if parsed else ""
     host = host[4:] if host.startswith("www.") else host
