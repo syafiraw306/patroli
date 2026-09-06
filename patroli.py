@@ -9627,6 +9627,660 @@ def resolve_existing_urls(dry_run: bool = True) -> Dict[str, Any]:
         "failed": counts.get("FAILED", 0),
     }
 
+# ============================================================
+# SAFE HISTORICAL DEDUPE ENGINE — FINAL
+# ============================================================
+# database.py TIDAK DIUBAH.
+# Engine ini hanya menggunakan fungsi yang sudah diekspor database.py.
+#
+# Aturan:
+#   1. URL canonical duplicate                 -> AUTO_DELETE (keeper 1)
+#   2. TITLE + MEDIA sama                      -> AUTO_DELETE, kecuali Foto/Gallery
+#   3. CONTENT + MEDIA duplicate               -> AUTO_DELETE, kecuali Foto/Gallery
+#   4. EVENT sama + MEDIA berbeda              -> KEEP
+#   5. Google News vs publisher                -> publisher diprioritaskan
+#   6. http/https, www, trailing slash, /amp,
+#      /all dan tracking query ditangani aman
+#   7. Collision/ambiguous identity             -> REVIEW, bukan delete
+#   8. Dry-run membuat report sebelum perubahan
+#   9. Apply melakukan verifikasi read-back
+# ============================================================
+
+
+def _safe_int_id(value):
+    try:
+        return int(value)
+    except Exception:
+        return 10**18
+
+
+def _is_google_news_article_url(link):
+    try:
+        return _is_google_news_url(normalize_url(link or ""))
+    except Exception:
+        try:
+            return urllib.parse.urlparse(str(link or "")).netloc.lower().replace("www.", "") == "news.google.com"
+        except Exception:
+            return False
+
+
+def _canonical_media_identity(article):
+    """Canonical publisher identity untuk historical dedupe."""
+    raw = get_media_source(article)
+    text = normalize_text(raw).lower().strip()
+    text = re.sub(r"\s+", " ", text)
+    text = text.replace("https://", "").replace("http://", "")
+    text = text.replace("www.", "")
+    text = re.sub(r"[\s._-]+", "", text)
+
+    aliases = {
+        "detik": "detik",
+        "detikcom": "detik",
+        "detikcomid": "detik",
+        "kompas": "kompas",
+        "kompascom": "kompas",
+        "antaranews": "antara",
+        "antaranewscom": "antara",
+        "antara": "antara",
+        "sumutpos": "sumutpos",
+        "sumutposco": "sumutpos",
+        "harianindopos": "indopos",
+        "harianSIB".lower().replace(" ", ""): "hariansib",
+        "hariansib": "hariansib",
+        "posmetromedan": "posmetromedan",
+        "posmetromedanid": "posmetromedan",
+        "waspada": "waspada",
+        "waspadaid": "waspada",
+        "tribunmedan": "tribunmedan",
+        "tribunnews": "tribunnews",
+    }
+    if text in aliases:
+        return aliases[text]
+
+    # Jika media berasal dari domain, normalisasi domain secara konservatif.
+    link = article.get("link") or article.get("url") or "" if isinstance(article, dict) else ""
+    try:
+        host = urllib.parse.urlparse(str(link)).netloc.lower().replace("www.", "")
+        if host and host != "news.google.com":
+            host = re.sub(r"[^a-z0-9]", "", host)
+            if host.endswith("com") and host[:-3] in aliases:
+                return aliases[host[:-3]]
+            if host in aliases:
+                return aliases[host]
+            return host
+    except Exception:
+        pass
+
+    return text or "unknown"
+
+
+def _canonical_article_url(link):
+    """URL identity untuk dedupe historical; tidak mengubah nilai DB."""
+    raw = str(link or "").strip()
+    if not raw:
+        return ""
+
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+    except Exception:
+        return normalize_url(raw)
+
+    scheme = (parsed.scheme or "https").lower()
+    host = (parsed.netloc or "").lower().replace("www.", "")
+    path = parsed.path or "/"
+
+    # Google News sengaja dipisahkan; jangan menyamakan dengan publisher URL.
+    if host == "news.google.com":
+        try:
+            return normalize_url(raw)
+        except Exception:
+            return raw
+
+    # /amp dan /amp/ adalah representasi artikel yang sama.
+    path = re.sub(r"/amp/?$", "", path, flags=re.I)
+    # /all umumnya versi halaman yang sama, tetapi hanya dihilangkan sebagai
+    # bagian dari canonical identity; nilai asli DB tidak pernah diubah.
+    path = re.sub(r"/all/?$", "", path, flags=re.I)
+    path = re.sub(r"/{2,}", "/", path)
+    if path != "/":
+        path = path.rstrip("/")
+
+    # Tracking parameters dibuang; parameter substantif dipertahankan.
+    tracking = {
+        "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+        "gclid", "fbclid", "mc_cid", "mc_eid", "ref", "ref_src", "output",
+    }
+    pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    pairs = [(k, v) for k, v in pairs if k.lower() not in tracking]
+    query = urllib.parse.urlencode(sorted(pairs))
+
+    # http/https diperlakukan sama untuk identity.
+    return urllib.parse.urlunsplit(("https", host, path or "/", query, ""))
+
+
+def _normalized_title_for_historical(article):
+    title = normalize_title(article.get("title") or "")
+    # Foto/Gallery tidak otomatis dianggap duplicate melalui title/content.
+    return title.strip()
+
+
+def _is_photo_or_gallery_article(article):
+    title = normalize_text(article.get("title") or "").lower().strip() if isinstance(article, dict) else ""
+    title = re.sub(r"\s+", " ", title)
+    patterns = (
+        r"^foto\s*[:\-]",
+        r"^foto\b",
+        r"\bfoto\s*[:\-]",
+        r"\bfoto\s+",
+        r"\bgallery\b",
+        r"\bgaleri\b",
+        r"\bphoto\s*gallery\b",
+        r"\bphoto\b",
+    )
+    return any(re.search(pattern, title, flags=re.I) for pattern in patterns)
+
+
+def _article_content_key(article):
+    return normalize_content_for_duplicate(get_article_content(article))
+
+
+def _published_sort_value(article):
+    try:
+        dt = parse_date_safe(article.get("published_date"))
+        return dt.timestamp() if dt else -1.0
+    except Exception:
+        return -1.0
+
+
+def _historical_keeper_score(article):
+    """Skor keeper; publisher URL selalu mengalahkan Google News URL."""
+    content = _article_content_key(article)
+    title = normalize_text(article.get("title") or "")
+    published = parse_date_safe(article.get("published_date"))
+    is_google = _is_google_news_article_url(article.get("link"))
+    is_photo = _is_photo_or_gallery_article(article)
+
+    # Urutan prioritas sengaja tuple-based dan deterministik.
+    return (
+        0 if is_google else 1,
+        0 if is_photo else 1,
+        len(content),
+        bool(title),
+        bool(published),
+        _published_sort_value(article),
+        -_safe_int_id(article.get("id")),
+    )
+
+
+def _pair_event_safety(article_a, article_b):
+    """Safety gate: media berbeda tidak boleh dihapus sebagai duplicate."""
+    media_a = _canonical_media_identity(article_a)
+    media_b = _canonical_media_identity(article_b)
+    if media_a and media_b and media_a != "unknown" and media_b != "unknown" and media_a != media_b:
+        return "DIFFERENT_MEDIA_KEEP"
+    return "SAME_MEDIA_OR_UNKNOWN"
+
+
+def _historical_duplicate_plan(articles):
+    """Buat rencana dedupe konservatif tanpa mengubah database."""
+    records = []
+    for article in articles:
+        if not isinstance(article, dict):
+            continue
+        records.append({
+            "article": article,
+            "id": article.get("id"),
+            "title": normalize_text(article.get("title") or ""),
+            "title_key": _normalized_title_for_historical(article),
+            "content": _article_content_key(article),
+            "media": _canonical_media_identity(article),
+            "link": article.get("link") or "",
+            "url_key": _canonical_article_url(article.get("link")),
+            "google_news": _is_google_news_article_url(article.get("link")),
+            "photo_gallery": _is_photo_or_gallery_article(article),
+            "published_date": article.get("published_date"),
+        })
+
+    by_url = defaultdict(list)
+    by_title_media = defaultdict(list)
+    by_content_media = defaultdict(list)
+
+    for rec in records:
+        if rec["url_key"]:
+            by_url[rec["url_key"]].append(rec)
+        if rec["title_key"] and rec["media"] != "unknown":
+            by_title_media[(rec["title_key"], rec["media"])].append(rec)
+        if rec["content"] and len(rec["content"]) >= 100 and rec["media"] != "unknown":
+            by_content_media[rec["media"]].append(rec)
+
+    candidates = {}
+    reviews = {}
+    seen_pairs = set()
+
+    def add_review(rec, reason, matched=None, similarity=None):
+        rid = str(rec["id"])
+        item = reviews.setdefault(rid, {
+            "id": rec["id"],
+            "title": rec["title"],
+            "link": rec["link"],
+            "media": rec["media"],
+            "action": "REVIEW",
+            "reasons": [],
+            "matched_ids": [],
+            "similarity": None,
+        })
+        if reason not in item["reasons"]:
+            item["reasons"].append(reason)
+        if matched is not None:
+            mid = matched.get("id")
+            if mid is not None and mid not in item["matched_ids"]:
+                item["matched_ids"].append(mid)
+        if similarity is not None:
+            old = item.get("similarity")
+            item["similarity"] = max(float(old or 0), float(similarity))
+
+    def pair_key(a, b):
+        return tuple(sorted((str(a["id"]), str(b["id"]))))
+
+    def mark_delete(rec, keeper, reason, similarity=None):
+        rid = str(rec["id"])
+        kid = str(keeper["id"])
+        if rid == kid:
+            return
+        # A photo/gallery record is never auto-deleted by title/content.
+        if rec["photo_gallery"] and reason != "DUPLICATE_CANONICAL_URL":
+            add_review(rec, "PHOTO_OR_GALLERY_REVIEW", keeper, similarity)
+            return
+        # If the pair is known to be from different media, KEEP.
+        if _pair_event_safety(rec["article"], keeper["article"]) == "DIFFERENT_MEDIA_KEEP":
+            add_review(rec, "DIFFERENT_MEDIA_KEEP", keeper, similarity)
+            return
+        # A previously scheduled delete is only replaced by a stronger reason.
+        existing = candidates.get(rid)
+        strength = {
+            "DUPLICATE_CANONICAL_URL": 4,
+            "EXACT_TITLE_CONTENT_SAME_MEDIA": 3,
+            "DUPLICATE_TITLE_SAME_MEDIA": 2,
+            "DUPLICATE_CONTENT_SAME_MEDIA": 1,
+        }
+        if existing and strength.get(existing["reason"], 0) >= strength.get(reason, 0):
+            return
+        candidates[rid] = {
+            "id": rec["id"],
+            "title": rec["title"],
+            "link": rec["link"],
+            "media": rec["media"],
+            "action": "AUTO_DELETE",
+            "reason": reason,
+            "keeper_id": keeper["id"],
+            "keeper_title": keeper["title"],
+            "keeper_link": keeper["link"],
+            "similarity": similarity,
+        }
+
+    # --------------------------------------------------------
+    # 1. CANONICAL URL GROUPS
+    # --------------------------------------------------------
+    for url_key, group in by_url.items():
+        if len(group) < 2:
+            continue
+        ranked = sorted(group, key=lambda r: _historical_keeper_score(r["article"]), reverse=True)
+        keeper = ranked[0]
+        for rec in ranked[1:]:
+            if pair_key(rec, keeper) in seen_pairs:
+                continue
+            seen_pairs.add(pair_key(rec, keeper))
+            # Exact canonical URL collision is strong. Different media at the same
+            # publisher URL is still suspicious; review rather than delete.
+            if _canonical_media_identity(rec["article"]) != _canonical_media_identity(keeper["article"]):
+                add_review(rec, "CANONICAL_URL_MEDIA_COLLISION", keeper)
+                add_review(keeper, "CANONICAL_URL_MEDIA_COLLISION", rec)
+                continue
+            mark_delete(rec, keeper, "DUPLICATE_CANONICAL_URL")
+
+    # --------------------------------------------------------
+    # 2. EXACT TITLE + SAME MEDIA
+    # --------------------------------------------------------
+    for _, group in by_title_media.items():
+        if len(group) < 2:
+            continue
+        ranked = sorted(group, key=lambda r: _historical_keeper_score(r["article"]), reverse=True)
+        keeper = ranked[0]
+        for rec in ranked[1:]:
+            if pair_key(rec, keeper) in seen_pairs:
+                continue
+            seen_pairs.add(pair_key(rec, keeper))
+            # Foto/gallery remains REVIEW.
+            if rec["photo_gallery"] or keeper["photo_gallery"]:
+                add_review(rec, "PHOTO_OR_GALLERY_REVIEW", keeper)
+                continue
+            mark_delete(rec, keeper, "DUPLICATE_TITLE_SAME_MEDIA")
+
+    # --------------------------------------------------------
+    # 3. EXACT TITLE + CONTENT + SAME MEDIA
+    # Stronger evidence; may upgrade an existing review.
+    # --------------------------------------------------------
+    exact_groups = defaultdict(list)
+    for rec in records:
+        if rec["title_key"] and rec["content"] and rec["media"] != "unknown":
+            exact_groups[(rec["title_key"], rec["content"], rec["media"])].append(rec)
+
+    for _, group in exact_groups.items():
+        if len(group) < 2:
+            continue
+        ranked = sorted(group, key=lambda r: _historical_keeper_score(r["article"]), reverse=True)
+        keeper = ranked[0]
+        for rec in ranked[1:]:
+            if rec["photo_gallery"] or keeper["photo_gallery"]:
+                add_review(rec, "PHOTO_OR_GALLERY_REVIEW", keeper, 1.0)
+                continue
+            mark_delete(rec, keeper, "EXACT_TITLE_CONTENT_SAME_MEDIA", 1.0)
+
+    # --------------------------------------------------------
+    # 4. CONTENT SIMILARITY + SAME MEDIA
+    # Candidate blocking by media; no cross-media deletion.
+    # --------------------------------------------------------
+    threshold = float(CONTENT_DUPLICATE_THRESHOLD)
+    for media, group in by_content_media.items():
+        # Small DB today, but cap pair comparisons to avoid pathological growth.
+        n = len(group)
+        for i in range(n):
+            a = group[i]
+            if not a["content"]:
+                continue
+            for j in range(i + 1, n):
+                b = group[j]
+                if not b["content"]:
+                    continue
+                pk = pair_key(a, b)
+                if pk in seen_pairs:
+                    continue
+                sim = calculate_content_similarity(a["content"], b["content"])
+                if sim < threshold:
+                    continue
+                seen_pairs.add(pk)
+                if a["photo_gallery"] or b["photo_gallery"]:
+                    add_review(b, "PHOTO_OR_GALLERY_REVIEW", a, sim)
+                    continue
+                keeper = max((a, b), key=lambda r: _historical_keeper_score(r["article"]))
+                loser = b if keeper is a else a
+                mark_delete(loser, keeper, "DUPLICATE_CONTENT_SAME_MEDIA", sim)
+
+    # --------------------------------------------------------
+    # 5. Collision / ambiguity safety.
+    # A record that is both AUTO_DELETE and has a conflicting review
+    # is demoted to REVIEW. Never delete an ambiguous row.
+    # --------------------------------------------------------
+    for rid in list(candidates):
+        if rid in reviews:
+            item = candidates.pop(rid)
+            review = reviews[rid]
+            review["reasons"].append(item["reason"] + "_AMBIGUOUS")
+            review["matched_ids"].append(item["keeper_id"])
+            review["similarity"] = item.get("similarity")
+
+    # A keeper that is scheduled for deletion is unsafe. Demote it and its
+    # dependent candidate(s) to review.
+    deleted_ids = set(candidates)
+    changed = True
+    while changed:
+        changed = False
+        for rid, item in list(candidates.items()):
+            if str(item.get("keeper_id")) in deleted_ids:
+                review = reviews.setdefault(rid, {
+                    "id": item["id"], "title": item["title"], "link": item["link"],
+                    "media": item["media"], "action": "REVIEW", "reasons": [],
+                    "matched_ids": [], "similarity": item.get("similarity"),
+                })
+                review["reasons"].append("KEEPER_ALSO_DELETE_REVIEW")
+                review["matched_ids"].append(item["keeper_id"])
+                candidates.pop(rid)
+                deleted_ids.discard(rid)
+                changed = True
+
+    keep_ids = {str(r["id"]) for r in records} - set(candidates)
+    return {
+        "records": records,
+        "candidates": list(candidates.values()),
+        "reviews": list(reviews.values()),
+        "keep_ids": keep_ids,
+        "stats": {
+            "total": len(records),
+            "auto_delete": len(candidates),
+            "review": len(reviews),
+            "keep": len(keep_ids),
+            "url_groups": sum(1 for g in by_url.values() if len(g) > 1),
+            "title_media_groups": sum(1 for g in by_title_media.values() if len(g) > 1),
+            "content_media_candidate_groups": sum(1 for g in by_content_media.values() if len(g) > 1),
+            "exact_title_content_groups": sum(1 for g in exact_groups.values() if len(g) > 1),
+        },
+    }
+
+
+def _write_historical_dedupe_reports(plan, prefix="dedupe_final"):
+    """Tulis CSV + JSON rencana; dipanggil sebelum APPLY."""
+    generated_at = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "generated_at": generated_at,
+        "read_only": True,
+        "rules": [
+            "duplicate canonical URL",
+            "duplicate title + same canonical media",
+            "duplicate content + same canonical media",
+            "same event + different media is KEEP",
+            "publisher URL preferred over Google News URL",
+            "photo/gallery is REVIEW, never auto-delete by title/content",
+            "ambiguous/collision is REVIEW",
+        ],
+        "stats": plan["stats"],
+        "auto_delete": plan["candidates"],
+        "review": plan["reviews"],
+    }
+    json_path = f"{prefix}.json"
+    csv_path = f"{prefix}.csv"
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2, default=str)
+
+    fields = [
+        "action", "id", "keeper_id", "reason", "similarity", "media",
+        "title", "link", "keeper_title", "keeper_link", "reasons", "matched_ids",
+    ]
+    with open(csv_path, "w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for item in plan["candidates"]:
+            writer.writerow({k: item.get(k, "") for k in fields})
+        for item in plan["reviews"]:
+            writer.writerow({
+                "action": "REVIEW",
+                "id": item.get("id"),
+                "keeper_id": "",
+                "reason": " | ".join(item.get("reasons", [])),
+                "similarity": item.get("similarity"),
+                "media": item.get("media"),
+                "title": item.get("title"),
+                "link": item.get("link"),
+                "keeper_title": "",
+                "keeper_link": "",
+                "reasons": " | ".join(item.get("reasons", [])),
+                "matched_ids": ",".join(str(x) for x in item.get("matched_ids", [])),
+            })
+    return json_path, csv_path
+
+
+def _print_historical_dedupe_plan(plan, mode):
+    stats = plan["stats"]
+    print("=" * 70)
+    print(f"SAFE HISTORICAL DEDUPE — {mode}")
+    print("=" * 70)
+    print(f"Total artikel             : {stats['total']}")
+    print(f"Canonical URL groups      : {stats['url_groups']}")
+    print(f"Title + media groups      : {stats['title_media_groups']}")
+    print(f"Exact title+content groups: {stats['exact_title_content_groups']}")
+    print(f"Content + media groups    : {stats['content_media_candidate_groups']}")
+    print(f"AUTO_DELETE               : {stats['auto_delete']}")
+    print(f"REVIEW                    : {stats['review']}")
+    print(f"KEEP                      : {stats['keep']}")
+    print()
+    for item in plan["candidates"]:
+        print(
+            f"[AUTO_DELETE] ID={item['id']} | keeper={item['keeper_id']} | "
+            f"reason={item['reason']} | media={item['media']}"
+        )
+        print(f"  DELETE: {item['title'][:120]}")
+        print(f"  KEEP  : {item['keeper_title'][:120]}")
+        if item.get("similarity") is not None:
+            print(f"  SIMILARITY: {float(item['similarity']):.2%}")
+    for item in plan["reviews"]:
+        print(
+            f"[REVIEW] ID={item['id']} | media={item['media']} | "
+            f"reason={' | '.join(item['reasons'])}"
+        )
+        print(f"  TITLE: {item['title'][:120]}")
+    print("=" * 70)
+
+
+def dedupe_dry_run() -> Dict[str, Any]:
+    """Full historical dedupe audit; NO INSERT/UPDATE/DELETE."""
+    try:
+        articles = get_all_articles()
+    except Exception as exc:
+        print(f"[DEDUPE DRY RUN ERROR] {type(exc).__name__}: {exc}")
+        return {"success": False, "error": str(exc)}
+
+    plan = _historical_duplicate_plan(articles)
+    json_path, csv_path = _write_historical_dedupe_reports(plan, "dedupe_final")
+    _print_historical_dedupe_plan(plan, "DRY RUN")
+    print(f"[REPORT] {json_path}")
+    print(f"[REPORT] {csv_path}")
+    print("READ-ONLY: DATABASE TIDAK DIUBAH")
+    return {
+        "success": True,
+        "dry_run": True,
+        **plan["stats"],
+        "json_report": json_path,
+        "csv_report": csv_path,
+    }
+
+
+def dedupe_database() -> Dict[str, Any]:
+    """Apply hanya kandidat AUTO_DELETE dari safe historical dedupe plan."""
+    try:
+        before = get_all_articles()
+    except Exception as exc:
+        print(f"[DEDUPE ERROR] {type(exc).__name__}: {exc}")
+        return {"success": False, "error": str(exc)}
+
+    plan = _historical_duplicate_plan(before)
+    # WAJIB membuat report sebelum perubahan.
+    json_path, csv_path = _write_historical_dedupe_reports(plan, "dedupe_final_apply")
+    _print_historical_dedupe_plan(plan, "APPLY PLAN")
+
+    candidates = list(plan["candidates"])
+    deleted = []
+    failed = []
+
+    # Safety: never delete a row if its keeper is also in the delete set.
+    candidate_ids = {str(x["id"]) for x in candidates}
+    safe_candidates = [x for x in candidates if str(x.get("keeper_id")) not in candidate_ids]
+
+    for item in safe_candidates:
+        article_id = item.get("id")
+        try:
+            result = delete_article_by_id(article_id)
+            if result:
+                deleted.append({
+                    "id": article_id,
+                    "reason": item.get("reason"),
+                    "keeper_id": item.get("keeper_id"),
+                })
+            else:
+                failed.append({
+                    "id": article_id,
+                    "error": "delete_article_by_id returned False",
+                    "reason": item.get("reason"),
+                })
+        except Exception as exc:
+            failed.append({
+                "id": article_id,
+                "error": f"{type(exc).__name__}: {exc}",
+                "reason": item.get("reason"),
+            })
+
+    # --------------------------------------------------------
+    # READ-BACK VERIFICATION
+    # --------------------------------------------------------
+    try:
+        after = get_all_articles()
+    except Exception as exc:
+        after = []
+        failed.append({"id": None, "error": f"READBACK {type(exc).__name__}: {exc}"})
+
+    remaining_ids = {str(a.get("id")) for a in after if a.get("id") is not None}
+    not_deleted = [x for x in deleted if str(x["id"]) in remaining_ids]
+
+    # Verify URL uniqueness and that no auto-delete target remains.
+    final_plan = _historical_duplicate_plan(after) if after else {"stats": {}}
+    residual_auto_delete = final_plan.get("stats", {}).get("auto_delete", 0)
+
+    verification = {
+        "deleted_reported": len(deleted),
+        "delete_failures": len(failed),
+        "not_deleted_after_readback": not_deleted,
+        "residual_auto_delete_candidates": residual_auto_delete,
+        "verified": not not_deleted and not failed and residual_auto_delete == 0,
+        "before_count": len(before),
+        "after_count": len(after),
+    }
+
+    result = {
+        "success": bool(verification["verified"]),
+        "dry_run": False,
+        "before": len(before),
+        "after": len(after),
+        "planned_auto_delete": len(candidates),
+        "safe_auto_delete": len(safe_candidates),
+        "deleted": len(deleted),
+        "failed": len(failed),
+        "deleted_ids": [x["id"] for x in deleted],
+        "failed_items": failed,
+        "review_count": len(plan["reviews"]),
+        "verification": verification,
+        "json_report": json_path,
+        "csv_report": csv_path,
+    }
+
+    with open("dedupe_final_apply_result.json", "w", encoding="utf-8") as fh:
+        json.dump(result, fh, ensure_ascii=False, indent=2, default=str)
+
+    print()
+    print("=" * 70)
+    print("SAFE HISTORICAL DEDUPE — APPLY SELESAI")
+    print("=" * 70)
+    print(f"Sebelum                   : {len(before)}")
+    print(f"Rencana AUTO_DELETE       : {len(candidates)}")
+    print(f"Berhasil dihapus          : {len(deleted)}")
+    print(f"Gagal dihapus             : {len(failed)}")
+    print(f"Sesudah                   : {len(after)}")
+    print(f"Residual AUTO_DELETE      : {residual_auto_delete}")
+    print(f"READ-BACK VERIFIED        : {verification['verified']}")
+    print("REVIEW tidak dihapus otomatis.")
+    print("Different media tidak dihapus sebagai duplicate.")
+    print("=" * 70)
+
+    return result
+
+
+def dedupe() -> Dict[str, Any]:
+    """Compatibility alias ke safe historical dedupe."""
+    return dedupe_database()
+
+
+# ============================================================
+# END SAFE HISTORICAL DEDUPE ENGINE
+# ============================================================
+
+
 def main() -> None:
 
     parser = argparse.ArgumentParser(
