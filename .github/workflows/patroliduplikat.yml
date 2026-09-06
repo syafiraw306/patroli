@@ -58,6 +58,7 @@ on:
           - test-incident-case-dossier-real
           - cross-incident-relationships
           - test-cross-incident-relationships-real
+          - cross-incident-candidate-audit-real
           - send-intelligence-alerts
 
 jobs:
@@ -232,6 +233,10 @@ jobs:
               echo "Menjalankan test Cross-Incident Relationship & Entity Link Analysis REAL production (READ-ONLY)..."
               python patroli.py --test-cross-incident-relationships-real
 
+            elif [ "${{ inputs.mode }}" = "cross-incident-candidate-audit-real" ]; then
+              echo "Menjalankan Candidate Audit + Precision Guard Cross-Incident REAL production (READ-ONLY)..."
+              python patroli.py --cross-incident-candidate-audit-real
+
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
               echo "Mengirim Intelligence Alerts ke Telegram (EXPLICIT ACTION)..."
               python patroli.py --send-intelligence-alerts
@@ -404,5 +409,20 @@ jobs:
             cross_incident_relationships.json
             cross_incident_relationships.html
             cross_incident_relationships.csv
+          if-no-files-found: warn
+          retention-days: 30
+      
+      # ==========================================
+      # FEATURE #10 — CANDIDATE AUDIT V22
+      # ==========================================
+      - name: Upload Cross-Incident Candidate Audit
+        if: ${{ inputs.mode == 'cross-incident-candidate-audit-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-incident-candidate-audit
+          path: |
+            cross_incident_relationship_audit.json
+            cross_incident_relationship_audit.html
+            cross_incident_relationship_audit.csv
           if-no-files-found: warn
           retention-days: 30
