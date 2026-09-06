@@ -1,4 +1,4 @@
-name: Patroli Siber
+name: Patroli Siber — Feature 7 Correlation Guard
 
 on:
   # ==========================================
@@ -199,7 +199,7 @@ jobs:
               python patroli.py --incident-timeline
 
             elif [ "${{ inputs.mode }}" = "test-incident-timeline-real" ]; then
-              echo "Menjalankan test Incident Timeline & Cross-Media Correlation REAL production (READ-ONLY)..."
+              echo "Menjalankan test Incident Timeline & Cross-Media Correlation REAL production + Correlation Guard (READ-ONLY)..."
               python patroli.py --test-incident-timeline-real
 
             elif [ "${{ inputs.mode }}" = "send-intelligence-alerts" ]; then
