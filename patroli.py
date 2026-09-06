@@ -44,7 +44,7 @@ from database import (
 )
 
 
-PATROLI_DIAGNOSTIC_VERSION = "V5.1"
+PATROLI_DIAGNOSTIC_VERSION = "V5.1-V4-SAFE-DEDUPE"
 
 # ============================================================
 # ENVIRONMENT
@@ -9715,7 +9715,14 @@ def _canonical_media_identity(article):
 
 
 def _canonical_article_url(link):
-    """URL identity untuk dedupe historical; tidak mengubah nilai DB."""
+    """
+    V4 canonical identity untuk historical dedupe.
+
+    Penting: fungsi ini TIDAK mengubah URL yang tersimpan di database.
+    Ia hanya membuat identity key. Google News tetap dipisahkan karena token
+    Google bukan canonical publisher URL. AMP dan /all dinormalisasi ke path
+    artikel publisher yang sama.
+    """
     raw = str(link or "").strip()
     if not raw:
         return ""
@@ -9725,27 +9732,22 @@ def _canonical_article_url(link):
     except Exception:
         return normalize_url(raw)
 
-    scheme = (parsed.scheme or "https").lower()
-    host = (parsed.netloc or "").lower().replace("www.", "")
+    host = (parsed.netloc or "").lower().split(":", 1)[0]
+    host = host[4:] if host.startswith("www.") else host
     path = parsed.path or "/"
 
-    # Google News sengaja dipisahkan; jangan menyamakan dengan publisher URL.
     if host == "news.google.com":
-        try:
-            return normalize_url(raw)
-        except Exception:
-            return raw
+        # Google News hanya menjadi identity terpisah jika belum dapat
+        # dipetakan ke publisher. Pemetaan historis dilakukan di pair gate.
+        return normalize_url(raw) or raw
 
-    # /amp dan /amp/ adalah representasi artikel yang sama.
-    path = re.sub(r"/amp/?$", "", path, flags=re.I)
-    # /all umumnya versi halaman yang sama, tetapi hanya dihilangkan sebagai
-    # bagian dari canonical identity; nilai asli DB tidak pernah diubah.
-    path = re.sub(r"/all/?$", "", path, flags=re.I)
+    # Publisher URL: normalisasi varian AMP /all dan slash.
+    path = re.sub(r"/amp(?=/|$)", "", path, flags=re.I)
+    path = re.sub(r"/all(?:/)?$", "", path, flags=re.I)
     path = re.sub(r"/{2,}", "/", path)
     if path != "/":
         path = path.rstrip("/")
 
-    # Tracking parameters dibuang; parameter substantif dipertahankan.
     tracking = {
         "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
         "gclid", "fbclid", "mc_cid", "mc_eid", "ref", "ref_src", "output",
@@ -9754,8 +9756,69 @@ def _canonical_article_url(link):
     pairs = [(k, v) for k, v in pairs if k.lower() not in tracking]
     query = urllib.parse.urlencode(sorted(pairs))
 
-    # http/https diperlakukan sama untuk identity.
     return urllib.parse.urlunsplit(("https", host, path or "/", query, ""))
+
+
+def _historical_url_identity(article):
+    """
+    Menghasilkan identity URL yang dapat menjembatani Google News -> publisher
+    secara konservatif. Jika Google News belum punya publisher URL tersimpan,
+    gunakan sinyal judul/media/tanggal/content pada pair gate, bukan menebak URL.
+    """
+    if not isinstance(article, dict):
+        return ""
+    link = article.get("link") or ""
+    if _is_google_news_article_url(link):
+        # Tidak menebak canonical dari token Google. URL Google ditangani oleh
+        # _google_publisher_equivalent pada saat ada pasangan publisher nyata.
+        return ""
+    return _canonical_article_url(link)
+
+
+def _title_similarity_for_historical(a, b):
+    ta = normalize_text(a.get("title") or "").lower()
+    tb = normalize_text(b.get("title") or "").lower()
+    if not ta or not tb:
+        return 0.0
+    return SequenceMatcher(None, ta, tb).ratio()
+
+
+def _same_published_day(a, b):
+    da = parse_date_safe(a.get("published_date"))
+    db = parse_date_safe(b.get("published_date"))
+    return bool(da and db and da.date() == db.date())
+
+
+def _google_publisher_equivalent(google_rec, publisher_rec):
+    """
+    Safe bridge Google News -> publisher URL.
+
+    Auto-delete hanya bila ada bukti kuat: media sama, judul sangat mirip,
+    tanggal sama, dan content sama/nyaris sama. Ini sengaja lebih ketat daripada
+    sekadar mencocokkan hostname atau token Google.
+    """
+    if not google_rec.get("google_news") or publisher_rec.get("google_news"):
+        return False, 0.0, ""
+
+    if _canonical_media_identity(google_rec["article"]) != _canonical_media_identity(publisher_rec["article"]):
+        return False, 0.0, "DIFFERENT_MEDIA_KEEP"
+
+    title_sim = _title_similarity_for_historical(google_rec["article"], publisher_rec["article"])
+    same_day = _same_published_day(google_rec["article"], publisher_rec["article"])
+    gc = google_rec.get("content") or ""
+    pc = publisher_rec.get("content") or ""
+    content_sim = calculate_content_similarity(gc, pc) if gc and pc else 0.0
+
+    # Exact content adalah bukti terkuat. Untuk konten pendek/metadata-only,
+    # wajib title sangat tinggi + tanggal sama; jangan auto-delete jika content
+    # berbeda secara material.
+    if gc and pc and content_sim >= 0.999999 and title_sim >= 0.97 and same_day:
+        return True, content_sim, "GOOGLE_NEWS_PUBLISHER_EXACT_CONTENT"
+
+    if gc and pc and content_sim >= 0.95 and title_sim >= 0.97 and same_day:
+        return True, content_sim, "GOOGLE_NEWS_PUBLISHER_HIGH_CONTENT"
+
+    return False, content_sim, "GOOGLE_NEWS_PUBLISHER_NOT_CONFIRMED"
 
 
 def _normalized_title_for_historical(article):
@@ -9795,16 +9858,35 @@ def _published_sort_value(article):
 
 
 def _historical_keeper_score(article):
-    """Skor keeper; publisher URL selalu mengalahkan Google News URL."""
+    """
+    V4 keeper ranking: normal canonical > direct publisher > AMP > Google News.
+    Photo/gallery tetap dipertahankan dari auto-delete title/content.
+    """
     content = _article_content_key(article)
     title = normalize_text(article.get("title") or "")
     published = parse_date_safe(article.get("published_date"))
-    is_google = _is_google_news_article_url(article.get("link"))
+    link = normalize_url(article.get("link") or "")
+    parsed = urllib.parse.urlsplit(link) if link else None
+    host = (parsed.netloc or "").lower().split(":", 1)[0] if parsed else ""
+    host = host[4:] if host.startswith("www.") else host
+    path = (parsed.path or "") if parsed else ""
+    is_google = host == "news.google.com"
+    is_amp = bool(re.search(r"/amp(?:/)?$", path, flags=re.I))
+    is_all = bool(re.search(r"/all(?:/)?$", path, flags=re.I))
     is_photo = _is_photo_or_gallery_article(article)
 
-    # Urutan prioritas sengaja tuple-based dan deterministik.
+    if is_google:
+        url_rank = 0
+    elif is_amp:
+        url_rank = 2
+    elif is_all:
+        url_rank = 3
+    else:
+        # Normal publisher URL mendapat prioritas tertinggi.
+        url_rank = 4
+
     return (
-        0 if is_google else 1,
+        url_rank,
         0 if is_photo else 1,
         len(content),
         bool(title),
@@ -9837,7 +9919,7 @@ def _historical_duplicate_plan(articles):
             "content": _article_content_key(article),
             "media": _canonical_media_identity(article),
             "link": article.get("link") or "",
-            "url_key": _canonical_article_url(article.get("link")),
+            "url_key": _historical_url_identity(article),
             "google_news": _is_google_news_article_url(article.get("link")),
             "photo_gallery": _is_photo_or_gallery_article(article),
             "published_date": article.get("published_date"),
@@ -9939,6 +10021,52 @@ def _historical_duplicate_plan(articles):
                 add_review(keeper, "CANONICAL_URL_MEDIA_COLLISION", rec)
                 continue
             mark_delete(rec, keeper, "DUPLICATE_CANONICAL_URL")
+
+    # --------------------------------------------------------
+    # 1B. GOOGLE NEWS -> PUBLISHER BRIDGE
+    # --------------------------------------------------------
+    # V4 memperbaiki kasus chain Google RSS -> AMP -> canonical publisher.
+    # Google News tidak pernah dianggap sama hanya karena URL/title; harus ada
+    # bukti media + tanggal + title + content yang kuat.
+    google_records = [r for r in records if r["google_news"]]
+    publisher_records = [r for r in records if not r["google_news"] and r["url_key"]]
+    for grec in google_records:
+        matches = []
+        for prec in publisher_records:
+            ok, sim, bridge_reason = _google_publisher_equivalent(grec, prec)
+            if ok:
+                matches.append((prec, sim, bridge_reason))
+        if not matches:
+            continue
+        # Jika ada lebih dari satu publisher candidate yang sama-sama kuat,
+        # jangan menebak keeper: pilih hanya bila canonical identity unik.
+        canonical_keys = {m[0]["url_key"] for m in matches if m[0].get("url_key")}
+        if len(canonical_keys) != 1:
+            add_review(grec, "GOOGLE_NEWS_PUBLISHER_COLLISION")
+            continue
+        # Evidence boleh datang dari AMP/direct publisher variant, sedangkan
+        # keeper akhir dipilih dari seluruh publisher records pada canonical key
+        # yang sama. Ini menangani chain 5510(AMP) -> 5637(canonical) ->
+        # 5573(Google News) tanpa harus mempercayai token Google.
+        evidence_rec, evidence_sim, bridge_reason = max(
+            matches,
+            key=lambda x: (x[1], _historical_keeper_score(x[0]["article"])),
+        )
+        canonical_key = evidence_rec.get("url_key")
+        same_canonical_publishers = [
+            p for p in publisher_records if p.get("url_key") == canonical_key
+        ]
+        if not same_canonical_publishers:
+            continue
+        keeper = max(
+            same_canonical_publishers,
+            key=lambda r: _historical_keeper_score(r["article"]),
+        )
+        pk = pair_key(grec, keeper)
+        if pk in seen_pairs:
+            continue
+        seen_pairs.add(pk)
+        mark_delete(grec, keeper, bridge_reason, evidence_sim)
 
     # --------------------------------------------------------
     # 2. EXACT TITLE + SAME MEDIA
@@ -10109,7 +10237,8 @@ def _write_historical_dedupe_reports(plan, prefix="dedupe_final"):
             "duplicate title + same canonical media",
             "duplicate content + same canonical media",
             "same event + different media is KEEP",
-            "publisher URL preferred over Google News URL",
+            "normal canonical publisher URL > direct publisher > AMP > Google News",
+            "Google News -> publisher auto-delete requires same media + same day + high title/content evidence",
             "photo/gallery is REVIEW, never auto-delete by title/content",
             "ambiguous/collision is REVIEW",
         ],
