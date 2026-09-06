@@ -413,7 +413,7 @@ jobs:
           retention-days: 30
       
       # ==========================================
-      # FEATURE #10 — CANDIDATE AUDIT V22
+      # FEATURE #10 — CANDIDATE AUDIT V23
       # ==========================================
       - name: Upload Cross-Incident Candidate Audit
         if: ${{ inputs.mode == 'cross-incident-candidate-audit-real' }}
