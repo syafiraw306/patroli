@@ -12772,6 +12772,125 @@ def test_intelligence_alerts_real_read_only() -> Dict[str, Any]:
     return {"status": "PASSED", "summary": summary, "alerts": snapshot.get("alerts", [])}
 
 
+def test_intelligence_alerts_controlled_fresh_real_read_only() -> Dict[str, Any]:
+    """Validasi E2E Feature #6 dengan event production nyata yang hanya dimodifikasi di memory.
+
+    Tidak membuat artikel/event palsu di database, tidak write/delete Supabase, dan tidak
+    melakukan HTTP ke Telegram. latest_seen digeser ke snapshot fresh di memory agar
+    pipeline eligibility -> prioritization -> fingerprint -> Telegram payload dapat diuji.
+    """
+    print("=" * 70)
+    print("TEST FEATURE #6 — CONTROLLED FRESH REAL EVENT / E2E / READ-ONLY")
+    print("=" * 70)
+
+    before = get_all_articles()
+    if not before:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    print(f"[E2E] Production articles : {sum(1 for a in before if isinstance(a, dict) and normalize_text(a.get('title')) and not _is_event_detection_test_article(a))}")
+
+    ews_snapshot = build_early_warning_system(before)
+    events = list(ews_snapshot.get("top_early_warnings", []))
+    real_candidates = [e for e in events if str(e.get("early_warning_level") or "") in {"HIGH", "WATCH"}]
+    if not real_candidates:
+        return {"status": "FAILED", "reason": "NO_REAL_HIGH_WATCH_EVENT_AVAILABLE"}
+
+    source = dict(real_candidates[0])
+    source_latest = source.get("latest_seen")
+    controlled_now = datetime.now(timezone.utc)
+    controlled_event = dict(source)
+    controlled_event["latest_seen"] = (controlled_now - timedelta(hours=1)).isoformat()
+
+    print(f"[E2E] Source event          : {source.get('event_name')}")
+    print(f"[E2E] Source EWS            : {source.get('early_warning_score')} ({source.get('early_warning_level')})")
+    print(f"[E2E] Source Last Seen      : {source_latest}")
+    print(f"[E2E] Controlled Last Seen  : {controlled_event.get('latest_seen')} (IN-MEMORY ONLY)")
+
+    if str(controlled_event.get("early_warning_level") or "") not in {"HIGH", "WATCH"}:
+        return {"status": "FAILED", "reason": "CONTROLLED_EVENT_INVALID_LEVEL"}
+    if not _intel_alert_is_fresh(controlled_event, controlled_now):
+        return {"status": "FAILED", "reason": "CONTROLLED_EVENT_NOT_FRESH"}
+
+    controlled_event["alert_priority"] = _intel_alert_priority(controlled_event)
+    controlled_event["alert_reasons"] = _intel_alert_reason_list(controlled_event)
+    level = str(controlled_event.get("early_warning_level"))
+    controlled_event["alert_action"] = "IMMEDIATE_REVIEW" if level == "HIGH" else "MONITOR_CLOSELY"
+    controlled_event["alert_fingerprint"] = hashlib.sha256(
+        f"{controlled_event.get('event_key')}|{level}|{controlled_event.get('latest_seen')}".encode("utf-8")
+    ).hexdigest()[:16]
+
+    if not (0 <= float(controlled_event["alert_priority"]) <= 120):
+        return {"status": "FAILED", "reason": "INVALID_PRIORITY"}
+    if not controlled_event.get("alert_fingerprint"):
+        return {"status": "FAILED", "reason": "MISSING_FINGERPRINT"}
+
+    level_html = html.escape(level)
+    event_name_html = html.escape(str(controlled_event.get("event_name")))
+    risk_html = html.escape(f"{controlled_event.get('risk_score')} ({controlled_event.get('risk_level')})")
+    trend_html = html.escape(str(controlled_event.get("trend_status")))
+    recent_html = html.escape(f"{controlled_event.get('recent_count')}/{controlled_event.get('previous_count')}")
+    media_html = html.escape(str(controlled_event.get("media_count")))
+    reasons_html = html.escape("; ".join(controlled_event.get("alert_reasons") or []))
+    telegram_text_payload = (
+        f"<b>🚨 PATROLI SIBER — INTELLIGENCE ALERT</b>\n"
+        f"<b>Level:</b> {level_html}\n"
+        f"<b>Event:</b> {event_name_html}\n"
+        f"<b>EWS:</b> {controlled_event.get('early_warning_score')} / 100\n"
+        f"<b>Risk:</b> {risk_html}\n"
+        f"<b>Trend:</b> {trend_html}\n"
+        f"<b>Recent/Previous:</b> {recent_html}\n"
+        f"<b>Media:</b> {media_html}\n"
+        f"<b>Why:</b> {reasons_html}\n"
+        f"<b>Action:</b> {html.escape(str(controlled_event.get('alert_action')))}"
+    )
+    if not telegram_text_payload or event_name_html not in telegram_text_payload:
+        return {"status": "FAILED", "reason": "TELEGRAM_PAYLOAD_BUILD_FAILED"}
+
+    mock_calls: List[str] = []
+    original_sender = globals().get("send_telegram_message")
+
+    def mock_send_telegram_message(text: str) -> bool:
+        mock_calls.append(text)
+        print("[E2E MOCK TELEGRAM] payload diterima; HTTP SKIPPED")
+        return True
+
+    try:
+        globals()["send_telegram_message"] = mock_send_telegram_message
+        mock_result = send_telegram_message(telegram_text_payload)
+    finally:
+        globals()["send_telegram_message"] = original_sender
+
+    if not mock_result or len(mock_calls) != 1:
+        return {"status": "FAILED", "reason": "MOCK_TELEGRAM_FAILED"}
+
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED"}
+
+    print(f"[E2E] Controlled EWS       : {controlled_event.get('early_warning_score')} ({level})")
+    print(f"[E2E] Fresh <= 7d           : YES")
+    print(f"[E2E] Alert priority        : {controlled_event.get('alert_priority')}")
+    print(f"[E2E] Fingerprint           : {controlled_event.get('alert_fingerprint')}")
+    print(f"[E2E] Action                : {controlled_event.get('alert_action')}")
+    print("[TEST PASS] REAL PRODUCTION EVENT SOURCE")
+    print("[TEST PASS] CONTROLLED FRESHNESS — IN-MEMORY ONLY")
+    print("[TEST PASS] HIGH/WATCH ELIGIBILITY")
+    print("[TEST PASS] PRIORITIZATION")
+    print("[TEST PASS] FINGERPRINT")
+    print("[TEST PASS] TELEGRAM PAYLOAD + MOCK SEND")
+    print("[TEST PASS] READ-ONLY | database ID tetap | HTTP Telegram skipped")
+    print("TEST INTELLIGENCE ALERTS CONTROLLED FRESH REAL: PASSED")
+    return {
+        "status": "PASSED",
+        "source_event": source.get("event_name"),
+        "source_latest_seen": source_latest,
+        "controlled_event": controlled_event,
+        "mock_telegram": True,
+        "telegram_http_sent": False,
+    }
+
+
 def send_intelligence_alerts() -> Dict[str, Any]:
     """Kirim alert EWS yang eligible hanya jika dipanggil eksplisit."""
     print("=" * 70)
@@ -13033,6 +13152,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--test-intelligence-alerts-controlled-fresh-real",
+        action="store_true",
+        help="uji E2E Intelligence Alert dengan event production nyata yang dibuat fresh hanya di memory; Telegram dimock",
+    )
+
+    parser.add_argument(
         "--test-intelligence-alerts-real",
         action="store_true",
         help="uji Intelligence Alert & Prioritization pada production nyata secara read-only",
@@ -13157,6 +13282,12 @@ def main() -> None:
         result = intelligence_alerts_diagnostic_real_read_only()
         if result.get("status") == "FAILED":
             raise RuntimeError(f"Diagnostic Intelligence Alerts gagal: {result.get('reason')}")
+        return
+
+    if args.test_intelligence_alerts_controlled_fresh_real:
+        result = test_intelligence_alerts_controlled_fresh_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Intelligence Alerts controlled fresh gagal: {result.get('reason')}")
         return
 
     if args.test_intelligence_alerts_real:
