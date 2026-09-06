@@ -44,7 +44,7 @@ from database import (
 )
 
 
-PATROLI_DIAGNOSTIC_VERSION = "V5.1-V4-SAFE-DEDUPE"
+PATROLI_DIAGNOSTIC_VERSION = "V5.2-SAFE-HISTORICAL-DEDUPE"
 
 # ============================================================
 # ENVIRONMENT
@@ -9859,7 +9859,7 @@ def _published_sort_value(article):
 
 def _historical_keeper_score(article):
     """
-    V4 keeper ranking: normal canonical > direct publisher > AMP > Google News.
+    V5 keeper ranking: normal canonical > /all > AMP > Google News.
     Photo/gallery tetap dipertahankan dari auto-delete title/content.
     """
     content = _article_content_key(article)
@@ -9871,10 +9871,17 @@ def _historical_keeper_score(article):
     host = host[4:] if host.startswith("www.") else host
     path = (parsed.path or "") if parsed else ""
     is_google = host == "news.google.com"
-    is_amp = bool(re.search(r"/amp(?:/)?$", path, flags=re.I))
+    # AMP dapat muncul sebagai /amp/berita/... atau /berita/.../amp.
+    is_amp = bool(re.search(r"(?:^|/)amp(?:/|$)", path, flags=re.I))
     is_all = bool(re.search(r"/all(?:/)?$", path, flags=re.I))
     is_photo = _is_photo_or_gallery_article(article)
 
+    # HARD SAFETY RANKING:
+    # - canonical publisher URL (normal path) is always preferred
+    # - /all is below canonical
+    # - /amp is below /all
+    # - Google News is never a keeper over a publisher URL
+    # AMP detection must work for /amp/berita/... (not only URLs ending /amp).
     if is_google:
         url_rank = 0
     elif is_amp:
@@ -9882,7 +9889,6 @@ def _historical_keeper_score(article):
     elif is_all:
         url_rank = 3
     else:
-        # Normal publisher URL mendapat prioritas tertinggi.
         url_rank = 4
 
     return (
@@ -10025,7 +10031,7 @@ def _historical_duplicate_plan(articles):
     # --------------------------------------------------------
     # 1B. GOOGLE NEWS -> PUBLISHER BRIDGE
     # --------------------------------------------------------
-    # V4 memperbaiki kasus chain Google RSS -> AMP -> canonical publisher.
+    # V5 memperbaiki kasus chain Google RSS -> AMP -> canonical publisher.
     # Google News tidak pernah dianggap sama hanya karena URL/title; harus ada
     # bukti media + tanggal + title + content yang kuat.
     google_records = [r for r in records if r["google_news"]]
