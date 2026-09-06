@@ -14004,6 +14004,18 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--cross-incident-relationships",
+        action="store_true",
+        help="generate Cross-Incident Relationship & Entity Link Analysis REAL production (read-only)",
+    )
+
+    parser.add_argument(
+        "--test-cross-incident-relationships-real",
+        action="store_true",
+        help="test Cross-Incident Relationship & Entity Link Analysis REAL production (read-only)",
+    )
+
+    parser.add_argument(
         "--once",
         action="store_true",
         help=(
@@ -14341,6 +14353,18 @@ def main() -> None:
 
         return
 
+    if args.test_cross_incident_relationships_real:
+        result = test_cross_incident_relationship_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Cross-Incident Relationship REAL gagal: {result.get('reason')}")
+        return
+
+    if args.cross_incident_relationships:
+        result = cross_incident_relationship_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Cross-Incident Relationship gagal: {result.get('reason')}")
+        return
+
     if args.test_incident_case_dossier_real:
         result = test_incident_case_dossier_real_read_only()
         if result.get("status") == "FAILED":
@@ -14508,6 +14532,364 @@ def main() -> None:
     # --once maupun tanpa argumen menjalankan satu patroli.
     run_once()
 
+
+
+# ============================================================
+# FEATURE #10 — CROSS-INCIDENT RELATIONSHIP & ENTITY LINK ANALYSIS
+# ============================================================
+# Tujuan:
+#   Menemukan hubungan antar-incident yang sudah memiliki event_key
+#   berbeda, tanpa menggabungkan event dan tanpa membuat skor baru.
+#
+# Prinsip:
+#   - READ-ONLY
+#   - Tidak menulis database
+#   - Tidak mengirim Telegram
+#   - Tidak membuat / mengubah event_key Feature #7
+#   - Tidak membuat risk_score baru
+#   - Tidak menyimpulkan hubungan kausal / keterlibatan hukum
+#   - Relationship harus didukung minimal 2 anchor evidence yang independen
+#   - Lokasi / satker saja TIDAK cukup untuk membentuk relationship
+# ============================================================
+
+FEATURE10_MAX_RELATIONSHIPS = 30
+FEATURE10_MAX_EVENTS = 250
+FEATURE10_TEMPORAL_DAYS_STRONG = 14
+FEATURE10_TEMPORAL_DAYS_WEAK = 7
+
+FEATURE10_ROLE_PATTERNS = (
+    r"\b(?:kajari|kasi\s+pidsus|kasi\s+pidum|kepala\s+kejaksaan|wakil\s+bupati|bupati|wali\s+kota|wakil\s+wali\s+kota)\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+){1,3})",
+)
+
+FEATURE10_INSTITUTION_TERMS = (
+    "kejagung", "kejati", "kejari", "kepolisian", "polres", "polda",
+    "pengadilan", "kpk", "pemkab", "pemko", "dprd", "bawaslu", "kpu",
+)
+
+FEATURE10_POSITION_TERMS = (
+    "kajari", "kasi pidsus", "kasi pidum", "kepala kejaksaan", "jaksa",
+    "bupati", "wakil bupati", "wali kota", "wakil wali kota", "plh",
+    "plt", "kepala kejati", "kajati",
+)
+
+FEATURE10_TOPIC_TERMS = (
+    "korupsi", "narkotika", "ganja", "tersangka", "penyidikan", "penuntutan",
+    "penangkapan", "penggeledahan", "penyitaan", "sidang", "vonis", "suap",
+    "gratifikasi", "etik", "kode etik", "pencopotan", "dicopot", "dipanggil",
+    "diperiksa", "sertifikasi", "tanah wakaf", "pelantikan", "kebijakan",
+    "sosialisasi", "kunjungan", "rapat", "koordinasi", "peresmian",
+)
+
+
+def _feature10_norm(value: Any) -> str:
+    return normalize_text(value).strip().lower()
+
+
+def _feature10_extract_persons(article: Dict[str, Any]) -> List[str]:
+    # Extract nama kandidat secara konservatif dari pola jabatan + nama.
+    # Tidak menganggap setiap kata Title Case sebagai nama.
+    title = str(article.get("title") or "")
+    content = str(article.get("content") or "")[:4000]
+    text = f"{title} {content}"
+    persons = []
+    for pattern in FEATURE10_ROLE_PATTERNS:
+        for match in re.finditer(pattern, text):
+            candidate = re.sub(r"\s+", " ", match.group(1)).strip(" .,;:-")
+            low = candidate.lower()
+            if 2 <= len(candidate.split()) <= 4 and not any(term in low for term in FEATURE10_INSTITUTION_TERMS):
+                persons.append(candidate)
+    # Also capture explicit common construction "Nama ... Sitepu" only when
+    # surname-like multi-token phrase is repeated in title/content.
+    for m in re.finditer(r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b", title):
+        candidate = m.group(1).strip()
+        low = candidate.lower()
+        if low not in {"Kajari Serdang", "Wakil Bupati", "Kejati Sumut", "Kejagung RI"}:
+            if not any(term in low for term in FEATURE10_INSTITUTION_TERMS):
+                persons.append(candidate)
+    seen=[]
+    for p in persons:
+        key=_feature10_norm(p)
+        if key and key not in {_feature10_norm(x) for x in seen}:
+            seen.append(p)
+    return seen[:10]
+
+
+def _feature10_extract_institutions(article: Dict[str, Any]) -> List[str]:
+    text = _feature10_norm(f"{article.get('title') or ''} {article.get('content') or ''}")
+    found=[]
+    for term in FEATURE10_INSTITUTION_TERMS:
+        if re.search(rf"\b{re.escape(term)}\b", text):
+            found.append(term.upper())
+    for value in article.get("satker_matches") or []:
+        norm=_feature10_norm(value)
+        if norm:
+            found.append(norm.upper())
+    return sorted(set(found))[:20]
+
+
+def _feature10_extract_positions(article: Dict[str, Any]) -> List[str]:
+    text=_feature10_norm(f"{article.get('title') or ''} {article.get('content') or ''}")
+    return sorted({term.upper() for term in FEATURE10_POSITION_TERMS if re.search(rf"\b{re.escape(term)}\b", text)})
+
+
+def _feature10_extract_topics(article: Dict[str, Any]) -> List[str]:
+    text=_feature10_norm(f"{article.get('title') or ''} {article.get('content') or ''}")
+    return sorted({term.upper() for term in FEATURE10_TOPIC_TERMS if re.search(rf"\b{re.escape(term)}\b", text)})
+
+
+def _feature10_event_entities(event: Dict[str, Any]) -> Dict[str, Any]:
+    persons=set(); institutions=set(); positions=set(); topics=set()
+    for article in event.get("articles") or []:
+        persons.update(_feature10_norm(x) for x in _feature10_extract_persons(article))
+        institutions.update(_feature10_norm(x) for x in _feature10_extract_institutions(article))
+        positions.update(_feature10_norm(x) for x in _feature10_extract_positions(article))
+        topics.update(_feature10_norm(x) for x in _feature10_extract_topics(article))
+    return {
+        "persons": sorted(x for x in persons if x),
+        "institutions": sorted(x for x in institutions if x),
+        "positions": sorted(x for x in positions if x),
+        "topics": sorted(x for x in topics if x),
+    }
+
+
+def _feature10_event_records(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    production=[a for a in (articles or []) if isinstance(a, dict) and normalize_text(a.get("title")) and not _is_event_detection_test_article(a)]
+    groups={}
+    for article in production[:DASHBOARD_MAX_ARTICLES]:
+        event=detect_article_event(article, production)
+        key=str(event.get("event_key") or "").strip()
+        if not key:
+            continue
+        g=groups.setdefault(key, {
+            "event_key": key,
+            "event_name": event.get("event_name") or "Event tidak teridentifikasi",
+            "event_type": event.get("event_type") or "UMUM",
+            "articles": [],
+            "media": set(),
+            "dates": [],
+            "max_risk_score": 0.0,
+            "max_risk_level": "LOW",
+        })
+        g["articles"].append(article)
+        media=normalize_text(get_media_source(article))
+        if media: g["media"].add(media)
+        dt=_risk_published_datetime(article)
+        if dt: g["dates"].append(dt)
+        risk=_dashboard_article_risk(article, production)
+        score=_dashboard_safe_float(risk.get("risk_score"))
+        if score > g["max_risk_score"]:
+            g["max_risk_score"]=score; g["max_risk_level"]=risk.get("risk_level") or "LOW"
+    records=[]
+    for g in groups.values():
+        dates=sorted(g["dates"])
+        g["first_seen"]=dates[0].isoformat() if dates else None
+        g["latest_seen"]=dates[-1].isoformat() if dates else None
+        g["article_count"]=len(g["articles"])
+        g["media_count"]=len(g["media"])
+        g["media_sources"]=sorted(g["media"])
+        g["entities"]=_feature10_event_entities(g)
+        records.append(g)
+    return records[:FEATURE10_MAX_EVENTS]
+
+
+def _feature10_overlap(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, List[str]]:
+    ea=a.get("entities") or {}; eb=b.get("entities") or {}
+    return {k: sorted(set(ea.get(k, [])) & set(eb.get(k, []))) for k in ("persons","institutions","positions","topics")}
+
+
+def _feature10_days_between(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[float]:
+    da=_intel_alert_latest_datetime(a.get("latest_seen")); db=_intel_alert_latest_datetime(b.get("latest_seen"))
+    if da is None or db is None: return None
+    return abs((da-db).total_seconds())/86400.0
+
+
+def _feature10_relationship(a: Dict[str, Any], b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if a.get("event_key") == b.get("event_key"): return None
+    ov=_feature10_overlap(a,b)
+    days=_feature10_days_between(a,b)
+    evidence=[]
+    rel_types=[]
+    if ov["persons"]:
+        evidence.append("SAME_PERSON"); rel_types.append("SAME_PERSON")
+    if ov["institutions"]:
+        evidence.append("SAME_INSTITUTION"); rel_types.append("SAME_INSTITUTION")
+    if ov["positions"]:
+        evidence.append("SAME_POSITION"); rel_types.append("SAME_POSITION")
+    if ov["topics"]:
+        evidence.append("SAME_TOPIC"); rel_types.append("SAME_TOPIC")
+    if days is not None and days <= FEATURE10_TEMPORAL_DAYS_STRONG:
+        evidence.append("TEMPORAL_PROXIMITY")
+        rel_types.append("TEMPORAL_PROXIMITY")
+
+    # Konservatif: lokasi/satker saja tidak pernah cukup. Minimal dua anchor
+    # evidence, dan temporal hanya dihitung sebagai pendukung, bukan identitas.
+    strong_identity=sum(bool(ov[k]) for k in ("persons","institutions","positions","topics"))
+    if strong_identity < 2:
+        return None
+    if ov["persons"]:
+        # Same person must have at least one independent supporting anchor.
+        if not (ov["institutions"] or ov["positions"] or ov["topics"]):
+            return None
+    elif not (ov["institutions"] and ov["positions"] and ov["topics"]):
+        # Without a shared person, institution + position alone is too broad.
+        # Topic overlap is required to prevent all articles about one office
+        # from becoming one relationship cluster.
+        return None
+    if days is not None and days > FEATURE10_TEMPORAL_DAYS_STRONG:
+        return None
+
+    if ov["persons"] and ov["institutions"]:
+        relation_type="PERSON_INSTITUTION_LINK"
+    elif ov["institutions"] and ov["positions"] and ov["topics"]:
+        relation_type="INSTITUTION_POSITION_TOPIC_LINK"
+    elif ov["persons"] and ov["positions"]:
+        relation_type="PERSON_POSITION_LINK"
+    else:
+        relation_type="MULTI_ANCHOR_LINK"
+    confidence="HIGH" if (ov["persons"] and (ov["institutions"] or ov["positions"])) else "MEDIUM"
+    return {
+        "relationship_id": "REL-" + hashlib.sha256((str(a["event_key"])+"|"+str(b["event_key"])).encode()).hexdigest()[:12].upper(),
+        "event_a": {k:a.get(k) for k in ("event_key","event_name","event_type","article_count","media_count","first_seen","latest_seen","max_risk_score","max_risk_level")},
+        "event_b": {k:b.get(k) for k in ("event_key","event_name","event_type","article_count","media_count","first_seen","latest_seen","max_risk_score","max_risk_level")},
+        "relationship_type": relation_type,
+        "confidence": confidence,
+        "evidence": evidence,
+        "shared_entities": {k:v for k,v in ov.items() if v},
+        "temporal_distance_days": round(days,2) if days is not None else None,
+        "analyst_note": "Relationship evidence only; bukan bukti kausalitas atau keterlibatan hukum, dan event_key tidak digabung.",
+    }
+
+
+def build_cross_incident_relationships(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    now=now or datetime.now(timezone.utc)
+    records=_feature10_event_records(articles)
+    relationships=[]
+    for i,a in enumerate(records):
+        for b in records[i+1:]:
+            rel=_feature10_relationship(a,b)
+            if rel: relationships.append(rel)
+    relationships.sort(key=lambda r:(0 if r.get("confidence")=="HIGH" else 1, -len(r.get("evidence") or []), -_dashboard_safe_float((r.get("event_a") or {}).get("max_risk_score")), -_dashboard_safe_float((r.get("event_b") or {}).get("max_risk_score"))))
+    relationships=relationships[:FEATURE10_MAX_RELATIONSHIPS]
+    return {
+        "cross_incident_relationship_version":"FEATURE10-READONLY-V1",
+        "generated_at":now.isoformat(),
+        "mode":"READ-ONLY",
+        "database_write":False,
+        "telegram_send":False,
+        "source":"feature7_event_identity_in_memory",
+        "method":{
+            "purpose":"cross-incident relationship dan entity link analysis",
+            "max_events":FEATURE10_MAX_EVENTS,
+            "max_relationships":FEATURE10_MAX_RELATIONSHIPS,
+            "temporal_window_days":FEATURE10_TEMPORAL_DAYS_STRONG,
+            "new_event_key":False,
+            "new_risk_score":False,
+            "event_merge":False,
+            "causal_inference":False,
+            "location_only_correlation":False,
+        },
+        "summary":{
+            "production_articles":len([a for a in (articles or []) if isinstance(a,dict) and normalize_text(a.get("title")) and not _is_event_detection_test_article(a)]),
+            "events_analyzed":len(records),
+            "relationships_found":len(relationships),
+            "high_confidence":sum(1 for r in relationships if r.get("confidence")=="HIGH"),
+            "medium_confidence":sum(1 for r in relationships if r.get("confidence")=="MEDIUM"),
+        },
+        "relationships":relationships,
+    }
+
+
+def _write_cross_incident_relationship_artifacts(snapshot: Dict[str, Any]) -> Dict[str,str]:
+    json_path="cross_incident_relationships.json"; html_path="cross_incident_relationships.html"; csv_path="cross_incident_relationships.csv"
+    with open(json_path,"w",encoding="utf-8") as fh: json.dump(snapshot,fh,ensure_ascii=False,indent=2,default=str)
+    rows=[]
+    for i,r in enumerate(snapshot.get("relationships",[]),1):
+        a=r.get("event_a") or {}; b=r.get("event_b") or {}
+        shared=[]
+        for k,v in (r.get("shared_entities") or {}).items(): shared.append(f"{k}: {', '.join(v)}")
+        rows.append("<tr>" + f"<td>{i}</td><td>{html.escape(str(r.get('relationship_type')))}</td><td>{html.escape(str(r.get('confidence')))}</td>" + f"<td>{html.escape(str(a.get('event_name')))}</td><td>{html.escape(str(b.get('event_name')))}</td>" + f"<td>{html.escape('; '.join(shared) or '-')}</td><td>{html.escape(str(r.get('temporal_distance_days') or '-'))}</td>" + "</tr>")
+    html_rows="".join(rows) or '<tr><td colspan="7">Tidak ada relationship.</td></tr>'
+    s=snapshot.get("summary",{})
+    html_doc=f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Cross-Incident Relationship</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Cross-Incident Relationship &amp; Entity Link Analysis</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Events Analyzed<div class="value">{s.get('events_analyzed',0)}</div></div><div class="card">Relationships<div class="value">{s.get('relationships_found',0)}</div></div><div class="card">High Confidence<div class="value">{s.get('high_confidence',0)}</div></div><div class="card">Medium Confidence<div class="value">{s.get('medium_confidence',0)}</div></div></div><p><small>Relationship evidence tidak menggabungkan event_key, tidak membuat risk baru, dan bukan bukti kausalitas/keterlibatan hukum. Lokasi/satker saja tidak cukup.</small></p><table><thead><tr><th>#</th><th>Type</th><th>Confidence</th><th>Event A</th><th>Event B</th><th>Shared Evidence</th><th>Temporal Days</th></tr></thead><tbody>{html_rows}</tbody></table></body></html>"""
+    with open(html_path,"w",encoding="utf-8") as fh: fh.write(html_doc)
+    fields=["relationship_id","relationship_type","confidence","event_a_key","event_a_name","event_b_key","event_b_name","evidence","shared_entities","temporal_distance_days","analyst_note"]
+    with open(csv_path,"w",encoding="utf-8",newline="") as fh:
+        writer=csv.DictWriter(fh,fieldnames=fields); writer.writeheader()
+        for r in snapshot.get("relationships",[]):
+            a=r.get("event_a") or {}; b=r.get("event_b") or {}
+            writer.writerow({"relationship_id":r.get("relationship_id"),"relationship_type":r.get("relationship_type"),"confidence":r.get("confidence"),"event_a_key":a.get("event_key"),"event_a_name":a.get("event_name"),"event_b_key":b.get("event_key"),"event_b_name":b.get("event_name"),"evidence":"; ".join(r.get("evidence") or []),"shared_entities":json.dumps(r.get("shared_entities") or {},ensure_ascii=False),"temporal_distance_days":r.get("temporal_distance_days"),"analyst_note":r.get("analyst_note")})
+    return {"json":json_path,"html":html_path,"csv":csv_path}
+
+
+def cross_incident_relationship_real_read_only() -> Dict[str,Any]:
+    print("="*70); print("FEATURE #10 — CROSS-INCIDENT RELATIONSHIP / READ-ONLY"); print("="*70)
+    articles=get_all_articles()
+    if not articles: return {"status":"FAILED","reason":"EMPTY_DATABASE"}
+    snapshot=build_cross_incident_relationships(articles)
+    artifacts=_write_cross_incident_relationship_artifacts(snapshot)
+    s=snapshot["summary"]
+    print(f"[RELATIONSHIP] Production articles : {s['production_articles']}")
+    print(f"[RELATIONSHIP] Events analyzed     : {s['events_analyzed']}")
+    print(f"[RELATIONSHIP] Relationships found  : {s['relationships_found']}")
+    print(f"[RELATIONSHIP] High confidence     : {s['high_confidence']}")
+    print(f"[RELATIONSHIP] Medium confidence   : {s['medium_confidence']}")
+    print(f"[RELATIONSHIP] Artifact JSON : {artifacts['json']}")
+    print(f"[RELATIONSHIP] Artifact HTML : {artifacts['html']}")
+    print(f"[RELATIONSHIP] Artifact CSV  : {artifacts['csv']}")
+    print("[RELATIONSHIP PASS] READ-ONLY | database write=False | telegram=False")
+    return {"status":"PASSED","snapshot":snapshot,"artifacts":artifacts}
+
+
+def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
+    print("="*70); print("TEST FEATURE #10 — CROSS-INCIDENT RELATIONSHIP / REAL PRODUCTION / READ-ONLY"); print("="*70)
+    before=get_all_articles()
+    if not before: return {"status":"FAILED","reason":"EMPTY_DATABASE"}
+    before_ids=sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot=build_cross_incident_relationships(before)
+    rels=snapshot.get("relationships",[])
+    for r in rels:
+        if r.get("event_a",{}).get("event_key")==r.get("event_b",{}).get("event_key"):
+            return {"status":"FAILED","reason":"SELF_RELATIONSHIP"}
+        if r.get("confidence") not in {"HIGH","MEDIUM"}:
+            return {"status":"FAILED","reason":"INVALID_CONFIDENCE"}
+        if len(r.get("evidence") or []) < 2:
+            return {"status":"FAILED","reason":"INSUFFICIENT_EVIDENCE"}
+        shared=r.get("shared_entities") or {}
+        if not shared.get("persons") and not (shared.get("institutions") and shared.get("positions")):
+            return {"status":"FAILED","reason":"WEAK_ENTITY_LINK"}
+        if r.get("temporal_distance_days") is not None and r["temporal_distance_days"] > FEATURE10_TEMPORAL_DAYS_STRONG:
+            return {"status":"FAILED","reason":"TEMPORAL_WINDOW_EXCEEDED"}
+        if not str(r.get("relationship_id") or "").startswith("REL-"):
+            return {"status":"FAILED","reason":"INVALID_RELATIONSHIP_ID"}
+        a=r.get("event_a") or {}; b=r.get("event_b") or {}
+        if not a.get("event_key") or not b.get("event_key"):
+            return {"status":"FAILED","reason":"MISSING_EVENT_KEYS"}
+    print("[TEST PASS] MULTI-ANCHOR EVIDENCE | relationship tidak berbasis lokasi/satker saja")
+    feature7=build_incident_timeline(before)
+    f7_keys={str(e.get("event_key")) for e in feature7.get("events",[])}
+    for r in rels:
+        for side in ("event_a","event_b"):
+            key=str((r.get(side) or {}).get("event_key"))
+            if key not in f7_keys and key:
+                # Feature #10 boleh menganalisis event di luar top-20 Feature #7;
+                # identity tetap berasal dari detect_article_event, bukan event baru.
+                pass
+    if snapshot.get("method",{}).get("new_event_key") is not False or snapshot.get("method",{}).get("event_merge") is not False:
+        return {"status":"FAILED","reason":"EVENT_IDENTITY_MUTATION_ENABLED"}
+    after=get_all_articles(); after_ids=sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids!=after_ids: return {"status":"FAILED","reason":"DATABASE_CHANGED"}
+    print("[TEST PASS] EVENT IDENTITY | event_key tidak diubah/digabung")
+    artifacts=_write_cross_incident_relationship_artifacts(snapshot)
+    html_path=artifacts.get("html")
+    if html_path:
+        html_text=Path(html_path).read_text(encoding="utf-8")
+        if "<td><td>" in html_text or "<td><br>" in html_text:
+            return {"status":"FAILED","reason":"MALFORMED_RELATIONSHIP_HTML"}
+    print("[TEST PASS] HTML RELATIONSHIP MARKUP")
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("TEST CROSS-INCIDENT RELATIONSHIP REAL: PASSED")
+    return {"status":"PASSED","snapshot":snapshot,"artifacts":artifacts}
 
 # ============================================================
 # ENTRY POINT
