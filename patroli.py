@@ -17118,13 +17118,22 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
             "recovery": recovery_info,
         }
 
     # V33 semantic hierarchy: reorder only candidates that already have evidence.
     substantive = _feature11_apply_primary_hierarchy(substantive, title)
     primary = max(substantive, key=_feature11_primary_sort_key)
+
+    # V36.4: recovery metadata means an APPLIED recovery, not merely a
+    # recovery candidate considered during scoring. A narrow recovery rule may
+    # fire while a stronger, independently evidenced substantive issue wins the
+    # final hierarchy. In that case do not attach the losing recovery to the
+    # primary row, because that creates RECOVERY_PRIMARY_MISMATCH and falsely
+    # claims that the recovery determined the classification.
+    if recovery_info and recovery_info.get("issue") != primary.get("issue"):
+        recovery_info = None
 
     # Confidence should still reflect evidence strength, not priority alone.
     if primary["score"] < FEATURE11_MIN_PRIMARY_SCORE:
@@ -17140,7 +17149,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
             "recovery": recovery_info,
         }
 
@@ -17198,7 +17207,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
+        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
         "recovery": recovery_info,
     }
 
@@ -17255,7 +17264,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
+            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
