@@ -16047,7 +16047,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V8-EVIDENCE-COMPOSITION-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V8.1-EVIDENCE-COMPOSITION-FINANCIAL-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16561,8 +16561,56 @@ def _feature11_has_internal_oversight_signal(text: str) -> bool:
     return internal_object and (oversight_action or (removal and substantive_oversight))
 
 
+def _feature11_has_concrete_budget_misuse_signal(text: str) -> bool:
+    """V35.1: budget terms require an explicit misuse/irregularity signal."""
+    misuse = (
+        "korupsi", "tipikor", "suap", "gratifikasi",
+        "penyelewengan", "penyalahgunaan anggaran",
+        "penyalahgunaan dana", "penggelapan",
+        "proyek fiktif", "mark up", "markup",
+        "dana tidak jelas", "penggunaan dana bermasalah",
+        "kerugian negara", "kerugian keuangan negara",
+        "dipakai tidak sesuai", "tidak sesuai peruntukan",
+    )
+    for term in misuse:
+        for match in re.finditer(re.escape(term), text):
+            window = text[max(0, match.start()-80):match.end()]
+            if any(_feature11_term_present(window, neg) for neg in (
+                "tidak ada", "tidak ditemukan", "tanpa bukti", "bukan", "tidak terbukti"
+            )):
+                continue
+            return True
+    return False
+
+
+def _feature11_budget_topic_only_guard(item: Dict[str, Any], combined: str) -> bool:
+    """Return True when budget wording is only procedural/status context."""
+    if item.get("issue") != "PENGELOLAAN_ANGGARAN":
+        return False
+    has_budget = any(_feature11_term_present(combined, x) for x in (
+        "dana desa", "dana bos", "anggaran", "keuangan negara", "keuangan daerah"
+    ))
+    if not has_budget:
+        return False
+    if _feature11_has_concrete_budget_misuse_signal(combined):
+        return False
+    procedural_only = (
+        "sesuai proses hukum", "sesuai prosedur hukum",
+        "sesuai ketentuan hukum", "berjalan sesuai ketentuan hukum",
+        "penetapan tersangka", "ditetapkan tersangka",
+        "tersangka", "terdakwa", "penahanan",
+        "penanganan kasus", "perkara", "proses hukum",
+    )
+    # Status/procedure wording suppresses budget-topic classification when
+    # there is no concrete allegation of misuse. "dana BOS" alone is a topic,
+    # not evidence of a budget irregularity.
+    return any(_feature11_term_present(combined, x) for x in procedural_only)
+
+
 def _feature11_candidate_is_substantive(item: Dict[str, Any], combined: str, signal: str = "INCIDENT") -> bool:
     issue = item["issue"]
+    if _feature11_budget_topic_only_guard(item, combined):
+        return False
     if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"}:
         return _feature11_has_ethics_violation(combined)
     if issue == "PENGAWASAN_INTERNAL":
@@ -16774,8 +16822,20 @@ def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title
     project = _feature11_term_present(combined, "proyek")
     concrete_project = bool(re.search(r"\brp\s*[0-9][0-9.,]*\s*(?:miliar|juta|ribu)?\b", combined)) or any(_feature11_term_present(combined, x) for x in ("tpi", "pembangunan", "rehabilitasi", "kontrak", "tender", "pengadaan"))
     if investigation and project and concrete_project:
-        matched = [x for x in ("selidiki proyek", "proyek", "pengadaan") if _feature11_term_present(combined, x)]
-        return add_recovery_candidate("PENGADAAN", "CONCRETE_PROJECT_INVESTIGATION", matched)
+        if any(_feature11_term_present(combined, x) for x in (
+            "pengadaan", "tender", "lelang", "kontrak pengadaan",
+            "pengadaan barang", "pengadaan jasa", "proyek fiktif",
+        )):
+            matched = [x for x in ("selidiki proyek", "pengadaan", "tender", "lelang", "proyek fiktif")
+                       if _feature11_term_present(combined, x)]
+            return add_recovery_candidate("PENGADAAN", "CONCRETE_PROJECT_INVESTIGATION_WITH_PROCUREMENT_EVIDENCE", matched)
+        if any(_feature11_term_present(combined, x) for x in (
+            "tpi", "rehabilitasi", "jalan", "drainase", "jembatan",
+            "gedung", "kantor", "infrastruktur",
+        )):
+            matched = [x for x in ("selidiki proyek", "tpi", "rehabilitasi", "infrastruktur")
+                       if _feature11_term_present(combined, x)]
+            return add_recovery_candidate("INFRASTRUKTUR_PUBLIK", "CONCRETE_PUBLIC_PROJECT_INVESTIGATION", matched)
 
     # 4) Escape during a named legal process is a substantive legal-event
     # issue, not merely the procedural label PENYIDIKAN.
@@ -16917,7 +16977,15 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             signal = "INCIDENT"
     # Re-evaluate normative candidates after signal correction.
     if signal != "NORMATIVE":
-        substantive = [x for x in scored if x.get("_v34_recovery") or x.get("_v35_recovery") or _feature11_candidate_is_substantive(x, combined, signal)]
+        substantive = [
+            x for x in scored
+            if not _feature11_budget_topic_only_guard(x, combined)
+            and (
+                x.get("_v34_recovery")
+                or x.get("_v35_recovery")
+                or _feature11_candidate_is_substantive(x, combined, signal)
+            )
+        ]
 
     # A generic procedural/context label is never enough to claim a substantive issue.
     if not substantive:
@@ -16936,7 +17004,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8",
+            "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
             "recovery": recovery_info,
         }
 
@@ -16958,7 +17026,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8",
+            "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
             "recovery": recovery_info,
         }
 
@@ -17016,7 +17084,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8",
+        "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
         "recovery": recovery_info,
     }
 
@@ -17068,7 +17136,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8",
+            "type": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -17256,7 +17324,7 @@ def _feature11_regression() -> Dict[str, Any]:
     v35_cases = [
         ({"title":"Kejagung copot Kajari Deli Serdang dan Padang Lawas", "content":"Kepala kejaksaan diberhentikan dari jabatan."}, "PEMBERHENTIAN"),
         ({"title":"Jaksa Agung Mutasi 4 Kajari Bersamalah ke Jabatan Fungsional", "content":"Empat Kajari yang bermasalah dimutasi ke jabatan fungsional."}, "PENGAWASAN_INTERNAL"),
-        ({"title":"Kejari Deli Serdang akan Siapkan Tim Selidiki Proyek TPI Percut Sei Tuan Bernilai Rp2,5 Miliar", "content":"Tim disiapkan untuk menyelidiki proyek TPI yang bernilai Rp2,5 miliar."}, "PENGADAAN"),
+        ({"title":"Kejari Deli Serdang akan Siapkan Tim Selidiki Proyek TPI Percut Sei Tuan Bernilai Rp2,5 Miliar", "content":"Tim disiapkan untuk menyelidiki proyek TPI yang bernilai Rp2,5 miliar."}, "INFRASTRUKTUR_PUBLIK"),
         ({"title":"Deli Serdang Geger! Mantan Kades Tandem Hilir I Kabur Saat Proses Penyidikan Kejaksaan Labuhan Deli", "content":"Mantan kepala desa kabur saat proses penyidikan berlangsung."}, "PELARIAN_PROSES_HUKUM"),
     ]
     for article, expected in v35_cases:
@@ -17280,8 +17348,22 @@ def _feature11_regression() -> Dict[str, Any]:
         if got.get("primary_issue") != expected:
             return {"status":"FAILED","reason":"V35_FALSE_POSITIVE_GUARD","expected":expected,"got":got,"title":article.get("title")}
 
-    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
-            "evidence_composition_guard": True, "evidence_composition_guard": True}
+    # V35.1 financial evidence guard
+    v35_1_cases = [
+        ({"title": "Penetapan Tersangka Dana BOS Sesuai Prosedur Hukum", "content": "Cabjari menegaskan proses hukum berjalan sesuai ketentuan."}, "UNCLASSIFIED"),
+        ({"title": "Penanganan Kasus Dana BOS Berjalan Sesuai Ketentuan Hukum", "content": "Tidak ada uraian penyelewengan atau penyalahgunaan dana."}, "UNCLASSIFIED"),
+        ({"title": "Dugaan Korupsi Dana Desa Rugemuk", "content": "Penyidik mengusut dugaan korupsi dan kerugian negara."}, "KORUPSI"),
+        ({"title": "Selidiki Proyek TPI Percut Sei Tuan Rp2,5 Miliar", "content": "Tim menyiapkan penyelidikan proyek rehabilitasi TPI."}, "INFRASTRUKTUR_PUBLIK"),
+        ({"title": "Selidiki Pengadaan Jilbab Berlogo", "content": "Kejari menyiapkan penyelidikan pengadaan barang."}, "PENGADAAN"),
+    ]
+    for article, expected in v35_1_cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status":"FAILED","reason":"V35_1_EVIDENCE_GUARD","expected":expected,"got":got,"title":article.get("title")}
+    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases) + len(v35_1_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
+            "evidence_composition_guard": True, "financial_evidence_guard": True,
+            "budget_topic_only_guard": True,
+            "project_investigation_routing_guard": True}
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
@@ -17391,3 +17473,5 @@ def issue_topic_detection_real_read_only() -> Dict[str, Any]:
 
 if __name__ == "__main__":
     main()
+
+
