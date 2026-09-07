@@ -4482,6 +4482,16 @@ def test_trend_escalation_real_read_only() -> Dict[str, Any]:
         ):
             return {"status":"FAILED", "reason":"BUDGET_OVERRIDES_CORRUPTION", "article_id":row.get("article_id"), "title":row.get("title")}
 
+    # Generic legal umbrella must not masquerade as an issue in normative/activity
+    # headlines unless the article also contains an incident cue.
+    for row in snapshot.get("articles", []):
+        issue = row.get("primary_issue")
+        signal = row.get("issue_signal")
+        title = _feature11_norm_text(row.get("title"))
+        if signal == "NORMATIVE" and issue in FEATURE11_NORMATIVE_NON_ISSUES:
+            return {"status":"FAILED", "reason":"NORMATIVE_GENERIC_ISSUE_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
+        if issue == "PENEGAKAN_HUKUM" and not any(_feature11_term_present(title, cue) for cue in FEATURE11_INCIDENT_CUES):
+            return {"status":"FAILED", "reason":"GENERIC_LEGAL_PRIMARY_WITHOUT_INCIDENT", "article_id":row.get("article_id"), "title":row.get("title")}
     after = get_all_articles()
     after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
     if before_ids != after_ids:
@@ -16037,7 +16047,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V3-SEMANTIC-HIERARCHY-ISSUE-SIGNAL-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V4-SEMANTIC-SIGNAL-INCIDENT-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16119,7 +16129,7 @@ FEATURE11_ISSUE_TAXONOMY = {
     },
     "PEMBUNUHAN": {
         "label": "Pembunuhan",
-        "terms": ("pembunuhan", "bunuh", "membunuh", "dibunuh", "pembunuhan berencana"),
+        "terms": ("pembunuhan", "pembunuh", "bunuh", "membunuh", "dibunuh", "pembunuhan berencana"),
         "phrases": ("pembunuhan berencana", "kasus pembunuhan", "pelaku pembunuhan"),
         "substantive": True,
     },
@@ -16155,7 +16165,7 @@ FEATURE11_ISSUE_TAXONOMY = {
     },
     "KEKERASAN": {
         "label": "Kekerasan",
-        "terms": ("kekerasan", "tindak kekerasan", "kekerasan fisik", "kekerasan seksual"),
+        "terms": ("kekerasan", "tindak kekerasan", "kekerasan fisik", "kekerasan seksual", "pkdrt"),
         "phrases": ("tindak kekerasan", "kekerasan seksual"),
         "substantive": True,
     },
@@ -16400,6 +16410,34 @@ FEATURE11_TOPIC_SUBORDINATE_TO_CRIME = {
     "PENGELOLAAN_ANGGARAN", "PENGADAAN", "PELAYANAN_PUBLIK",
 }
 
+FEATURE11_GENERIC_LEGAL_ISSUES = {
+    "PENEGAKAN_HUKUM",
+    "PROSES_PENYIDIKAN",
+    "PENUNTUTAN",
+    "PERSIDANGAN",
+    "PUTUSAN_PENGADILAN",
+}
+
+FEATURE11_NORMATIVE_NON_ISSUES = {
+    "INTEGRITAS",
+    "PENEGAKAN_HUKUM",
+    "PENGELOLAAN_ANGGARAN",
+    "PENDIDIKAN",
+}
+
+# Kata yang menunjukkan bahwa sebuah istilah substantif memang menjadi
+# objek berita, bukan sekadar slogan/amanat/nilai yang disebutkan.
+FEATURE11_INCIDENT_CUES = (
+    "kasus", "perkara", "dugaan", "diduga", "tersangka", "terdakwa",
+    "korban", "pelaku", "ditangkap", "diamankan", "ditahan",
+    "dituntut", "disidangkan", "divonis", "dibunuh", "membunuh",
+    "dianiaya", "ditipu", "digelapkan", "diselundupkan",
+    "diperiksa", "dipanggil", "dilaporkan", "diadukan",
+    "dihentikan", "dihentikan perkara", "penyelidikan", "penyidikan",
+    "penuntutan", "putusan", "pemusnahan", "dimusnahkan",
+    "lelang", "sengketa", "protes", "didesak", "disorot",
+)
+
 FEATURE11_ISSUE_PRIORITY = {
     # Core incidents / misconduct
     "KORUPSI": 100, "NARKOTIKA": 99, "PEMBUNUHAN": 99, "PENGANIAYAAN": 98,
@@ -16413,7 +16451,7 @@ FEATURE11_ISSUE_PRIORITY = {
     "PELAYANAN_PUBLIK": 73, "PRA_PERADILAN": 70,
     # procedural stage / umbrella
     "PENEGAKAN_HUKUM": 55, "PROSES_PENYIDIKAN": 45, "PENUNTUTAN": 44,
-    "PERSIDANGAN": 43, "PUTUSAN_PENGADILAN": 42, "BARANG_BUKTI": 41,
+    "PERSIDANGAN": 43, "PUTUSAN_PENGADILAN": 42, "BARANG_BUKTI": 60,
     "RESTORATIVE_JUSTICE": 40,
     # context-only labels should never become primary without substantive support
     "JABATAN_MUTASI": 10, "PELANTIKAN_PENGANGKATAN": 9, "PEMBERHENTIAN": 8,
@@ -16443,13 +16481,23 @@ def _feature11_is_normative_ethics(text: str) -> bool:
     return any(_feature11_term_present(text, x) for x in FEATURE11_ETHICS_NORMATIVE_ONLY)
 
 
-def _feature11_candidate_is_substantive(item: Dict[str, Any], combined: str) -> bool:
+def _feature11_candidate_is_substantive(item: Dict[str, Any], combined: str, signal: str = "INCIDENT") -> bool:
     issue = item["issue"]
     if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"}:
         return _feature11_has_ethics_violation(combined)
     if issue in FEATURE11_CONTEXT_ONLY_PRIMARY:
         return False
-    return bool(item.get("substantive"))
+    if not bool(item.get("substantive")):
+        return False
+    # Pada berita NORMATIVE, penyebutan isu tidak cukup untuk menjadikannya
+    # masalah. Harus ada bukti bahwa isu tersebut benar-benar menjadi objek
+    # kejadian/dugaan/sengketa.
+    if signal == "NORMATIVE":
+        if issue in FEATURE11_NORMATIVE_NON_ISSUES:
+            return False
+        if not any(_feature11_term_present(combined, cue) for cue in FEATURE11_INCIDENT_CUES):
+            return False
+    return True
 
 
 def _feature11_primary_sort_key(item: Dict[str, Any]) -> tuple:
@@ -16576,10 +16624,25 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "evidence": evidence,
             "substantive": bool(spec.get("substantive", True)),
         }
-        item["is_substantive_candidate"] = _feature11_candidate_is_substantive(item, combined)
+        item["is_substantive_candidate"] = _feature11_candidate_is_substantive(item, combined, signal)
         scored.append(item)
 
     substantive = [x for x in scored if x["is_substantive_candidate"]]
+
+    # NORMATIVE adalah sinyal awal. Jika ternyata ada bukti kejadian substantif,
+    # ubah menjadi INCIDENT/ALLEGATION/DISPUTE. Sebaliknya, slogan/nilai/kegiatan
+    # tetap UNCLASSIFIED atau hanya menyimpan context.
+    if signal == "NORMATIVE" and substantive:
+        if any(_feature11_term_present(combined, x) for x in FEATURE11_SIGNAL_ALLEGATION_TERMS):
+            signal = "ALLEGATION"
+        elif any(_feature11_term_present(combined, x) for x in FEATURE11_SIGNAL_DISPUTE_TERMS):
+            signal = "DISPUTE"
+        else:
+            signal = "INCIDENT"
+    # Re-evaluate normative candidates after signal correction.
+    if signal != "NORMATIVE":
+        substantive = [x for x in scored if _feature11_candidate_is_substantive(x, combined, signal)]
+
     # A generic procedural/context label is never enough to claim a substantive issue.
     if not substantive:
         return {
@@ -16826,6 +16889,12 @@ def _feature11_regression() -> Dict[str, Any]:
         ({"title": "Kunjungan Jaksa Agung ke Kejari Deliserdang", "content": "Kunjungan kerja berlangsung untuk memperkuat koordinasi."}, "UNCLASSIFIED"),
         ({"title": "Ditolak Pinjam Rp50 Juta, Oknum APH Tega Bunuh Nenek", "content": "Pelaku diduga melakukan pembunuhan terhadap korban."}, "PEMBUNUHAN"),
         ({"title": "Kejari Mutasi Pejabat Baru", "content": "Serah terima jabatan dilaksanakan."}, "UNCLASSIFIED"),
+        ({"title": "Harlah Kejaksaan Teguhkan Penegakan Hukum Berintegritas", "content": "Pimpinan menekankan integritas dan profesionalisme."}, "UNCLASSIFIED"),
+        ({"title": "Kajati Lantik Pejabat, Tekankan Penegakan Hukum Humanis", "content": "Pelantikan berlangsung dalam kegiatan resmi."}, "UNCLASSIFIED"),
+        ({"title": "Pimpin Sertijab, Tekankan Pemulihan Keuangan Negara", "content": "Pimpinan menyampaikan arahan dalam kegiatan resmi."}, "UNCLASSIFIED"),
+        ({"title": "Hentikan Perkara Penganiayaan Lewat Restorative Justice", "content": "Kedua pihak berdamai dan perkara dihentikan."}, "PENGANIAYAAN"),
+        ({"title": "Dua Terdakwa Pembunuh Pelajar SMP Dituntut Hukuman Mati", "content": "Jaksa menuntut terdakwa dalam perkara pembunuhan."}, "PEMBUNUHAN"),
+        ({"title": "Terdakwa Perkara PKDRT Mohon Divonis Bebas", "content": "Perkara kekerasan dalam rumah tangga sedang disidangkan."}, "KEKERASAN"),
     ]
     for article, expected in cases:
         got = detect_article_issues(article)
