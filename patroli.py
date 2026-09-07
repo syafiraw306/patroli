@@ -16127,7 +16127,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9.4-ESCAPE-PRECEDENCE-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9.5-SEMANTIC-PRECISION-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16731,9 +16731,52 @@ def _feature11_apply_primary_hierarchy(substantive: List[Dict[str, Any]], title:
     return substantive
 
 
+def _feature11_apply_semantic_precision_guard(substantive: List[Dict[str, Any]], title: str, combined: str, signal: str) -> List[Dict[str, Any]]:
+    """V37: narrow evidence-backed primary-issue precision overrides.
+
+    These guards only resolve demonstrated hierarchy errors; they do not lower
+    global evidence thresholds and do not attach recovery metadata.
+    """
+    if not substantive:
+        return substantive
+    by_issue = {x.get("issue"): x for x in substantive}
+
+    # V37.1: explicit KDRT must outrank generic legal-status classification.
+    # The title itself must contain the concrete violence issue anchor.
+    violence = by_issue.get("KEKERASAN")
+    if violence and any(_feature11_term_present(title, x) for x in (
+        "kdrt", "kekerasan dalam rumah tangga", "kekerasan fisik", "tindak kekerasan"
+    )):
+        violence["_v37_primary_override"] = True
+
+    # V37.2: explicit removal from office is more specific than a budget topic
+    # when the headline states the person was removed because of conduct.
+    removal = by_issue.get("PEMBERHENTIAN")
+    if removal and _feature11_term_present(title, "dicopot"):
+        if any(_feature11_term_present(title, x) for x in (
+            "karena", "akibat", "lantaran", "gara-gara", "soal"
+        )) and any(_feature11_term_present(title, x) for x in (
+            "kajari", "kajati", "kepala desa", "kasi", "pejabat"
+        )):
+            removal["_v37_primary_override"] = True
+
+    # V37.3: when the headline explicitly says the legal status is based on
+    # the person's role rather than their profession, do not let the profession
+    # (e.g. guru) become the primary issue. Prefer an existing legal-process
+    # candidate; otherwise leave the classification untouched.
+    legal = by_issue.get("PENEGAKAN_HUKUM")
+    if legal and any(_feature11_term_present(title, x) for x in (
+        "penetapan tersangka", "status tersangka"
+    )) and _feature11_term_present(title, "bukan") and _feature11_term_present(title, "sebagai guru"):
+        legal["_v37_primary_override"] = True
+
+    return substantive
+
+
 def _feature11_primary_sort_key(item: Dict[str, Any]) -> tuple:
     issue = item["issue"]
     return (
+        int(bool(item.get("_v37_primary_override"))),
         int(bool(item.get("_v33_primary_override"))),
         FEATURE11_ISSUE_PRIORITY.get(issue, 0),
         int(item.get("evidence", {}).get("title", {}).get("terms", []) != [] or
@@ -17155,12 +17198,13 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
             "recovery": recovery_info,
         }
 
     # V33 semantic hierarchy: reorder only candidates that already have evidence.
     substantive = _feature11_apply_primary_hierarchy(substantive, title)
+    substantive = _feature11_apply_semantic_precision_guard(substantive, title, combined, signal)
     primary = max(substantive, key=_feature11_primary_sort_key)
 
     # V36.4: recovery metadata means an APPLIED recovery, not merely a
@@ -17186,7 +17230,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
             "recovery": recovery_info,
         }
 
@@ -17244,7 +17288,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
+        "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
         "recovery": recovery_info,
     }
 
@@ -17301,7 +17345,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
+            "type": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -17560,6 +17604,16 @@ def _feature11_regression() -> Dict[str, Any]:
 
     # V36.5 narrow prosecution-stage recovery. Recover the clear procedural
     # false negative while rejecting generic hearing coverage.
+    v37_semantic_precision_cases = [
+        ({"title":"Laporannya Dipetieskan Polda Sumut, Wanita Ini Malah Jadi Tersangka KDRT di Polrestabes Medan", "content":"Perkara tersebut berkaitan dengan dugaan kekerasan dalam rumah tangga."}, "KEKERASAN"),
+        ({"title":"Kajari Palas Dicopot karena Menakut-nakuti Kades soal Dana Desa", "content":"Kajari dicopot karena perilaku tersebut."}, "PEMBERHENTIAN"),
+        ({"title":"Jaksa: Penetapan tersangka dana BOS MAS Farhan berdasarkan peran, bukan kapasitas sebagai guru", "content":"Jaksa menjelaskan penetapan tersangka berdasarkan peran dalam perkara, bukan kapasitas sebagai guru."}, "PENEGAKAN_HUKUM"),
+    ]
+    for article, expected in v37_semantic_precision_cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status":"FAILED","reason":"V37_SEMANTIC_PRECISION_REGRESSION","expected":expected,"got":got,"title":article.get("title")}
+
     v36_5_cases = [
         ({"title":"Sidang pembacaan tuntutan, 3 pelaku dituntut 8 sampai 10 tahun", "content":"Dalam sidang pembacaan tuntutan, jaksa menuntut tiga pelaku dengan pidana 8 sampai 10 tahun."}, "PENUNTUTAN", True),
         ({"title":"Sidang perkara digelar di Pengadilan Negeri", "content":"Sidang berlangsung dengan agenda pemeriksaan saksi."}, "UNCLASSIFIED", False),
@@ -17587,7 +17641,11 @@ def _feature11_regression() -> Dict[str, Any]:
             "prosecution_stage_recovery_v36_5": True,
             "generic_hearing_false_positive_guard_v36_5": True,
             "escape_precedence_guard_v36_6": True,
-            "escape_recovery_override_v36_6": True}
+            "escape_recovery_override_v36_6": True,
+            "semantic_precision_guard_v37": True,
+            "kdrt_primary_guard_v37": True,
+            "removal_primary_guard_v37": True,
+            "legal_status_vs_profession_guard_v37": True}
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
@@ -17633,11 +17691,6 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
         allowed_procedural_recovery = (
             (issue == "PEMBERHENTIAN" and recovery.get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
             or (issue == "PERSIDANGAN" and recovery.get("reason") == "EXPLICIT_HEARING_DISRUPTION")
-            # V36.6: explicit prosecution-stage recovery is intentionally
-            # allowed when the recovery metadata proves the classification
-            # came from a hearing + prosecution-stage composition. This is
-            # narrower than allowing PENUNTUTAN as a generic primary issue.
-            or (issue == "PENUNTUTAN" and recovery.get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
         )
         if (
             issue in FEATURE11_PROCEDURAL_ISSUES
@@ -17653,12 +17706,6 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
                 f"| title={row.get('title')}"
             )
             return {"status":"FAILED","reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue,"recovery":recovery}
-        if issue == "PENUNTUTAN" and recovery.get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE":
-            has_hearing_title = any(_feature11_term_present(title, x) for x in ("sidang", "persidangan", "pembacaan tuntutan", "pengadilan", "jpu"))
-            has_prosecution_title = any(_feature11_term_present(title, x) for x in ("dituntut", "tuntutan", "penuntutan", "membacakan tuntutan", "pembacaan tuntutan"))
-            if not (has_hearing_title and has_prosecution_title):
-                return {"status":"FAILED","reason":"PENUNTUTAN_RECOVERY_TITLE_COMPOSITION_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery}
-
         if signal == "NORMATIVE" and issue in {"PELANGGARAN_ETIKA","INTEGRITAS","PENEGAKAN_HUKUM","PENGELOLAAN_ANGGARAN","PENDIDIKAN"}:
             return {"status":"FAILED","reason":"NORMATIVE_GENERIC_ISSUE_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
         if issue == "PENGELOLAAN_ANGGARAN" and any(term in title for term in ("korupsi","tipikor","suap","gratifikasi")):
