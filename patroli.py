@@ -16667,8 +16667,12 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
         evidence = _feature11_score_issue(title, content, spec)
         if issue_key == "PENGAWASAN_INTERNAL" and _feature11_has_internal_oversight_signal(combined):
             evidence["score"] += 3.5
+            # The oversight boost is itself evidence-backed only when the
+            # internal-oversight detector fires. Expose that matched signal
+            # explicitly so a classified article can never have empty
+            # topic_keywords merely because the boost came from context.
             evidence["title"].setdefault("phrases", [])
-            if _feature11_term_present(title, "diamankan kejagung") or _feature11_term_present(title, "alasan pencopotan"):
+            if "pengawasan internal kejaksaan" not in evidence["title"]["phrases"]:
                 evidence["title"]["phrases"].append("pengawasan internal kejaksaan")
             evidence["score"] = round(evidence["score"], 3)
         if evidence["score"] < FEATURE11_MIN_EVIDENCE_SCORE:
@@ -16745,7 +16749,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
+            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_3",
         }
 
     # Semantic hierarchy: specific substantive issue wins over budget/procedure/context.
@@ -16822,7 +16826,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_2",
+        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_3",
     }
 
 def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
