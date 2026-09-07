@@ -16127,7 +16127,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9.3-PENUNTUTAN-RECOVERY-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9.4-ESCAPE-PRECEDENCE-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16944,6 +16944,28 @@ def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title
                        if _feature11_term_present(combined, x)]
             return add_recovery_candidate("INFRASTRUKTUR_PUBLIK", "CONCRETE_PUBLIC_PROJECT_INVESTIGATION", matched)
 
+    # V36.6 escape-precedence guard. A concrete escape from/around a legal
+    # proceeding must be recovered before the narrower prosecution-stage
+    # rule. This prevents "kabur + sidang + tuntutan" from being
+    # misclassified as PENUNTUTAN.
+    escape = any(_feature11_term_present(combined, x) for x in (
+        "kabur", "melarikan diri", "melarikan diri dari"
+    ))
+    legal_process = any(_feature11_term_present(combined, x) for x in (
+        "proses penyidikan", "penyidikan", "penyelidikan", "proses hukum",
+        "penuntutan", "persidangan", "sidang"
+    ))
+    if escape and legal_process:
+        matched = [x for x in (
+            "kabur", "melarikan diri", "proses penyidikan", "penyidikan",
+            "proses hukum", "penuntutan", "persidangan", "sidang"
+        ) if _feature11_term_present(combined, x)]
+        return add_recovery_candidate(
+            "PELARIAN_PROSES_HUKUM",
+            "ESCAPE_DURING_EXPLICIT_LEGAL_PROCESS",
+            matched,
+        )
+
     # 4) Explicit prosecution/hearing recovery. A generic mention of
     # "tuntutan" or "sidang" is not enough. Require composition of a
     # proceeding/hearing anchor with an explicit prosecution-stage anchor.
@@ -16966,13 +16988,6 @@ def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title
         if len(matched) >= 2:
             return add_recovery_candidate("PENUNTUTAN", "EXPLICIT_HEARING_AND_PROSECUTION_STAGE", matched)
 
-    # 5) Escape during a named legal process is a substantive legal-event
-    # issue, not merely the procedural label PENYIDIKAN.
-    escape = any(_feature11_term_present(combined, x) for x in ("kabur", "melarikan diri", "melarikan diri dari"))
-    legal_process = any(_feature11_term_present(combined, x) for x in ("proses penyidikan", "penyidikan", "penyelidikan", "proses hukum", "penuntutan", "persidangan", "sidang"))
-    if escape and legal_process:
-        matched = [x for x in ("kabur", "proses penyidikan", "penyidikan", "proses hukum") if _feature11_term_present(combined, x)]
-        return add_recovery_candidate("PELARIAN_PROSES_HUKUM", "ESCAPE_DURING_EXPLICIT_LEGAL_PROCESS", matched)
     for rule in FEATURE11_SUBSTANTIVE_RECOVERY_RULES:
         issue = rule["issue"]
         matched = [a for a in rule["anchors"] if _feature11_term_present(combined, a)]
@@ -17140,7 +17155,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
             "recovery": recovery_info,
         }
 
@@ -17171,7 +17186,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
             "recovery": recovery_info,
         }
 
@@ -17229,7 +17244,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
+        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
         "recovery": recovery_info,
     }
 
@@ -17286,7 +17301,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
+            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_4",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -17528,6 +17543,21 @@ def _feature11_regression() -> Dict[str, Any]:
         if expected in {"PERSIDANGAN", "PELARIAN_PROSES_HUKUM", "PENGAWASAN_INTERNAL", "PEMBERHENTIAN"} and not got.get("recovery"):
             return {"status":"FAILED","reason":"V36_RECOVERY_METADATA_MISSING","expected":expected,"got":got,"title":article.get("title")}
 
+    # V36.6 escape-precedence regression.
+    v36_6_cases = [
+        ({"title":"Terdakwa Tuntutan Mati Kabur Usai Sidang di PN Lubuk Pakam", "content":"Terdakwa kabur usai sidang dan masih diburu."}, "PELARIAN_PROSES_HUKUM", True),
+        ({"title":"Terdakwa Kabur Saat Proses Penyidikan", "content":"Tersangka melarikan diri saat penyidikan berlangsung."}, "PELARIAN_PROSES_HUKUM", True),
+        ({"title":"Sidang pembacaan tuntutan, 3 pelaku dituntut 8 sampai 10 tahun", "content":"Dalam sidang pembacaan tuntutan, jaksa menuntut tiga pelaku dengan pidana 8 sampai 10 tahun."}, "PENUNTUTAN", False),
+    ]
+    for article, expected, needs_recovery in v36_6_cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status":"FAILED","reason":"V36_6_ESCAPE_PRECEDENCE_GUARD","expected":expected,"got":got,"title":article.get("title")}
+        if needs_recovery and (not got.get("recovery") or got.get("recovery", {}).get("issue") != expected or got.get("recovery", {}).get("reason") != "ESCAPE_DURING_EXPLICIT_LEGAL_PROCESS"):
+            return {"status":"FAILED","reason":"V36_6_ESCAPE_RECOVERY_METADATA_MISSING","expected":expected,"got":got,"title":article.get("title")}
+        if not needs_recovery and got.get("recovery") and got.get("recovery", {}).get("issue") == "PELARIAN_PROSES_HUKUM":
+            return {"status":"FAILED","reason":"V36_6_ESCAPE_FALSE_POSITIVE","expected":expected,"got":got,"title":article.get("title")}
+
     # V36.5 narrow prosecution-stage recovery. Recover the clear procedural
     # false negative while rejecting generic hearing coverage.
     v36_5_cases = [
@@ -17546,7 +17576,7 @@ def _feature11_regression() -> Dict[str, Any]:
         if not needs_recovery and got.get("recovery") and got.get("recovery", {}).get("issue") == "PENUNTUTAN":
             return {"status":"FAILED","reason":"V36_5_GENERIC_PROSECUTION_RECOVERY_FALSE_POSITIVE","expected":expected,"got":got,"title":article.get("title")}
 
-    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases) + len(v35_1_cases) + len(v36_cases) + len(v36_5_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
+    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases) + len(v35_1_cases) + len(v36_cases) + len(v36_5_cases) + len(v36_6_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
             "evidence_composition_guard": True, "financial_evidence_guard": True,
             "budget_topic_only_guard": True,
             "project_investigation_routing_guard": True,
@@ -17555,7 +17585,9 @@ def _feature11_regression() -> Dict[str, Any]:
             "escape_recovery_override": True,
             "disciplinary_mutation_recovery": True,
             "prosecution_stage_recovery_v36_5": True,
-            "generic_hearing_false_positive_guard_v36_5": True}
+            "generic_hearing_false_positive_guard_v36_5": True,
+            "escape_precedence_guard_v36_6": True,
+            "escape_recovery_override_v36_6": True}
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
