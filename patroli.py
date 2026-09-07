@@ -16127,7 +16127,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9.2-RECOVERY-METADATA-FIX"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9.2-RECOVERY-APPLIED-METADATA-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -17118,7 +17118,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
             "recovery": recovery_info,
         }
 
@@ -17149,7 +17149,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
             "recovery": recovery_info,
         }
 
@@ -17207,7 +17207,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
+        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
         "recovery": recovery_info,
     }
 
@@ -17264,7 +17264,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2",
+            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
