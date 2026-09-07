@@ -16637,6 +16637,17 @@ def _feature11_specific_topics(scored: List[Dict[str, Any]]) -> List[str]:
     return sorted(set(topics), key=lambda x: (-len(x), x))[:20]
 
 
+def _feature11_primary_evidence_topics(evidence: Dict[str, Any]) -> List[str]:
+    """Return only terms/phrases actually matched by the primary evidence."""
+    primary = (evidence or {}).get("primary") or {}
+    topics = []
+    for field in ("title", "content"):
+        bucket = primary.get(field) or {}
+        topics.extend(bucket.get("terms", []) or [])
+        topics.extend(bucket.get("phrases", []) or [])
+    return list(dict.fromkeys(str(x).strip() for x in topics if str(x).strip()))[:20]
+
+
 def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
     title = _feature11_norm_text(article.get("title"))
     content = _feature11_norm_text(article.get("content"))
@@ -16797,7 +16808,10 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
         "primary_confidence": primary["confidence"],
         "primary_score": primary["score"],
         "secondary_issues": secondary,
-        "topic_keywords": _feature11_specific_topics(scored),
+        "topic_keywords": (
+            _feature11_specific_topics(scored)
+            or _feature11_primary_evidence_topics({"primary": primary["evidence"]})
+        ),
         "context_tags": context_tags,
         "issue_scores": [
             {"issue": x["issue"], "label": x["label"], "score": x["score"], "confidence": x["confidence"]}
@@ -16808,7 +16822,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
+        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_2",
     }
 
 def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -16840,6 +16854,9 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
             "context_tags": result.get("context_tags", []),
             "evidence": result.get("evidence", {}),
         }
+        # V32.2: classified rows must expose evidence-backed topic keywords.
+        if row["primary_issue"] != "UNCLASSIFIED" and not row["topic_keywords"]:
+            row["topic_keywords"] = _feature11_primary_evidence_topics(row["evidence"])
         rows.append(row)
         issue_counts[row["primary_issue"]] = issue_counts.get(row["primary_issue"], 0) + 1
         confidence_counts[row["primary_confidence"]] += 1
@@ -17042,7 +17059,15 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
         if not row.get("primary_issue"):
             return {"status":"FAILED", "reason":"MISSING_PRIMARY_ISSUE", "article_id":row.get("article_id")}
         if row.get("primary_issue") != "UNCLASSIFIED" and not row.get("topic_keywords"):
-            return {"status":"FAILED", "reason":"CLASSIFIED_WITHOUT_TOPIC_EVIDENCE", "article_id":row.get("article_id")}
+            return {
+                "status":"FAILED",
+                "reason":"CLASSIFIED_WITHOUT_TOPIC_EVIDENCE",
+                "article_id":row.get("article_id"),
+                "title":row.get("title"),
+                "primary_issue":row.get("primary_issue"),
+                "primary_score":row.get("primary_score"),
+                "evidence":row.get("evidence", {}),
+            }
     # ========================================================
     # V32 SEMANTIC HARD GATES — artifact quality, not rate
     # ========================================================
