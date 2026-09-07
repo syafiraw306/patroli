@@ -16127,7 +16127,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9.1-PROCEDURAL-RECOVERY-VALIDATION-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9.2-RECOVERY-METADATA-FIX"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -17230,6 +17230,11 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
             "topic_keywords": result["topic_keywords"],
             "context_tags": result.get("context_tags", []),
             "evidence": result.get("evidence", {}),
+            # V36.3: preserve recovery metadata in the production snapshot.
+            # The classifier already returns this evidence-backed recovery object;
+            # validators must see it so legitimate procedural recovery does not
+            # get mistaken for a generic procedural primary leak.
+            "recovery": result.get("recovery"),
         }
         # V32.2: classified rows must expose evidence-backed topic keywords.
         if row["primary_issue"] != "UNCLASSIFIED" and not row["topic_keywords"]:
@@ -17552,7 +17557,14 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
         ):
-            return {"status":"FAILED","reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
+            print(
+                "[TEST FAIL] PROCEDURAL_PRIMARY_LEAK_ARTIFACT "
+                f"| id={row.get('article_id')} "
+                f"| issue={issue} "
+                f"| recovery={recovery} "
+                f"| title={row.get('title')}"
+            )
+            return {"status":"FAILED","reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue,"recovery":recovery}
         if signal == "NORMATIVE" and issue in {"PELANGGARAN_ETIKA","INTEGRITAS","PENEGAKAN_HUKUM","PENGELOLAAN_ANGGARAN","PENDIDIKAN"}:
             return {"status":"FAILED","reason":"NORMATIVE_GENERIC_ISSUE_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
         if issue == "PENGELOLAAN_ANGGARAN" and any(term in title for term in ("korupsi","tipikor","suap","gratifikasi")):
