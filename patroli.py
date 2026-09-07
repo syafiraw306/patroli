@@ -16403,6 +16403,7 @@ def _write_issue_topic_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
     for row in snapshot.get("articles", [])[:200]:
         secondary = ", ".join(x.get("label", "") for x in row.get("secondary_issues", [])) or "-"
         topics = ", ".join(row.get("topic_keywords", [])[:8]) or "-"
+        context = ", ".join(row.get("context_tags", [])) or "-"
         rows.append(
             "<tr>" +
             f"<td>{html.escape(str(row.get('article_id') or '-'))}</td>" +
@@ -16412,7 +16413,7 @@ def _write_issue_topic_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
             f"<td>{html.escape(str(row.get('primary_score') or 0))}</td>" +
             f"<td>{html.escape(secondary)}</td>" +
             f"<td>{html.escape(topics)}</td>" +
-            f"<td>{html.escape(", ".join(row.get('context_tags', [])) or "-")}</td>" +
+            f"<td>{html.escape(context)}</td>" +
             "</tr>"
         )
     html_doc = f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Issue / Topic Detection</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Issue / Topic Detection</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> {html.escape(FEATURE11_VERSION)} &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Production Articles<div class="value">{s.get('production_articles',0)}</div></div><div class="card">Classified<div class="value">{s.get('classified_articles',0)}</div></div><div class="card">Unclassified<div class="value">{s.get('unclassified_articles',0)}</div></div><div class="card">Classification Rate<div class="value">{s.get('classification_rate_pct',0)}%</div></div></div><p><small>Multi-label issue detection. Primary issue dipilih dari evidence berbobot title/content; secondary issues tetap disimpan. Ini bukan sentiment, bukan risk score baru, dan bukan inferensi kausal.</small></p><h2>Issue Distribution</h2><pre>{html.escape(json.dumps(s.get('issue_counts',{}),ensure_ascii=False,indent=2))}</pre><table><thead><tr><th>ID</th><th>Article</th><th>Primary Issue</th><th>Confidence</th><th>Score</th><th>Secondary Issues</th><th>Topics</th><th>Context</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="8">Tidak ada artikel.</td></tr>'}</tbody></table></body></html>"""
