@@ -17633,6 +17633,11 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
         allowed_procedural_recovery = (
             (issue == "PEMBERHENTIAN" and recovery.get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
             or (issue == "PERSIDANGAN" and recovery.get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            # V36.6: explicit prosecution-stage recovery is intentionally
+            # allowed when the recovery metadata proves the classification
+            # came from a hearing + prosecution-stage composition. This is
+            # narrower than allowing PENUNTUTAN as a generic primary issue.
+            or (issue == "PENUNTUTAN" and recovery.get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
         )
         if (
             issue in FEATURE11_PROCEDURAL_ISSUES
@@ -17648,6 +17653,12 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
                 f"| title={row.get('title')}"
             )
             return {"status":"FAILED","reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue,"recovery":recovery}
+        if issue == "PENUNTUTAN" and recovery.get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE":
+            has_hearing_title = any(_feature11_term_present(title, x) for x in ("sidang", "persidangan", "pembacaan tuntutan", "pengadilan", "jpu"))
+            has_prosecution_title = any(_feature11_term_present(title, x) for x in ("dituntut", "tuntutan", "penuntutan", "membacakan tuntutan", "pembacaan tuntutan"))
+            if not (has_hearing_title and has_prosecution_title):
+                return {"status":"FAILED","reason":"PENUNTUTAN_RECOVERY_TITLE_COMPOSITION_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery}
+
         if signal == "NORMATIVE" and issue in {"PELANGGARAN_ETIKA","INTEGRITAS","PENEGAKAN_HUKUM","PENGELOLAAN_ANGGARAN","PENDIDIKAN"}:
             return {"status":"FAILED","reason":"NORMATIVE_GENERIC_ISSUE_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
         if issue == "PENGELOLAAN_ANGGARAN" and any(term in title for term in ("korupsi","tipikor","suap","gratifikasi")):
