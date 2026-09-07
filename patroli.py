@@ -4471,6 +4471,7 @@ def test_trend_escalation_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -4925,6 +4926,7 @@ def test_early_warning_system_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -5292,6 +5294,7 @@ def test_intelligence_dashboard_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -12857,6 +12860,7 @@ def intelligence_alerts_diagnostic_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -12960,6 +12964,7 @@ def test_intelligence_alerts_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -13098,6 +13103,7 @@ def test_intelligence_alerts_controlled_fresh_real_read_only() -> Dict[str, Any]
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -13484,6 +13490,7 @@ def test_incident_timeline_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -13889,6 +13896,7 @@ def test_incident_lifecycle_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -14209,6 +14217,7 @@ def test_incident_case_dossier_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -15731,6 +15740,7 @@ def test_cross_incident_candidate_audit_real_read_only() -> Dict[str, Any]:
             and not (
                 (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
                 or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+                or (issue == "PENUNTUTAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
             )
             and not _feature11_has_internal_oversight_signal(title)
             and not _feature11_has_ethics_violation(title)
@@ -16110,6 +16120,8 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
     return {"status":"PASSED","snapshot":snapshot,"artifacts":artifacts}
 
 
+# ============================================================
+# V37.2: allow evidence-backed PENUNTUTAN recovery in procedural hard gates.
 # ============================================================
 # FEATURE #11 — ISSUE / TOPIC DETECTION
 # V9 EXPLAINABLE MULTI-LABEL / READ-ONLY / FALSE-NEGATIVE RECOVERY GUARD
@@ -17225,7 +17237,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
             "recovery": recovery_info,
         }
 
@@ -17257,7 +17269,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
             "recovery": recovery_info,
         }
 
@@ -17315,7 +17327,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
+        "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
         "recovery": recovery_info,
     }
 
@@ -17372,7 +17384,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
+            "type": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -17718,6 +17730,7 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
         allowed_procedural_recovery = (
             (issue == "PEMBERHENTIAN" and recovery.get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
             or (issue == "PERSIDANGAN" and recovery.get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            or (issue == "PENUNTUTAN" and recovery.get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE")
         )
         if (
             issue in FEATURE11_PROCEDURAL_ISSUES
