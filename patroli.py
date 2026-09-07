@@ -16742,12 +16742,39 @@ def _feature11_apply_semantic_precision_guard(substantive: List[Dict[str, Any]],
     by_issue = {x.get("issue"): x for x in substantive}
 
     # V37.1: explicit KDRT must outrank generic legal-status classification.
-    # The title itself must contain the concrete violence issue anchor.
+    # IMPORTANT: the existing taxonomy uses PKDRT, while real headlines may use
+    # the shorter form KDRT. Therefore create a narrow evidence-backed candidate
+    # when the explicit title anchor is present; do not lower global thresholds.
     violence = by_issue.get("KEKERASAN")
-    if violence and any(_feature11_term_present(title, x) for x in (
+    explicit_kdrt = any(_feature11_term_present(title, x) for x in (
         "kdrt", "kekerasan dalam rumah tangga", "kekerasan fisik", "tindak kekerasan"
-    )):
-        violence["_v37_primary_override"] = True
+    ))
+    if explicit_kdrt:
+        if violence:
+            violence["_v37_primary_override"] = True
+        else:
+            violence = {
+                "issue": "KEKERASAN",
+                "label": FEATURE11_ISSUE_TAXONOMY["KEKERASAN"]["label"],
+                "score": float(FEATURE11_MIN_PRIMARY_SCORE),
+                "confidence": "MEDIUM",
+                "topic_keywords": [
+                    x for x in ("kdrt", "kekerasan dalam rumah tangga", "kekerasan fisik", "tindak kekerasan")
+                    if _feature11_term_present(title, x)
+                ],
+                "evidence": {
+                    "score": float(FEATURE11_MIN_PRIMARY_SCORE),
+                    "title": _feature11_find_evidence(
+                        title,
+                        ("kdrt", "kekerasan dalam rumah tangga", "kekerasan fisik", "tindak kekerasan"),
+                        (),
+                    ),
+                    "content": {"terms": [], "phrases": []},
+                },
+                "_v37_primary_override": True,
+            }
+            substantive.append(violence)
+            by_issue["KEKERASAN"] = violence
 
     # V37.2: explicit removal from office is more specific than a budget topic
     # when the headline states the person was removed because of conduct.
@@ -17198,7 +17225,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
             "recovery": recovery_info,
         }
 
@@ -17230,7 +17257,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
             "recovery": recovery_info,
         }
 
@@ -17288,7 +17315,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
+        "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
         "recovery": recovery_info,
     }
 
@@ -17345,7 +17372,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_5",
+            "type": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_6",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
