@@ -16047,7 +16047,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9-FALSE-NEGATIVE-RECOVERY-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9.1-PROCEDURAL-RECOVERY-VALIDATION-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -17461,7 +17461,17 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_internal_oversight_signal(title) and not _feature11_has_ethics_violation(title):
+        recovery = row.get("recovery") or {}
+        allowed_procedural_recovery = (
+            (issue == "PEMBERHENTIAN" and recovery.get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+            or (issue == "PERSIDANGAN" and recovery.get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+        )
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not allowed_procedural_recovery
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED","reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
         if signal == "NORMATIVE" and issue in {"PELANGGARAN_ETIKA","INTEGRITAS","PENEGAKAN_HUKUM","PENGELOLAAN_ANGGARAN","PENDIDIKAN"}:
             return {"status":"FAILED","reason":"NORMATIVE_GENERIC_ISSUE_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
