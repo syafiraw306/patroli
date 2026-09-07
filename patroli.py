@@ -15807,74 +15807,295 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V1-EXPLAINABLE-MULTILABEL"
+FEATURE11_VERSION = "FEATURE11-READONLY-V2-SEMANTIC-CONTEXT-SEPARATION"
 FEATURE11_MAX_ARTICLES = 5000
-FEATURE11_MAX_SECONDARY = 4
+FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
+FEATURE11_MIN_EVIDENCE_SCORE = 2.5
 FEATURE11_HIGH_CONFIDENCE_SCORE = 7.0
 FEATURE11_MEDIUM_CONFIDENCE_SCORE = 4.0
 FEATURE11_TITLE_WEIGHT = 3.0
 FEATURE11_CONTENT_WEIGHT = 1.0
 FEATURE11_PHRASE_BONUS = 1.5
+FEATURE11_TITLE_ANCHOR_BONUS = 1.5
+FEATURE11_PRIMARY_MARGIN = 0.75
+FEATURE11_TITLE_DISTINCTIVENESS_FACTOR = 0.15
 
-# Taxonomy sengaja berbasis isu substantif. Procedural words seperti
-# "diperiksa", "dipanggil", "ditunjuk" tidak berdiri sendiri sebagai issue.
+# ============================================================
+# FEATURE #11 V2 — SEMANTIC ISSUE / TOPIC TAXONOMY
+# ============================================================
+# Prinsip penting:
+#   ISSUE   = masalah/substansi yang diberitakan.
+#   TOPIC   = objek konkret yang dibahas.
+#   CONTEXT = kegiatan/prosedur/panggung berita; bukan otomatis issue.
+#
+# Contoh:
+#   "Kajari Dilantik" -> context PELANTIKAN, bukan otomatis issue.
+#   "Kajari Dilantik Usai Diperiksa karena Pelanggaran Etik"
+#       -> issue PELANGGARAN_ETIKA + context PELANTIKAN.
+#   "Kasus Dugaan Penipuan Rp350 Juta" -> issue PENIPUAN.
+#   "Dua Terdakwa Pembunuhan ... Dituntut Mati" -> issue PEMBUNUHAN
+#       + secondary PENUNTUTAN.
+# ============================================================
+
 FEATURE11_ISSUE_TAXONOMY = {
     "KORUPSI": {
         "label": "Korupsi",
-        "terms": ("korupsi", "tindak pidana korupsi", "tipikor", "suap", "gratifikasi", "fee proyek", "mark up", "markup"),
-        "phrases": ("dugaan korupsi", "kasus korupsi", "perkara korupsi", "tindak pidana korupsi"),
+        "terms": ("korupsi", "tipikor", "tindak pidana korupsi", "suap", "gratifikasi", "fee proyek", "mark up", "markup", "setoran ilegal"),
+        "phrases": ("dugaan korupsi", "kasus korupsi", "perkara korupsi", "tindak pidana korupsi", "dugaan suap", "dugaan gratifikasi"),
+        "substantive": True,
+    },
+    "PENYALAHGUNAAN_KEWENANGAN": {
+        "label": "Penyalahgunaan Kewenangan",
+        "terms": ("penyalahgunaan kewenangan", "penyalahgunaan wewenang", "abuse of power", "maladministrasi", "kriminalisasi", "intervensi", "tekanan", "ditekan"),
+        "phrases": ("penyalahgunaan kewenangan", "penyalahgunaan wewenang", "dugaan kriminalisasi", "dugaan intervensi"),
+        "substantive": True,
+    },
+    "PUNGUTAN_LIAR": {
+        "label": "Pungutan Liar",
+        "terms": ("pungli", "pungutan liar", "kutipan liar", "setoran", "uang setoran"),
+        "phrases": ("dugaan pungli", "pungutan liar", "kutipan uang", "setoran ilegal"),
+        "substantive": True,
+    },
+    "KONFLIK_KEPENTINGAN": {
+        "label": "Konflik Kepentingan",
+        "terms": ("konflik kepentingan", "conflict of interest", "kepentingan pribadi", "afiliasi", "nepotisme"),
+        "phrases": ("konflik kepentingan", "dugaan konflik kepentingan"),
+        "substantive": True,
+    },
+    "PELANGGARAN_ETIKA": {
+        "label": "Pelanggaran Etika",
+        "terms": ("pelanggaran etik", "pelanggaran etika", "kode etik", "dugaan pelanggaran etik", "dugaan pelanggaran etika", "pelanggaran disiplin", "tidak profesional", "profesionalisme"),
+        "phrases": ("pelanggaran kode etik", "dugaan pelanggaran kode etik", "pelanggaran disiplin", "dugaan pelanggaran etik"),
+        "substantive": True,
+    },
+    "INTEGRITAS": {
+        "label": "Integritas",
+        "terms": ("integritas", "berintegritas", "integritas aparatur", "zona integritas"),
+        "phrases": ("penguatan integritas", "pembangunan zona integritas"),
+        "substantive": True,
+    },
+    "TRANSPARANSI_AKUNTABILITAS": {
+        "label": "Transparansi & Akuntabilitas",
+        "terms": ("transparansi", "akuntabilitas", "keterbukaan", "pertanggungjawaban", "diminta transparan"),
+        "phrases": ("minta transparansi", "diminta transparan", "keterbukaan informasi"),
+        "substantive": True,
     },
     "NARKOTIKA": {
         "label": "Narkotika",
         "terms": ("narkotika", "narkoba", "ganja", "sabu", "sabu-sabu", "kokain", "ekstasi", "pil ekstasi", "barang haram"),
-        "phrases": ("kasus narkotika", "peredaran narkotika", "peredaran narkoba", "barang bukti narkotika"),
+        "phrases": ("kasus narkotika", "peredaran narkotika", "peredaran narkoba", "barang bukti narkotika", "kasus ganja"),
+        "substantive": True,
+    },
+    "PEMBUNUHAN": {
+        "label": "Pembunuhan",
+        "terms": ("pembunuhan", "membunuh", "dibunuh", "pembunuhan berencana", "pembunuhan berencana"),
+        "phrases": ("pembunuhan berencana", "kasus pembunuhan", "pelaku pembunuhan"),
+        "substantive": True,
+    },
+    "PENGANIAYAAN": {
+        "label": "Penganiayaan",
+        "terms": ("penganiayaan", "menganiaya", "dianiaya", "aniaya", "penganiayaan berat"),
+        "phrases": ("kasus penganiayaan", "dugaan penganiayaan"),
+        "substantive": True,
+    },
+    "PENIPUAN": {
+        "label": "Penipuan",
+        "terms": ("penipuan", "menipu", "ditipu", "tipu", "penipuan online", "modus penipuan"),
+        "phrases": ("kasus penipuan", "dugaan penipuan", "menipu korban", "tipu kontraktor"),
+        "substantive": True,
+    },
+    "PENGGELAPAN": {
+        "label": "Penggelapan",
+        "terms": ("penggelapan", "menggelapkan", "digelapkan", "penggelapan uang", "penggelapan dana"),
+        "phrases": ("dugaan penggelapan", "kasus penggelapan", "penggelapan uang", "penggelapan dana"),
+        "substantive": True,
+    },
+    "PENCURIAN": {
+        "label": "Pencurian",
+        "terms": ("pencurian", "mencuri", "dicuri", "pencuri", "curanmor"),
+        "phrases": ("kasus pencurian", "dugaan pencurian"),
+        "substantive": True,
+    },
+    "PENYELUNDUPAN": {
+        "label": "Penyelundupan",
+        "terms": ("penyelundupan", "menyelundupkan", "diselundupkan", "selundupan"),
+        "phrases": ("kasus penyelundupan", "mata rantai penyelundupan"),
+        "substantive": True,
+    },
+    "KEKERASAN": {
+        "label": "Kekerasan",
+        "terms": ("kekerasan", "tindak kekerasan", "kekerasan fisik", "kekerasan seksual"),
+        "phrases": ("tindak kekerasan", "kekerasan seksual"),
+        "substantive": True,
     },
     "PENEGAKAN_HUKUM": {
         "label": "Penegakan Hukum",
-        "terms": ("penegakan hukum", "penangkapan", "penggeledahan", "penyitaan", "tersangka", "penyidikan", "penuntutan", "dakwaan", "sidang", "vonis", "putusan", "terpidana", "perkara"),
-        "phrases": ("proses hukum", "proses penyidikan", "proses penuntutan", "barang bukti"),
+        "terms": ("penegakan hukum", "penangkapan", "penggeledahan", "penyitaan", "tersangka", "terdakwa", "terpidana", "perkara", "barang bukti"),
+        "phrases": ("proses hukum", "penegakan hukum"),
+        "substantive": True,
     },
-    "ETIKA_INTEGRITAS": {
-        "label": "Etika & Integritas",
-        "terms": ("etik", "integritas", "disiplin", "pelanggaran etik", "kode etik", "pelanggaran disiplin", "profesionalisme"),
-        "phrases": ("kode etik", "pelanggaran kode etik", "dugaan pelanggaran etik", "pelanggaran disiplin"),
+    "BARANG_BUKTI": {
+        "label": "Barang Bukti",
+        "terms": ("barang bukti", "barang rampasan", "pemusnahan barang bukti", "dimusnahkan"),
+        "phrases": ("barang bukti", "barang bukti perkara", "pemusnahan barang bukti", "barang rampasan"),
+        "substantive": True,
+    },
+    "PRA_PERADILAN": {
+        "label": "Praperadilan",
+        "terms": ("praperadilan", "pra peradilan"),
+        "phrases": ("sidang praperadilan", "permohonan praperadilan"),
+        "substantive": True,
+    },
+    "PROSES_PENYIDIKAN": {
+        "label": "Proses Penyidikan",
+        "terms": ("penyidikan", "penyelidikan", "memeriksa", "diperiksa", "dipanggil", "klarifikasi"),
+        "phrases": ("proses penyidikan", "tahap penyidikan", "penyelidikan perkara"),
+        "substantive": True,
+    },
+    "PENUNTUTAN": {
+        "label": "Penuntutan",
+        "terms": ("penuntutan", "dituntut", "tuntutan", "menuntut", "tuntut hukuman"),
+        "phrases": ("dituntut pidana mati", "dituntut hukuman mati", "jaksa menuntut"),
+        "substantive": True,
+    },
+    "PERSIDANGAN": {
+        "label": "Persidangan",
+        "terms": ("persidangan", "disidangkan", "sidang", "pengadilan", "terdakwa"),
+        "phrases": ("sidang pengadilan", "persidangan perkara"),
+        "substantive": True,
+    },
+    "PUTUSAN_PENGADILAN": {
+        "label": "Putusan Pengadilan",
+        "terms": ("divonis", "vonis", "putusan", "dihukum", "seumur hidup", "pidana mati"),
+        "phrases": ("divonis mati", "divonis seumur hidup", "putusan pengadilan"),
+        "substantive": True,
+    },
+    "RESTORATIVE_JUSTICE": {
+        "label": "Restorative Justice",
+        "terms": ("restorative justice", "keadilan restoratif", "restoratif"),
+        "phrases": ("restorative justice", "keadilan restoratif"),
+        "substantive": True,
     },
     "JABATAN_MUTASI": {
         "label": "Jabatan & Mutasi",
-        "terms": ("pelantikan", "pelantik", "dilantik", "lantik", "mutasi", "promosi", "rotasi", "diganti", "digantikan", "pencopotan", "dicopot", "plh", "plt", "menjabat", "jabatan", "pengganti"),
+        "terms": ("mutasi", "promosi", "rotasi", "diganti", "digantikan", "plh", "plt", "menjabat", "jabatan", "pengganti"),
         "phrases": ("pergantian jabatan", "perubahan jabatan", "serah terima jabatan", "pejabat baru"),
+        "substantive": False,
     },
-    "TANAH_WAKAF_ASET": {
-        "label": "Tanah, Wakaf & Aset",
-        "terms": ("tanah wakaf", "wakaf", "sertifikasi tanah", "sertifikat tanah", "aset negara", "aset daerah", "tanah negara", "sengketa tanah"),
-        "phrases": ("sertifikasi tanah", "sertifikat tanah", "tanah wakaf", "pengamanan aset"),
+    "PELANTIKAN_PENGANGKATAN": {
+        "label": "Pelantikan & Pengangkatan",
+        "terms": ("pelantikan", "pelantik", "dilantik", "lantik", "pengangkatan", "diangkat"),
+        "phrases": ("dilantik sebagai", "pengangkatan pejabat", "pelantikan pejabat"),
+        "substantive": False,
+    },
+    "PEMBERHENTIAN": {
+        "label": "Pemberhentian",
+        "terms": ("pencopotan", "dicopot", "diberhentikan", "pemberhentian", "copot"),
+        "phrases": ("dicopot dari jabatan", "diberhentikan dari jabatan"),
+        "substantive": False,
+    },
+    "TANAH_WAKAF": {
+        "label": "Tanah & Wakaf",
+        "terms": ("tanah wakaf", "wakaf", "sertifikasi tanah", "sertifikat tanah", "tanah negara", "sengketa tanah", "mafia tanah"),
+        "phrases": ("sertifikasi tanah", "sertifikat tanah", "tanah wakaf", "sengketa tanah", "mafia tanah"),
+        "substantive": True,
+    },
+    "ASET_NEGARA": {
+        "label": "Aset Negara",
+        "terms": ("aset negara", "aset daerah", "barang rampasan", "rampasan negara", "lelang aset", "lelang barang"),
+        "phrases": ("pengamanan aset", "lelang barang bukti", "lelang aset", "lelang mobil", "lelang motor"),
+        "substantive": True,
+    },
+    "PENGELOLAAN_ANGGARAN": {
+        "label": "Pengelolaan Anggaran",
+        "terms": ("anggaran", "dana desa", "dana bos", "dana bos", "keuangan negara", "keuangan daerah", "pagu anggaran", "penyelewengan dana", "penyalahgunaan anggaran"),
+        "phrases": ("dana desa", "dana bos", "penyelewengan dana", "penyalahgunaan anggaran", "anggaran tidak jelas"),
+        "substantive": True,
+    },
+    "PENGADAAN": {
+        "label": "Pengadaan",
+        "terms": ("pengadaan", "tender", "lelang", "proyek fiktif", "kontrak"),
+        "phrases": ("dugaan proyek fiktif", "pengadaan barang", "pengadaan jasa", "proyek fiktif"),
+        "substantive": True,
     },
     "PELAYANAN_PUBLIK": {
         "label": "Pelayanan Publik",
-        "terms": ("pelayanan publik", "bantuan hukum", "posbakum", "layanan hukum", "akses hukum", "pendampingan hukum"),
-        "phrases": ("pelayanan hukum", "bantuan hukum gratis", "akses keadilan", "pelayanan kepada masyarakat"),
+        "terms": ("pelayanan publik", "bantuan hukum", "posbakum", "layanan hukum", "akses hukum", "pendampingan hukum", "pelayanan hukum"),
+        "phrases": ("bantuan hukum gratis", "akses keadilan", "pelayanan kepada masyarakat"),
+        "substantive": True,
     },
-    "KEGIATAN_KELEMBAGAAN": {
-        "label": "Kegiatan Kelembagaan",
-        "terms": ("kunjungan", "rapat", "koordinasi", "sosialisasi", "peresmian", "kerja sama", "kerjasama", "penghargaan", "upacara", "apel", "donor darah", "peringatan", "harla", "harlah", "deklarasi", "launching", "peluncuran", "ziarah"),
-        "phrases": ("kunjungan kerja", "rapat koordinasi", "kerja sama", "sosialisasi hukum", "upacara peringatan"),
+    "INFRASTRUKTUR_PUBLIK": {
+        "label": "Infrastruktur Publik",
+        "terms": ("infrastruktur", "jalan", "drainase", "jembatan", "gedung", "rehabilitasi", "rusak", "kerusakan"),
+        "phrases": ("jalan dan drainase", "infrastruktur rusak", "kerusakan infrastruktur"),
+        "substantive": True,
     },
-    "BARANG_BUKTI": {
-        "label": "Barang Bukti & Pemusnahan",
-        "terms": ("barang bukti", "pemusnahan", "dimusnahkan", "lelang barang bukti", "barang rampasan", "rampasan negara", "pemusnahan barang"),
-        "phrases": ("pemusnahan barang bukti", "barang bukti perkara", "barang rampasan"),
+    "PENDIDIKAN": {
+        "label": "Pendidikan",
+        "terms": ("pendidikan", "sekolah", "guru", "siswa", "murid", "madrasah", "sekolah", "kenakalan remaja"),
+        "phrases": ("jaksa masuk sekolah", "edukasi hukum", "bahaya kenakalan remaja"),
+        "substantive": True,
     },
-    "KEBIJAKAN_HUKUM": {
-        "label": "Kebijakan Hukum",
-        "terms": ("kebijakan", "regulasi", "peraturan", "peraturan daerah", "perda", "undang-undang", "reformasi hukum", "penyuluhan hukum"),
-        "phrases": ("kebijakan hukum", "reformasi hukum", "penyuluhan hukum", "peraturan baru"),
+    "PERLINDUNGAN_MASYARAKAT": {
+        "label": "Perlindungan Masyarakat",
+        "terms": ("perlindungan hukum", "perlindungan masyarakat", "minta perlindungan", "hak warga", "korban", "bebaskan guru", "guru honorer"),
+        "phrases": ("minta perlindungan hukum", "perlindungan bagi warga", "didesak bebaskan", "bebaskan guru honorer"),
+        "substantive": True,
     },
-    "KEJADIAN_KEAMANAN": {
-        "label": "Kejadian & Keamanan",
-        "terms": ("gangguan keamanan", "kecelakaan", "kebakaran", "bencana", "kerusuhan", "ancaman", "pengamanan"),
-        "phrases": ("gangguan keamanan", "situasi keamanan", "pengamanan kegiatan"),
+    "PERILAKU_PERSONAL": {
+        "label": "Perilaku Personal",
+        "terms": ("perselingkuhan", "selingkuh", "perzinaan", "zina", "hamili", "menghamili", "pelakor", "hubungan gelap"),
+        "phrases": ("dugaan perselingkuhan", "dugaan perzinaan", "hubungan gelap", "hamili calon asn"),
+        "substantive": True,
     },
+    "KONTROVERSI_REPUTASI": {
+        "label": "Kontroversi & Reputasi",
+        "terms": ("kontroversi", "polemik", "sindiran", "papan bunga", "protes", "disorot", "kritik", "didesak", "didemo", "viral"),
+        "phrases": ("papan bunga sindiran", "heboh papan bunga", "diminta transparan", "kantor didemo"),
+        "substantive": True,
+    },
+    "PENYELUNDUPAN_SATWA": {
+        "label": "Penyelundupan Satwa",
+        "terms": ("satwa", "satwa dilindungi", "perdagangan satwa", "penyelundupan satwa"),
+        "phrases": ("penyelundupan satwa", "satwa ke thailand"),
+        "substantive": True,
+    },
+}
+
+# Context sengaja dipisahkan agar kata "pelantikan", "kunjungan", "rapat",
+# "diperiksa", dll tidak menjadi issue palsu hanya karena sering muncul.
+
+FEATURE11_CORE_SUBSTANTIVE_ISSUES = {
+    "KORUPSI", "PENYALAHGUNAAN_KEWENANGAN", "PUNGUTAN_LIAR",
+    "KONFLIK_KEPENTINGAN", "PELANGGARAN_ETIKA", "INTEGRITAS",
+    "TRANSPARANSI_AKUNTABILITAS", "NARKOTIKA", "PEMBUNUHAN",
+    "PENGANIAYAAN", "PENIPUAN", "PENGGELAPAN", "PENCURIAN",
+    "PENYELUNDUPAN", "KEKERASAN", "TANAH_WAKAF", "ASET_NEGARA",
+    "PENGELOLAAN_ANGGARAN", "PENGADAAN", "INFRASTRUKTUR_PUBLIK",
+    "PENDIDIKAN", "PERLINDUNGAN_MASYARAKAT", "PERILAKU_PERSONAL",
+    "KONTROVERSI_REPUTASI", "PENYELUNDUPAN_SATWA", "PRA_PERADILAN",
+}
+
+FEATURE11_CONTEXT_TAXONOMY = {
+    "PELANTIKAN": ("pelantikan", "dilantik", "lantik", "pengambilan sumpah"),
+    "MUTASI_JABATAN": ("mutasi", "promosi", "rotasi", "sertijab", "serah terima jabatan", "pengganti", "menjabat"),
+    "PEMBERHENTIAN_JABATAN": ("dicopot", "pencopotan", "diberhentikan", "pemberhentian"),
+    "PEMERIKSAAN": ("diperiksa", "dipanggil", "dimintai keterangan", "klarifikasi"),
+    "PENYIDIKAN": ("penyidikan", "penyelidikan"),
+    "PENUNTUTAN": ("dituntut", "tuntutan", "penuntutan"),
+    "PERSIDANGAN": ("sidang", "persidangan", "disidangkan", "pengadilan"),
+    "PUTUSAN": ("divonis", "vonis", "putusan", "seumur hidup", "pidana mati"),
+    "KUNJUNGAN": ("kunjungan", "kunjungan kerja", "silaturahmi", "audiensi"),
+    "RAPAT_KOORDINASI": ("rapat", "koordinasi", "konsolidasi", "fgd", "evaluasi", "monitoring"),
+    "SOSIALISASI_EDUKASI": ("sosialisasi", "penyuluhan", "penerangan hukum", "edukasi", "jaksa masuk sekolah"),
+    "KERJA_SAMA": ("kerja sama", "kerjasama", "mou", "moa", "sinergi"),
+    "KEGIATAN_RESmi": ("apel", "upacara", "peringatan", "harlah", "ziarah", "donor darah", "bakti sosial"),
+}
+
+FEATURE11_CONTEXT_ONLY_TERMS = {
+    "kejaksaan", "kejari", "kejagung", "jaksa", "kajari", "kantor", "kegiatan",
+    "masyarakat", "warga", "kabupaten", "provinsi", "deli serdang", "sumatera utara",
 }
 
 
@@ -15890,18 +16111,18 @@ def _feature11_term_present(text: str, term: str) -> bool:
 
 
 def _feature11_find_evidence(text: str, terms: tuple, phrases: tuple, limit: int = 12) -> Dict[str, Any]:
-    found_terms = []
-    found_phrases = []
-    for phrase in phrases:
-        if _feature11_term_present(text, phrase):
-            found_phrases.append(phrase)
-    for term in terms:
-        if _feature11_term_present(text, term):
-            found_terms.append(term)
-    return {
-        "terms": found_terms[:limit],
-        "phrases": found_phrases[:limit],
-    }
+    found_terms = [term for term in terms if _feature11_term_present(text, term)]
+    found_phrases = [phrase for phrase in phrases if _feature11_term_present(text, phrase)]
+    return {"terms": found_terms[:limit], "phrases": found_phrases[:limit]}
+
+
+def _feature11_context_tags(title: str, content: str) -> List[str]:
+    combined = f"{title} {content}".strip()
+    tags = []
+    for key, terms in FEATURE11_CONTEXT_TAXONOMY.items():
+        if any(_feature11_term_present(combined, term) for term in terms):
+            tags.append(key)
+    return sorted(tags)
 
 
 def _feature11_score_issue(title: str, content: str, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -15916,8 +16137,26 @@ def _feature11_score_issue(title: str, content: str, spec: Dict[str, Any]) -> Di
         + FEATURE11_CONTENT_WEIGHT * content_terms
         + FEATURE11_PHRASE_BONUS * (title_phrases + content_phrases)
     )
-    # Satu term substantif di judul adalah evidence yang lebih kuat daripada
-    # term procedural di content; taxonomy sendiri menentukan apa yang substantif.
+    # Structured semantic boost for auctioned physical assets. The individual
+    # words "lelang", "mobil", or "motor" are NOT enough on their own.
+    # Distinctiveness bonus: a long, specific headline anchor such as
+    # "praperadilan", "penyelundupan", or "perselingkuhan" should outrank
+    # a generic procedural anchor such as "sidang" when both appear.
+    for term in title_e["terms"]:
+        if len(term) >= 7:
+            score += min(len(term), 12) * FEATURE11_TITLE_DISTINCTIVENESS_FACTOR
+
+    if spec.get("label") == "Aset Negara" and (
+        _feature11_term_present(title, "lelang") and
+        any(_feature11_term_present(title, x) for x in ("mobil", "motor", "barang", "aset"))
+    ):
+        score += 3.5
+        title_e["phrases"].append("lelang aset bergerak")
+    if title_terms or title_phrases:
+        score += FEATURE11_TITLE_ANCHOR_BONUS
+    # Context-only categories are deliberately harder to promote to primary.
+    if not spec.get("substantive", True):
+        score *= 0.72
     return {
         "score": round(float(score), 3),
         "title": title_e,
@@ -15935,22 +16174,27 @@ def _feature11_confidence(score: float, evidence: Dict[str, Any]) -> str:
     return "LOW"
 
 
+def _feature11_specific_topics(scored: List[Dict[str, Any]]) -> List[str]:
+    topics = []
+    for item in scored:
+        topics.extend(item.get("topics", []))
+    return sorted(set(topics), key=lambda x: (-len(x), x))[:20]
+
+
 def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
     title = _feature11_norm_text(article.get("title"))
     content = _feature11_norm_text(article.get("content"))
     combined = f"{title} {content}".strip()
+    context_tags = _feature11_context_tags(title, content)
     scored = []
     for issue_key, spec in FEATURE11_ISSUE_TAXONOMY.items():
         evidence = _feature11_score_issue(title, content, spec)
-        if evidence["score"] < FEATURE11_MIN_PRIMARY_SCORE:
+        if evidence["score"] < FEATURE11_MIN_EVIDENCE_SCORE:
             continue
-        # Topic keywords are the concrete observed terms, not the issue label.
         topics = sorted(set(
-            evidence["title"]["terms"]
-            + evidence["title"]["phrases"]
-            + evidence["content"]["terms"]
-            + evidence["content"]["phrases"]
-        ), key=lambda x: (len(x), x), reverse=True)[:10]
+            evidence["title"]["terms"] + evidence["title"]["phrases"] +
+            evidence["content"]["terms"] + evidence["content"]["phrases"]
+        ), key=lambda x: (-len(x), x))[:10]
         scored.append({
             "issue": issue_key,
             "label": spec["label"],
@@ -15958,47 +16202,105 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "confidence": _feature11_confidence(evidence["score"], evidence),
             "topics": topics,
             "evidence": evidence,
+            "substantive": bool(spec.get("substantive", True)),
         })
-    scored.sort(key=lambda x: (-x["score"], x["issue"]))
-    if not scored:
+    scored.sort(key=lambda x: (-int(x["substantive"]), -x["score"], x["issue"]))
+
+    # ========================================================
+    # FALSE-NEGATIVE GUARD
+    # ========================================================
+    # Satu anchor substantif yang jelas di TITLE sudah cukup untuk
+    # mengangkat issue meskipun konten kosong/pendek. Ini mencegah
+    # headline kriminal/etik yang jelas jatuh ke UNCLASSIFIED.
+    title_anchor = [x for x in scored if x["evidence"]["title"]["terms"] or x["evidence"]["title"]["phrases"]]
+    substantive_scored = [x for x in scored if x["substantive"]]
+    if not scored or not title_anchor or not substantive_scored:
         return {
             "primary_issue": "UNCLASSIFIED",
             "primary_label": "Belum Terklasifikasi",
             "primary_confidence": "LOW",
+            "primary_score": 0.0,
             "secondary_issues": [],
             "topic_keywords": [],
+            "context_tags": context_tags,
             "issue_scores": [],
-            "classification_method": "RULE_BASED_EXPLAINABLE_MULTILABEL",
+            "evidence": {},
+            "classification_method": "RULE_BASED_SEMANTIC_MULTILABEL_V2",
         }
+
+    # Primary substantive issue beats procedural/context issue when both
+    # are present, unless the substantive evidence is only marginal.
     primary = scored[0]
-    secondary = [
-        {
-            "issue": x["issue"],
-            "label": x["label"],
-            "score": x["score"],
-            "confidence": x["confidence"],
-            "topic_keywords": x["topics"],
-        }
-        for x in scored[1:FEATURE11_MAX_SECONDARY + 1]
+    # Core substantive issue outranks procedural/legal-stage labels when the
+    # core issue has direct headline evidence. This prevents:
+    #   "kasus penipuan ... disidangkan" -> PERSIDANGAN
+    # from displacing the actual issue PENIPUAN.
+    core = [
+        x for x in scored
+        if x["issue"] in FEATURE11_CORE_SUBSTANTIVE_ISSUES
+        and (
+            x["evidence"]["title"]["terms"]
+            or x["evidence"]["title"]["phrases"]
+            or x["evidence"]["content"]["phrases"]
+        )
+        and x["score"] >= FEATURE11_MIN_PRIMARY_SCORE
     ]
-    all_topics = []
+    if core:
+        primary = sorted(core, key=lambda x: (-x["score"], x["issue"]))[0]
+    elif not primary["substantive"]:
+        return {
+            "primary_issue": "UNCLASSIFIED",
+            "primary_label": "Belum Terklasifikasi",
+            "primary_confidence": "LOW",
+            "primary_score": 0.0,
+            "secondary_issues": [],
+            "topic_keywords": [],
+            "context_tags": context_tags,
+            "issue_scores": [],
+            "evidence": {},
+            "classification_method": "RULE_BASED_SEMANTIC_MULTILABEL_V2",
+        }
+
+    secondary = []
     for x in scored:
-        all_topics.extend(x["topics"])
+        if x["issue"] == primary["issue"]:
+            continue
+        # Secondary issue must be reasonably supported; weak procedural
+        # labels are not allowed to clutter the result.
+        x_title = x["evidence"]["title"]
+        x_content = x["evidence"]["content"]
+        explicit_secondary = bool(
+            x_title.get("phrases") or x_content.get("phrases")
+            or len(x_title.get("terms", [])) + len(x_content.get("terms", [])) >= 2
+        )
+        if x["score"] >= 2.5 and explicit_secondary:
+            secondary.append({
+                "issue": x["issue"],
+                "label": x["label"],
+                "score": x["score"],
+                "confidence": x["confidence"],
+                "topic_keywords": x["topics"],
+            })
+        if len(secondary) >= FEATURE11_MAX_SECONDARY:
+            break
+
     return {
         "primary_issue": primary["issue"],
         "primary_label": primary["label"],
         "primary_confidence": primary["confidence"],
         "primary_score": primary["score"],
         "secondary_issues": secondary,
-        "topic_keywords": sorted(set(all_topics), key=lambda x: (len(x), x), reverse=True)[:20],
+        "topic_keywords": _feature11_specific_topics(scored),
+        "context_tags": context_tags,
         "issue_scores": [
             {"issue": x["issue"], "label": x["label"], "score": x["score"], "confidence": x["confidence"]}
             for x in scored
         ],
         "evidence": {
             "primary": primary["evidence"],
+            "primary_is_substantive": primary["substantive"],
         },
-        "classification_method": "RULE_BASED_EXPLAINABLE_MULTILABEL",
+        "classification_method": "RULE_BASED_SEMANTIC_MULTILABEL_V2",
     }
 
 
@@ -16026,6 +16328,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
             "primary_score": result.get("primary_score", 0.0),
             "secondary_issues": result["secondary_issues"],
             "topic_keywords": result["topic_keywords"],
+            "context_tags": result.get("context_tags", []),
             "evidence": result.get("evidence", {}),
         }
         rows.append(row)
@@ -16044,13 +16347,19 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_EXPLAINABLE_MULTILABEL",
+            "type": "RULE_BASED_SEMANTIC_MULTILABEL_V2",
             "primary_issue": True,
             "secondary_issues": True,
             "title_weight": FEATURE11_TITLE_WEIGHT,
             "content_weight": FEATURE11_CONTENT_WEIGHT,
             "phrase_bonus": FEATURE11_PHRASE_BONUS,
+            "title_anchor_bonus": FEATURE11_TITLE_ANCHOR_BONUS,
+            "primary_margin": FEATURE11_PRIMARY_MARGIN,
+            "title_distinctiveness_factor": FEATURE11_TITLE_DISTINCTIVENESS_FACTOR,
             "min_primary_score": FEATURE11_MIN_PRIMARY_SCORE,
+            "min_evidence_score": FEATURE11_MIN_EVIDENCE_SCORE,
+            "context_separation": True,
+            "false_negative_guard": True,
             "taxonomy_size": len(FEATURE11_ISSUE_TAXONOMY),
         },
         "summary": {
@@ -16071,7 +16380,7 @@ def _write_issue_topic_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
     html_path = "issue_topic_detection.html"
     with open(json_path, "w", encoding="utf-8") as fh:
         json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
-    fields = ["article_id", "title", "published_date", "source", "primary_issue", "primary_label", "primary_confidence", "primary_score", "secondary_issues", "topic_keywords"]
+    fields = ["article_id", "title", "published_date", "source", "primary_issue", "primary_label", "primary_confidence", "primary_score", "secondary_issues", "topic_keywords", "context_tags"]
     with open(csv_path, "w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
@@ -16087,6 +16396,7 @@ def _write_issue_topic_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
                 "primary_score": row.get("primary_score"),
                 "secondary_issues": "; ".join(x.get("issue", "") for x in row.get("secondary_issues", [])),
                 "topic_keywords": "; ".join(row.get("topic_keywords", [])),
+                "context_tags": "; ".join(row.get("context_tags", [])),
             })
     s = snapshot.get("summary", {})
     rows = []
@@ -16102,9 +16412,10 @@ def _write_issue_topic_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
             f"<td>{html.escape(str(row.get('primary_score') or 0))}</td>" +
             f"<td>{html.escape(secondary)}</td>" +
             f"<td>{html.escape(topics)}</td>" +
+            f"<td>{html.escape(", ".join(row.get('context_tags', [])) or "-")}</td>" +
             "</tr>"
         )
-    html_doc = f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Issue / Topic Detection</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Issue / Topic Detection</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> {html.escape(FEATURE11_VERSION)} &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Production Articles<div class="value">{s.get('production_articles',0)}</div></div><div class="card">Classified<div class="value">{s.get('classified_articles',0)}</div></div><div class="card">Unclassified<div class="value">{s.get('unclassified_articles',0)}</div></div><div class="card">Classification Rate<div class="value">{s.get('classification_rate_pct',0)}%</div></div></div><p><small>Multi-label issue detection. Primary issue dipilih dari evidence berbobot title/content; secondary issues tetap disimpan. Ini bukan sentiment, bukan risk score baru, dan bukan inferensi kausal.</small></p><h2>Issue Distribution</h2><pre>{html.escape(json.dumps(s.get('issue_counts',{}),ensure_ascii=False,indent=2))}</pre><table><thead><tr><th>ID</th><th>Article</th><th>Primary Issue</th><th>Confidence</th><th>Score</th><th>Secondary Issues</th><th>Topics</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="7">Tidak ada artikel.</td></tr>'}</tbody></table></body></html>"""
+    html_doc = f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Issue / Topic Detection</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Issue / Topic Detection</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> {html.escape(FEATURE11_VERSION)} &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Production Articles<div class="value">{s.get('production_articles',0)}</div></div><div class="card">Classified<div class="value">{s.get('classified_articles',0)}</div></div><div class="card">Unclassified<div class="value">{s.get('unclassified_articles',0)}</div></div><div class="card">Classification Rate<div class="value">{s.get('classification_rate_pct',0)}%</div></div></div><p><small>Multi-label issue detection. Primary issue dipilih dari evidence berbobot title/content; secondary issues tetap disimpan. Ini bukan sentiment, bukan risk score baru, dan bukan inferensi kausal.</small></p><h2>Issue Distribution</h2><pre>{html.escape(json.dumps(s.get('issue_counts',{}),ensure_ascii=False,indent=2))}</pre><table><thead><tr><th>ID</th><th>Article</th><th>Primary Issue</th><th>Confidence</th><th>Score</th><th>Secondary Issues</th><th>Topics</th><th>Context</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="8">Tidak ada artikel.</td></tr>'}</tbody></table></body></html>"""
     with open(html_path, "w", encoding="utf-8") as fh:
         fh.write(html_doc)
     return {"json": json_path, "csv": csv_path, "html": html_path}
@@ -16114,21 +16425,41 @@ def _feature11_regression() -> Dict[str, Any]:
     cases = [
         ({"title": "Kejagung Usut Dugaan Korupsi Dana Desa", "content": "Penyidik memeriksa perkara korupsi dan barang bukti."}, "KORUPSI"),
         ({"title": "Polisi Ungkap Kasus Ganja", "content": "Barang bukti narkotika diamankan dalam penanganan perkara."}, "NARKOTIKA"),
-        ({"title": "Kajari Dilantik Sebagai Pejabat Baru", "content": "Pelantikan dan pergantian jabatan berlangsung di kantor."}, "JABATAN_MUTASI"),
-        ({"title": "Kajari Diperiksa Kejagung", "content": "Revanda Sitepu diperiksa terkait dugaan pelanggaran kode etik."}, "ETIKA_INTEGRITAS"),
-        ({"title": "Kejari Gelar Rapat Koordinasi", "content": "Kegiatan koordinasi antarinstansi berlangsung."}, "KEGIATAN_KELEMBAGAAN"),
+        ({"title": "Kajari Dilantik Sebagai Pejabat Baru", "content": "Pelantikan dan pergantian jabatan berlangsung di kantor."}, "UNCLASSIFIED"),
+        ({"title": "Kajari Diperiksa Kejagung", "content": "Revanda Sitepu diperiksa terkait dugaan pelanggaran kode etik."}, "PELANGGARAN_ETIKA"),
+        ({"title": "Kasus Dugaan Penipuan Rp350 Juta", "content": "Korban menolak tawaran damai dalam perkara tersebut."}, "PENIPUAN"),
+        ({"title": "PN Lubukpakam Periksa Dugaan Penggelapan Uang Rp350 Juta", "content": "Perkara penggelapan uang diperiksa di pengadilan."}, "PENGGELAPAN"),
+        ({"title": "Pembunuhan Berencana, Terdakwa Divonis Seumur Hidup", "content": "Majelis hakim menjatuhkan putusan."}, "PEMBUNUHAN"),
+        ({"title": "Dugaan Perselingkuhan Oknum Jaksa dengan CPNS", "content": "Kasus tersebut diperiksa oleh pihak terkait."}, "PERILAKU_PERSONAL"),
+        ({"title": "Mata Rantai Penyelundupan Satwa ke Thailand Terungkap", "content": "Petugas mengungkap jaringan penyelundupan satwa."}, "PENYELUNDUPAN_SATWA"),
+        ({"title": "Jalan dan Drainase di Deliserdang Rusak", "content": "Warga meminta pemerintah memperbaiki infrastruktur."}, "INFRASTRUKTUR_PUBLIK"),
+        ({"title": "Buruan Daftar, Kejari Akan Lelang 1 Mobil dan 3 Motor", "content": "Barang yang dilelang merupakan aset/barang rampasan."}, "ASET_NEGARA"),
         ({"title": "Berita Pagi Ini", "content": "Informasi umum tanpa isu substantif yang terdeteksi."}, "UNCLASSIFIED"),
     ]
     for article, expected in cases:
         got = detect_article_issues(article)
         if got.get("primary_issue") != expected:
-            return {"status": "FAILED", "reason": "REGRESSION_PRIMARY_ISSUE", "expected": expected, "got": got}
-    # Multi-label: corruption + law enforcement should both appear.
+            return {"status": "FAILED", "reason": "REGRESSION_PRIMARY_ISSUE", "expected": expected, "got": got, "title": article.get("title")}
+
+    # Multi-label: corruption remains primary while procedural law issue is secondary.
     multi = detect_article_issues({"title":"Kejagung Usut Dugaan Korupsi", "content":"Penyidikan kasus korupsi dan penyitaan barang bukti terus berjalan."})
     secondary = {x.get("issue") for x in multi.get("secondary_issues", [])}
-    if multi.get("primary_issue") != "KORUPSI" or "PENEGAKAN_HUKUM" not in secondary:
+    if multi.get("primary_issue") != "KORUPSI" or "BARANG_BUKTI" not in secondary:
         return {"status":"FAILED", "reason":"MULTILABEL_REGRESSION", "result":multi}
-    return {"status":"PASSED", "cases":len(cases)}
+
+    # Context separation: pelantikan alone is context, not a negative issue.
+    context_only = detect_article_issues({"title":"Kajari Hadiri Pelantikan Pejabat Baru", "content":"Kegiatan berlangsung tertib dan dihadiri undangan."})
+    if "PELANTIKAN" not in context_only.get("context_tags", []):
+        return {"status":"FAILED", "reason":"CONTEXT_TAG_MISSING", "result":context_only}
+    if context_only.get("primary_issue") == "PELANGGARAN_ETIKA":
+        return {"status":"FAILED", "reason":"CONTEXT_BECAME_ETHICS", "result":context_only}
+
+    # False-negative guard: clear title anchor must classify even with empty content.
+    headline_only = detect_article_issues({"title":"Kasus Dugaan Penipuan Rp350 Juta", "content":""})
+    if headline_only.get("primary_issue") != "PENIPUAN":
+        return {"status":"FAILED", "reason":"FALSE_NEGATIVE_HEADLINE_GUARD", "result":headline_only}
+
+    return {"status": "PASSED", "cases": len(cases), "semantic_guard": True, "false_negative_guard": True}
 
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
