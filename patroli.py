@@ -16032,7 +16032,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 
 # ============================================================
 # FEATURE #11 — ISSUE / TOPIC DETECTION
-# V1 EXPLAINABLE MULTI-LABEL / READ-ONLY
+# V9 EXPLAINABLE MULTI-LABEL / READ-ONLY / FALSE-NEGATIVE RECOVERY GUARD
 # ============================================================
 # Tujuan:
 #   Menentukan ISU/TOPIK yang dibahas artikel, bukan hanya sentiment.
@@ -16047,7 +16047,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V8.1-EVIDENCE-COMPOSITION-FINANCIAL-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9-FALSE-NEGATIVE-RECOVERY-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16756,7 +16756,7 @@ def _feature11_primary_evidence_topics(evidence: Dict[str, Any]) -> List[str]:
 
 
 def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title: str, content: str, combined: str, signal: str) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
-    """V35: recover explicit misses by evidence composition without loosening thresholds."""
+    """V36: recover only explicit substantive/procedural false negatives without lowering global thresholds."""
     if signal not in {"INCIDENT", "ALLEGATION", "DISPUTE"}:
         return scored, None
     by_issue = {x.get("issue"): x for x in scored}
@@ -16790,6 +16790,24 @@ def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title
         candidate["_v35_recovery_reason"] = reason
         return scored, {"issue": issue, "reason": reason, "matched_anchors": matched}
 
+    # 0) Legal-process disruption recovery. A procedural label such as
+    # PERSIDANGAN normally stays context-only, but becomes a legitimate
+    # procedural issue when the article reports a concrete disruption to the
+    # proceeding (postponement, absence, disappearance, repeated delay).
+    has_hearing = any(_feature11_term_present(combined, x) for x in (
+        "sidang", "persidangan", "disidangkan", "pengadilan", "jpu"
+    ))
+    hearing_disruption = any(_feature11_term_present(combined, x) for x in (
+        "ditunda", "ditunda lagi", "ditunda kembali", "menghilang",
+        "tanpa kabar", "tidak hadir", "mangkir", "absen", "tak hadir",
+        "ditunda berkali-kali", "tertunda"
+    ))
+    if has_hearing and hearing_disruption:
+        matched = [x for x in ("sidang", "ditunda", "menghilang", "tanpa kabar", "tidak hadir", "mangkir")
+                   if _feature11_term_present(combined, x)]
+        if matched:
+            return add_recovery_candidate("PERSIDANGAN", "EXPLICIT_HEARING_DISRUPTION", matched)
+
     # 1) Explicit removal: role/object must be close to the removal action.
     removal_anchors = ("dicopot", "copot", "pencopotan", "diberhentikan", "pemberhentian", "dipecat", "copot dari jabatan")
     if any(_feature11_term_present(combined, x) for x in removal_anchors):
@@ -16811,10 +16829,19 @@ def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title
     # ties a Kajari/internal officer to mutation + problematic/functional status.
     has_kajari = any(_feature11_term_present(combined, x) for x in ("kajari", "kajati", "pejabat kejaksaan"))
     has_mutation = any(_feature11_term_present(combined, x) for x in ("mutasi", "dimutasi", "jabatan fungsional"))
-    has_problem_signal = any(_feature11_term_present(combined, x) for x in ("bermasalah", "bersalah", "pelanggaran", "pelanggaran etik", "pelanggaran disiplin"))
+    has_problem_signal = any(_feature11_term_present(combined, x) for x in ("bermasalah", "bersamalah", "bersalah", "pelanggaran", "pelanggaran etik", "pelanggaran disiplin"))
     if has_kajari and has_mutation and has_problem_signal:
-        matched = [x for x in ("kajari", "mutasi", "jabatan fungsional", "bermasalah", "pelanggaran") if _feature11_term_present(combined, x)]
+        matched = [x for x in ("kajari", "mutasi", "jabatan fungsional", "bermasalah", "bersamalah", "pelanggaran") if _feature11_term_present(combined, x)]
         return add_recovery_candidate("PENGAWASAN_INTERNAL", "EXPLICIT_INTERNAL_DISCIPLINARY_MUTATION", matched)
+
+    # Some reports describe the disciplinary consequence as a reassignment to
+    # functional prosecutor status without using the word "mutasi". Require
+    # both an internal officer and an explicit violation signal; functional
+    # status alone remains a neutral appointment/context article.
+    has_functional_status = _feature11_term_present(combined, "jabatan fungsional") or _feature11_term_present(combined, "jaksa fungsional")
+    if has_kajari and has_functional_status and has_problem_signal:
+        matched = [x for x in ("kajari", "jabatan fungsional", "jaksa fungsional", "bermasalah", "bersamalah", "pelanggaran") if _feature11_term_present(combined, x)]
+        return add_recovery_candidate("PENGAWASAN_INTERNAL", "EXPLICIT_INTERNAL_DISCIPLINARY_FUNCTIONAL_REASSIGNMENT", matched)
 
     # 3) Concrete project investigation: project + investigation action +
     # concrete project/value/name. This is not a generic 'penyidikan' boost.
@@ -16840,7 +16867,7 @@ def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title
     # 4) Escape during a named legal process is a substantive legal-event
     # issue, not merely the procedural label PENYIDIKAN.
     escape = any(_feature11_term_present(combined, x) for x in ("kabur", "melarikan diri", "melarikan diri dari"))
-    legal_process = any(_feature11_term_present(combined, x) for x in ("proses penyidikan", "penyidikan", "penyelidikan", "proses hukum", "penuntutan", "persidangan"))
+    legal_process = any(_feature11_term_present(combined, x) for x in ("proses penyidikan", "penyidikan", "penyelidikan", "proses hukum", "penuntutan", "persidangan", "sidang"))
     if escape and legal_process:
         matched = [x for x in ("kabur", "proses penyidikan", "penyidikan", "proses hukum") if _feature11_term_present(combined, x)]
         return add_recovery_candidate("PELARIAN_PROSES_HUKUM", "ESCAPE_DURING_EXPLICIT_LEGAL_PROCESS", matched)
@@ -16938,7 +16965,14 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
 
     substantive = [x for x in scored if x["is_substantive_candidate"]]
     recovery_info = None
-    if signal in {"INCIDENT", "ALLEGATION", "DISPUTE"} and not substantive:
+    # V36: recovery is evaluated even when a weak/generic substantive candidate
+    # already exists. This is required for cases such as:
+    #   - PENGAKAN_HUKUM -> PELARIAN_PROSES_HUKUM when a defendant escapes;
+    #   - PERSIDANGAN context -> procedural issue when a hearing is disrupted;
+    #   - generic mutation/legal-status candidate -> internal disciplinary issue.
+    # The recovery layer remains narrow and evidence-backed; no global score
+    # threshold is lowered.
+    if signal in {"INCIDENT", "ALLEGATION", "DISPUTE"}:
         scored, recovery_info = _feature11_recover_substantive_candidate(scored, title, content, combined, signal)
         substantive = [x for x in scored if x.get("is_substantive_candidate")]
 
@@ -17004,7 +17038,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
             "recovery": recovery_info,
         }
 
@@ -17026,7 +17060,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
             "recovery": recovery_info,
         }
 
@@ -17084,7 +17118,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
+        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
         "recovery": recovery_info,
     }
 
@@ -17136,7 +17170,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_EVIDENCE_COMPOSITION_V8_1",
+            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -17360,10 +17394,32 @@ def _feature11_regression() -> Dict[str, Any]:
         got = detect_article_issues(article)
         if got.get("primary_issue") != expected:
             return {"status":"FAILED","reason":"V35_1_EVIDENCE_GUARD","expected":expected,"got":got,"title":article.get("title")}
-    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases) + len(v35_1_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
+
+    # V36 false-negative recovery regression. These cases deliberately include
+    # a procedural/generic candidate so the test proves the recovery layer can
+    # promote the correct evidence-backed issue without lowering global scores.
+    v36_cases = [
+        ({"title":"Sidang Ustaz Roni Paslani Ditunda Lagi, JPU Menghilang Tanpa Kabar","content":"Sidang ditunda karena JPU tidak hadir tanpa kabar."}, "PERSIDANGAN"),
+        ({"title":"Terdakwa Tuntutan Mati Kabur Usai Sidang di PN Lubuk Pakam","content":"Terdakwa kabur usai sidang dan masih diburu."}, "PELARIAN_PROSES_HUKUM"),
+        ({"title":"Kejagung: 4 Eks Kajari Lakukan Pelanggaran Jadi Jaksa Fungsional","content":"Empat eks Kajari melakukan pelanggaran dan ditempatkan sebagai jaksa fungsional."}, "PENGAWASAN_INTERNAL"),
+        ({"title":"Jaksa Agung Mutasi 4 Kajari Bersamalah ke Jabatan Fungsional","content":"Empat Kajari yang bermasalah dimutasi ke jabatan fungsional."}, "PENGAWASAN_INTERNAL"),
+        ({"title":"Kejagung copot Kajari Deli Serdang dan Padang Lawas","content":"Kepala kejaksaan dicopot dari jabatan."}, "PEMBERHENTIAN"),
+    ]
+    for article, expected in v36_cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status":"FAILED","reason":"V36_FALSE_NEGATIVE_RECOVERY","expected":expected,"got":got,"title":article.get("title")}
+        if expected in {"PERSIDANGAN", "PELARIAN_PROSES_HUKUM", "PENGAWASAN_INTERNAL", "PEMBERHENTIAN"} and not got.get("recovery"):
+            return {"status":"FAILED","reason":"V36_RECOVERY_METADATA_MISSING","expected":expected,"got":got,"title":article.get("title")}
+
+    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases) + len(v35_1_cases) + len(v36_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
             "evidence_composition_guard": True, "financial_evidence_guard": True,
             "budget_topic_only_guard": True,
-            "project_investigation_routing_guard": True}
+            "project_investigation_routing_guard": True,
+            "false_negative_recovery_guard_v36": True,
+            "hearing_disruption_recovery": True,
+            "escape_recovery_override": True,
+            "disciplinary_mutation_recovery": True}
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
@@ -17473,5 +17529,3 @@ def issue_topic_detection_real_read_only() -> Dict[str, Any]:
 
 if __name__ == "__main__":
     main()
-
-
