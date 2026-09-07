@@ -16047,7 +16047,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V5.1-INCIDENT-EVIDENCE-TOPIC-INTEGRITY-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V5-INCIDENT-EVIDENCE-SUBSTANTIVE-RECOVERY-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16734,7 +16734,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_1",
+            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
         }
 
     # Semantic hierarchy: specific substantive issue wins over budget/procedure/context.
@@ -16754,7 +16754,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_1",
+            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
         }
 
     # Secondary labels preserve procedural stages and additional substantive issues,
@@ -16808,7 +16808,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_1",
+        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
     }
 
 def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -16840,17 +16840,6 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
             "context_tags": result.get("context_tags", []),
             "evidence": result.get("evidence", {}),
         }
-        # V32.1 evidence integrity guard: a classified article must expose the
-        # actual matched primary evidence as topic_keywords. In edge cases where
-        # the aggregate topic collector is empty, recover only from the primary
-        # evidence itself; never invent a topic from arbitrary title tokens.
-        if row["primary_issue"] != "UNCLASSIFIED" and not row["topic_keywords"]:
-            primary_evidence = (result.get("evidence") or {}).get("primary") or {}
-            recovered_topics = list(primary_evidence.get("title", {}).get("terms", []))
-            recovered_topics += list(primary_evidence.get("title", {}).get("phrases", []))
-            recovered_topics += list(primary_evidence.get("content", {}).get("terms", []))
-            recovered_topics += list(primary_evidence.get("content", {}).get("phrases", []))
-            row["topic_keywords"] = list(dict.fromkeys(str(x) for x in recovered_topics if str(x).strip()))[:20]
         rows.append(row)
         issue_counts[row["primary_issue"]] = issue_counts.get(row["primary_issue"], 0) + 1
         confidence_counts[row["primary_confidence"]] += 1
@@ -16867,7 +16856,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_1",
+            "type": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
