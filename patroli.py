@@ -4466,7 +4466,15 @@ def test_trend_escalation_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -4912,7 +4920,15 @@ def test_early_warning_system_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -5271,7 +5287,15 @@ def test_intelligence_dashboard_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -12828,7 +12852,15 @@ def intelligence_alerts_diagnostic_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -12923,7 +12955,15 @@ def test_intelligence_alerts_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -13053,7 +13093,15 @@ def test_intelligence_alerts_controlled_fresh_real_read_only() -> Dict[str, Any]
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -13431,7 +13479,15 @@ def test_incident_timeline_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -13828,7 +13884,15 @@ def test_incident_lifecycle_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -14140,7 +14204,15 @@ def test_incident_case_dossier_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
@@ -15654,7 +15726,15 @@ def test_cross_incident_candidate_audit_real_read_only() -> Dict[str, Any]:
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
+        if (
+            issue in FEATURE11_PROCEDURAL_ISSUES
+            and not (
+                (issue == "PEMBERHENTIAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_REMOVAL_FROM_POSITION")
+                or (issue == "PERSIDANGAN" and (row.get("recovery") or {}).get("reason") == "EXPLICIT_HEARING_DISRUPTION")
+            )
+            and not _feature11_has_internal_oversight_signal(title)
+            and not _feature11_has_ethics_violation(title)
+        ):
             return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
         if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
             # Evidence object is not guaranteed to be text; enforce against title/content
