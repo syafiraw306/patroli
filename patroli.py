@@ -16047,7 +16047,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V4-SEMANTIC-SIGNAL-INCIDENT-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V5-INCIDENT-EVIDENCE-SUBSTANTIVE-RECOVERY-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16087,14 +16087,14 @@ FEATURE11_ISSUE_TAXONOMY = {
     },
     "PENYALAHGUNAAN_KEWENANGAN": {
         "label": "Penyalahgunaan Kewenangan",
-        "terms": ("penyalahgunaan kewenangan", "penyalahgunaan wewenang", "abuse of power", "maladministrasi", "kriminalisasi", "intervensi", "tekanan", "ditekan"),
+        "terms": ("penyalahgunaan kewenangan", "penyalahgunaan wewenang", "abuse of power", "maladministrasi", "kriminalisasi", "intervensi", "tekanan", "ditekan", "penyalahgunaan alsintan", "penyalahgunaan bantuan", "penyelewengan alsintan"),
         "phrases": ("penyalahgunaan kewenangan", "penyalahgunaan wewenang", "dugaan kriminalisasi", "dugaan intervensi"),
         "substantive": True,
     },
     "PUNGUTAN_LIAR": {
         "label": "Pungutan Liar",
-        "terms": ("pungli", "pungutan liar", "kutipan liar", "setoran", "uang setoran"),
-        "phrases": ("dugaan pungli", "pungutan liar", "kutipan uang", "setoran ilegal"),
+        "terms": ("pungli", "pungutan liar", "pungutan dana desa", "kutipan liar", "setoran", "uang setoran"),
+        "phrases": ("dugaan pungli", "pungutan liar", "pungutan dana desa", "kutipan uang", "setoran ilegal"),
         "substantive": True,
     },
     "KONFLIK_KEPENTINGAN": {
@@ -16113,6 +16113,20 @@ FEATURE11_ISSUE_TAXONOMY = {
         "label": "Integritas",
         "terms": ("integritas", "berintegritas", "integritas aparatur", "zona integritas"),
         "phrases": ("penguatan integritas", "pembangunan zona integritas"),
+        "substantive": True,
+    },
+    "PENGAWASAN_INTERNAL": {
+        "label": "Pengawasan Internal",
+        "terms": (
+            "pemeriksaan internal", "pengawasan internal", "bidang pengawasan",
+            "diamankan kejagung", "diamankan kejaksaan agung",
+            "pelanggaran disiplin", "pelanggaran etik", "pelanggaran kode etik",
+        ),
+        "phrases": (
+            "diperiksa kejagung", "dipanggil kejagung",
+            "diamankan kejagung", "diamankan kejaksaan agung",
+            "pelanggaran kode etik", "pelanggaran disiplin", "alasan pencopotan",
+        ),
         "substantive": True,
     },
     "TRANSPARANSI_AKUNTABILITAS": {
@@ -16135,7 +16149,7 @@ FEATURE11_ISSUE_TAXONOMY = {
     },
     "PENGANIAYAAN": {
         "label": "Penganiayaan",
-        "terms": ("penganiayaan", "menganiaya", "dianiaya", "aniaya", "penganiayaan berat"),
+        "terms": ("penganiayaan", "menganiaya", "dianiaya", "aniaya", "penganiayaan berat", "pembacokan", "dibacok"),
         "phrases": ("kasus penganiayaan", "dugaan penganiayaan"),
         "substantive": True,
     },
@@ -16171,7 +16185,7 @@ FEATURE11_ISSUE_TAXONOMY = {
     },
     "PENEGAKAN_HUKUM": {
         "label": "Penegakan Hukum",
-        "terms": ("penegakan hukum", "penangkapan", "penggeledahan", "penyitaan", "tersangka", "terdakwa", "terpidana", "perkara", "barang bukti"),
+        "terms": ("penegakan hukum", "penangkapan", "penggeledahan", "penyitaan", "tersangka", "terdakwa", "terpidana", "barang bukti"),
         "phrases": ("proses hukum", "penegakan hukum"),
         "substantive": True,
     },
@@ -16267,7 +16281,7 @@ FEATURE11_ISSUE_TAXONOMY = {
     },
     "INFRASTRUKTUR_PUBLIK": {
         "label": "Infrastruktur Publik",
-        "terms": ("infrastruktur", "jalan", "drainase", "jembatan", "gedung", "rehabilitasi", "rusak", "kerusakan"),
+        "terms": ("infrastruktur", "jalan", "drainase", "jembatan", "gedung", "rehabilitasi", "rusak", "kerusakan", "kantor camat", "proyek tidak selesai"),
         "phrases": ("jalan dan drainase", "infrastruktur rusak", "kerusakan infrastruktur"),
         "substantive": True,
     },
@@ -16307,7 +16321,7 @@ FEATURE11_ISSUE_TAXONOMY = {
 # "diperiksa", dll tidak menjadi issue palsu hanya karena sering muncul.
 
 FEATURE11_CORE_SUBSTANTIVE_ISSUES = {
-    "KORUPSI", "PENYALAHGUNAAN_KEWENANGAN", "PUNGUTAN_LIAR",
+    "KORUPSI", "PENYALAHGUNAAN_KEWENANGAN", "PENGAWASAN_INTERNAL", "PUNGUTAN_LIAR",
     "KONFLIK_KEPENTINGAN", "PELANGGARAN_ETIKA", "INTEGRITAS",
     "TRANSPARANSI_AKUNTABILITAS", "NARKOTIKA", "PEMBUNUHAN",
     "PENGANIAYAAN", "PENIPUAN", "PENGGELAPAN", "PENCURIAN",
@@ -16432,7 +16446,7 @@ FEATURE11_INCIDENT_CUES = (
     "korban", "pelaku", "ditangkap", "diamankan", "ditahan",
     "dituntut", "disidangkan", "divonis", "dibunuh", "membunuh",
     "dianiaya", "ditipu", "digelapkan", "diselundupkan",
-    "diperiksa", "dipanggil", "dilaporkan", "diadukan",
+    "diperiksa", "dipanggil", "diamankan", "dilaporkan", "diadukan",
     "dihentikan", "dihentikan perkara", "penyelidikan", "penyidikan",
     "penuntutan", "putusan", "pemusnahan", "dimusnahkan",
     "lelang", "sengketa", "protes", "didesak", "disorot",
@@ -16442,7 +16456,7 @@ FEATURE11_ISSUE_PRIORITY = {
     # Core incidents / misconduct
     "KORUPSI": 100, "NARKOTIKA": 99, "PEMBUNUHAN": 99, "PENGANIAYAAN": 98,
     "PENIPUAN": 98, "PENGGELAPAN": 98, "PENCURIAN": 97, "PENYELUNDUPAN": 97,
-    "PENYELUNDUPAN_SATWA": 97, "PUNGUTAN_LIAR": 96, "PELANGGARAN_ETIKA": 96,
+    "PENYELUNDUPAN_SATWA": 97, "PUNGUTAN_LIAR": 96, "PELANGGARAN_ETIKA": 96, "PENGAWASAN_INTERNAL": 95.5,
     "KONFLIK_KEPENTINGAN": 95, "PENYALAHGUNAAN_KEWENANGAN": 95,
     "PERILAKU_PERSONAL": 94, "KEKERASAN": 94, "TANAH_WAKAF": 90,
     "ASET_NEGARA": 89, "INFRASTRUKTUR_PUBLIK": 88, "PENDIDIKAN": 87,
@@ -16481,10 +16495,41 @@ def _feature11_is_normative_ethics(text: str) -> bool:
     return any(_feature11_term_present(text, x) for x in FEATURE11_ETHICS_NORMATIVE_ONLY)
 
 
+def _feature11_has_internal_oversight_signal(text: str) -> bool:
+    """V32: deteksi isu pengawasan internal dengan evidence yang cukup.
+
+    Kombinasi generik "diperiksa + dicopot" sengaja tidak cukup.
+    Harus ada sinyal pengawasan/pelanggaran atau pengamanan internal.
+    """
+    internal_object = any(_feature11_term_present(text, x) for x in (
+        "kajari", "kajati", "kasi pidsus", "kasi", "jaksa",
+        "pejabat kejaksaan", "kejari", "kejaksaan negeri",
+    ))
+    oversight_action = any(_feature11_term_present(text, x) for x in (
+        "diperiksa kejagung", "dipanggil kejagung",
+        "kejagung periksa", "kejagung panggil",
+        "diamankan kejagung", "diamankan kejaksaan agung",
+        "dipanggil kejaksaan agung", "diamankan satgas kejagung",
+        "diperiksa bidang pengawasan", "diperiksa kejati",
+    ))
+    removal = any(_feature11_term_present(text, x) for x in (
+        "dicopot", "pencopotan", "diberhentikan",
+        "mutasi karena pelanggaran",
+    ))
+    substantive_oversight = any(_feature11_term_present(text, x) for x in (
+        "pelanggaran etik", "pelanggaran etika", "pelanggaran kode etik",
+        "pelanggaran disiplin", "alasan pencopotan", "bidang pengawasan",
+        "pengawasan internal", "pemeriksaan internal", "diamankan",
+    ))
+    return internal_object and (oversight_action or (removal and substantive_oversight))
+
+
 def _feature11_candidate_is_substantive(item: Dict[str, Any], combined: str, signal: str = "INCIDENT") -> bool:
     issue = item["issue"]
     if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"}:
         return _feature11_has_ethics_violation(combined)
+    if issue == "PENGAWASAN_INTERNAL":
+        return _feature11_has_internal_oversight_signal(combined)
     if issue in FEATURE11_CONTEXT_ONLY_PRIMARY:
         return False
     if not bool(item.get("substantive")):
@@ -16609,6 +16654,12 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         evidence = _feature11_score_issue(title, content, spec)
+        if issue_key == "PENGAWASAN_INTERNAL" and _feature11_has_internal_oversight_signal(combined):
+            evidence["score"] += 3.5
+            evidence["title"].setdefault("phrases", [])
+            if _feature11_term_present(title, "diamankan kejagung") or _feature11_term_present(title, "alasan pencopotan"):
+                evidence["title"]["phrases"].append("pengawasan internal kejaksaan")
+            evidence["score"] = round(evidence["score"], 3)
         if evidence["score"] < FEATURE11_MIN_EVIDENCE_SCORE:
             continue
         topics = sorted(set(
@@ -16628,6 +16679,29 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
         scored.append(item)
 
     substantive = [x for x in scored if x["is_substantive_candidate"]]
+
+    # V32 incident evidence recovery: incident yang jelas tetapi gagal threshold
+    # category-specific dipulihkan hanya jika ada anchor substantif eksplisit.
+    if signal in {"INCIDENT", "ALLEGATION", "DISPUTE"}:
+        recovery_anchors = (
+            "penyalahgunaan alsintan", "proyek fiktif", "proyek tidak selesai",
+            "pembacokan", "dibacok", "penyelundupan", "penipuan", "penggelapan",
+            "korupsi", "narkotika", "pembunuhan", "penganiayaan", "perselingkuhan",
+            "perzinaan", "pungli", "kriminalisasi", "pelanggaran kode etik",
+            "pelanggaran etik", "diperiksa kejagung", "dipanggil kejagung",
+            "diamankan kejagung", "dicopot", "pencopotan",
+        )
+        if any(_feature11_term_present(combined, x) for x in recovery_anchors):
+            recovered = []
+            for x in scored:
+                if x["is_substantive_candidate"]:
+                    recovered.append(x)
+                    continue
+                issue = x["issue"]
+                if issue == "PENGAWASAN_INTERNAL" and _feature11_has_internal_oversight_signal(combined):
+                    x["is_substantive_candidate"] = True
+                    recovered.append(x)
+            substantive = recovered
 
     # NORMATIVE adalah sinyal awal. Jika ternyata ada bukti kejadian substantif,
     # ubah menjadi INCIDENT/ALLEGATION/DISPUTE. Sebaliknya, slogan/nilai/kegiatan
@@ -16660,7 +16734,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_SEMANTIC_HIERARCHY_V3",
+            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
         }
 
     # Semantic hierarchy: specific substantive issue wins over budget/procedure/context.
@@ -16680,7 +16754,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_SEMANTIC_HIERARCHY_V3",
+            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
         }
 
     # Secondary labels preserve procedural stages and additional substantive issues,
@@ -16734,7 +16808,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_SEMANTIC_HIERARCHY_V3",
+        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
     }
 
 def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -16782,7 +16856,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_SEMANTIC_HIERARCHY_V3",
+            "type": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -16882,7 +16956,7 @@ def _feature11_regression() -> Dict[str, Any]:
         # V30 semantic hierarchy guards
         ({"title": "Dugaan Korupsi Dana Desa Batu Lokong Masuk Penyidikan", "content": "Penyidik memulai penyidikan dugaan korupsi dana desa."}, "KORUPSI"),
         ({"title": "Korupsi Dana BOS, Terdakwa Dituntut", "content": "Jaksa menuntut terdakwa dalam perkara korupsi dana BOS."}, "KORUPSI"),
-        ({"title": "Diperiksa Kejagung, Kajari Dicopot", "content": "Pemeriksaan dilakukan dan pejabat kemudian dicopot."}, "UNCLASSIFIED"),
+        ({"title": "Diperiksa Kejagung, Kajari Dicopot", "content": "Pemeriksaan internal dilakukan dan pejabat kemudian dicopot."}, "PENGAWASAN_INTERNAL"),
         ({"title": "Diperiksa Kejagung karena Dugaan Pelanggaran Kode Etik", "content": "Pemeriksaan berkaitan dengan dugaan pelanggaran kode etik."}, "PELANGGARAN_ETIKA"),
         ({"title": "Harlah Kejaksaan, Tekankan Integritas dan Profesionalisme", "content": "Pimpinan menekankan integritas dan profesionalisme dalam kegiatan."}, "UNCLASSIFIED"),
         ({"title": "Kajari Dilantik Sebagai Pejabat Baru", "content": "Kegiatan pelantikan berlangsung tertib."}, "UNCLASSIFIED"),
@@ -16922,7 +16996,27 @@ def _feature11_regression() -> Dict[str, Any]:
     if corruption.get("primary_issue") != "KORUPSI":
         return {"status":"FAILED", "reason":"CORRUPTION_PRIORITY_GUARD", "result":corruption}
 
-    return {"status": "PASSED", "cases": len(cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True}
+    v32_cases = [
+        ({"title":"Dugaan Penyalahgunaan Alsintan Seret Nama Mantan Pejabat Dinas Pertanian", "content":"Dugaan penyalahgunaan alsintan sedang ditelusuri."}, "PENYALAHGUNAAN_KEWENANGAN"),
+        ({"title":"Diamankan Kejagung, Kajari Sergai Diperiksa", "content":"Kajari diperiksa dalam pengawasan internal Kejaksaan Agung."}, "PENGAWASAN_INTERNAL"),
+        ({"title":"Kejati Sumut Respon Proyek Kantor Camat Tidak Selesai", "content":"Proyek kantor camat tidak selesai dan menjadi perhatian penegak hukum."}, "INFRASTRUKTUR_PUBLIK"),
+        ({"title":"Kronologi Pembacokan Mahasiswi saat Akan Sidang Proposal", "content":"Korban dibacok dan pelaku diduga memiliki motif asmara."}, "PENGANIAYAAN"),
+        ({"title":"Kajari Deli Serdang Dicopot Usai Diperiksa Kejagung", "content":"Pemeriksaan internal mendahului pencopotan pejabat."}, "PENGAWASAN_INTERNAL"),
+    ]
+    for article, expected in v32_cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status":"FAILED","reason":"V32_INCIDENT_RECOVERY_REGRESSION","expected":expected,"got":got,"title":article.get("title")}
+
+    generic_internal = detect_article_issues({"title":"Saksi Diperiksa Dalam Perkara", "content":"Pemeriksaan dilakukan terhadap saksi."})
+    if generic_internal.get("primary_issue") != "UNCLASSIFIED":
+        return {"status":"FAILED","reason":"V32_GENERIC_PROCEDURAL_FALSE_POSITIVE","result":generic_internal}
+
+    removal_reason = detect_article_issues({"title":"Kejagung Beberkan Alasan Pencopotan Kajari Deli Serdang", "content":"Kejagung menjelaskan alasan pencopotan setelah pemeriksaan internal."})
+    if removal_reason.get("primary_issue") != "PENGAWASAN_INTERNAL":
+        return {"status":"FAILED","reason":"V32_REMOVAL_OVERSIGHT_RECOVERY","result":removal_reason}
+
+    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 2, "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True}
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
@@ -16950,41 +17044,18 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
         if row.get("primary_issue") != "UNCLASSIFIED" and not row.get("topic_keywords"):
             return {"status":"FAILED", "reason":"CLASSIFIED_WITHOUT_TOPIC_EVIDENCE", "article_id":row.get("article_id")}
     # ========================================================
-    # SEMANTIC HARD GATES — artifact quality, not classification rate
+    # V32 SEMANTIC HARD GATES — artifact quality, not rate
     # ========================================================
     for row in snapshot.get("articles", []):
         issue = row.get("primary_issue")
         signal = row.get("issue_signal")
         title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_ethics_violation(title):
-            return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
-        if issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"} and not _feature11_has_ethics_violation(title + " " + _feature11_norm_text(row.get("evidence", {}).get("primary", {}))):
-            # Evidence object is not guaranteed to be text; enforce against title/content
-            # at runtime through the actual production article below where available.
-            pass
-        if signal == "NORMATIVE" and issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"}:
-            return {"status":"FAILED", "reason":"NORMATIVE_PRIMARY_ETHICS_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
-
-    # Specific substantive issue must outrank procedural/context labels.
-    for row in snapshot.get("articles", []):
-        if row.get("primary_issue") == "PENGELOLAAN_ANGGARAN" and any(
-            term in _feature11_norm_text(row.get("title")) for term in ("korupsi", "tipikor", "suap", "gratifikasi")
-        ):
-            return {"status":"FAILED", "reason":"BUDGET_OVERRIDES_CORRUPTION", "article_id":row.get("article_id"), "title":row.get("title")}
-
-    # ========================================================
-    # SEMANTIC HARD GATES — artifact quality, not classification rate
-    # ========================================================
-    for row in snapshot.get("articles", []):
-        issue = row.get("primary_issue")
-        signal = row.get("issue_signal")
-        title = _feature11_norm_text(row.get("title"))
-        if issue in FEATURE11_PROCEDURAL_ISSUES:
-            return {"status":"FAILED", "reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
-        if signal == "NORMATIVE" and issue in {"PELANGGARAN_ETIKA", "INTEGRITAS"}:
-            return {"status":"FAILED", "reason":"NORMATIVE_PRIMARY_ETHICS_ARTIFACT", "article_id":row.get("article_id"), "title":row.get("title"), "primary_issue":issue}
-        if issue == "PENGELOLAAN_ANGGARAN" and any(term in title for term in ("korupsi", "tipikor", "suap", "gratifikasi")):
-            return {"status":"FAILED", "reason":"BUDGET_OVERRIDES_CORRUPTION", "article_id":row.get("article_id"), "title":row.get("title")}
+        if issue in FEATURE11_PROCEDURAL_ISSUES and not _feature11_has_internal_oversight_signal(title) and not _feature11_has_ethics_violation(title):
+            return {"status":"FAILED","reason":"PROCEDURAL_PRIMARY_LEAK_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
+        if signal == "NORMATIVE" and issue in {"PELANGGARAN_ETIKA","INTEGRITAS","PENEGAKAN_HUKUM","PENGELOLAAN_ANGGARAN","PENDIDIKAN"}:
+            return {"status":"FAILED","reason":"NORMATIVE_GENERIC_ISSUE_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
+        if issue == "PENGELOLAAN_ANGGARAN" and any(term in title for term in ("korupsi","tipikor","suap","gratifikasi")):
+            return {"status":"FAILED","reason":"BUDGET_OVERRIDES_CORRUPTION","article_id":row.get("article_id"),"title":row.get("title")}
 
     after = get_all_articles()
     after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
