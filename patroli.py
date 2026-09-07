@@ -14016,6 +14016,18 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--issue-topic-detection",
+        action="store_true",
+        help="generate Issue/Topic Detection REAL production (read-only)",
+    )
+
+    parser.add_argument(
+        "--test-issue-topic-detection-real",
+        action="store_true",
+        help="test Issue/Topic Detection REAL production (read-only)",
+    )
+
+    parser.add_argument(
         "--cross-incident-candidate-audit-real",
         action="store_true",
         help="audit candidate pair Cross-Incident Relationship pada production nyata secara read-only",
@@ -14363,6 +14375,18 @@ def main() -> None:
         result = test_cross_incident_candidate_audit_real_read_only()
         if result.get("status") == "FAILED":
             raise RuntimeError(f"Test Cross-Incident Candidate Audit REAL gagal: {result.get('reason')}")
+        return
+
+    if args.test_issue_topic_detection_real:
+        result = test_issue_topic_detection_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Issue/Topic Detection REAL gagal: {result.get('reason')}")
+        return
+
+    if args.issue_topic_detection:
+        result = issue_topic_detection_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Issue/Topic Detection gagal: {result.get('reason')}")
         return
 
     if args.test_cross_incident_relationships_real:
@@ -15764,6 +15788,415 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
     print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
     print("TEST CROSS-INCIDENT RELATIONSHIP REAL: PASSED")
     return {"status":"PASSED","snapshot":snapshot,"artifacts":artifacts}
+
+
+# ============================================================
+# FEATURE #11 — ISSUE / TOPIC DETECTION
+# V1 EXPLAINABLE MULTI-LABEL / READ-ONLY
+# ============================================================
+# Tujuan:
+#   Menentukan ISU/TOPIK yang dibahas artikel, bukan hanya sentiment.
+#
+# Prinsip desain:
+#   - Multi-label: satu artikel dapat memiliki beberapa issue.
+#   - Explainable: setiap label memiliki evidence keyword/phrase.
+#   - Title diberi bobot lebih tinggi daripada content.
+#   - Tidak mengubah sentiment, risk, event_key, atau database.
+#   - Ada PRIMARY_ISSUE + SECONDARY_ISSUES + topic keywords.
+#   - Artikel tanpa evidence yang cukup menjadi UNCLASSIFIED.
+#   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
+# ============================================================
+
+FEATURE11_VERSION = "FEATURE11-READONLY-V1-EXPLAINABLE-MULTILABEL"
+FEATURE11_MAX_ARTICLES = 5000
+FEATURE11_MAX_SECONDARY = 4
+FEATURE11_MIN_PRIMARY_SCORE = 3.5
+FEATURE11_HIGH_CONFIDENCE_SCORE = 7.0
+FEATURE11_MEDIUM_CONFIDENCE_SCORE = 4.0
+FEATURE11_TITLE_WEIGHT = 3.0
+FEATURE11_CONTENT_WEIGHT = 1.0
+FEATURE11_PHRASE_BONUS = 1.5
+
+# Taxonomy sengaja berbasis isu substantif. Procedural words seperti
+# "diperiksa", "dipanggil", "ditunjuk" tidak berdiri sendiri sebagai issue.
+FEATURE11_ISSUE_TAXONOMY = {
+    "KORUPSI": {
+        "label": "Korupsi",
+        "terms": ("korupsi", "tindak pidana korupsi", "tipikor", "suap", "gratifikasi", "fee proyek", "mark up", "markup"),
+        "phrases": ("dugaan korupsi", "kasus korupsi", "perkara korupsi", "tindak pidana korupsi"),
+    },
+    "NARKOTIKA": {
+        "label": "Narkotika",
+        "terms": ("narkotika", "narkoba", "ganja", "sabu", "sabu-sabu", "kokain", "ekstasi", "pil ekstasi", "barang haram"),
+        "phrases": ("kasus narkotika", "peredaran narkotika", "peredaran narkoba", "barang bukti narkotika"),
+    },
+    "PENEGAKAN_HUKUM": {
+        "label": "Penegakan Hukum",
+        "terms": ("penegakan hukum", "penangkapan", "penggeledahan", "penyitaan", "tersangka", "penyidikan", "penuntutan", "dakwaan", "sidang", "vonis", "putusan", "terpidana", "perkara"),
+        "phrases": ("proses hukum", "proses penyidikan", "proses penuntutan", "barang bukti"),
+    },
+    "ETIKA_INTEGRITAS": {
+        "label": "Etika & Integritas",
+        "terms": ("etik", "integritas", "disiplin", "pelanggaran etik", "kode etik", "pelanggaran disiplin", "profesionalisme"),
+        "phrases": ("kode etik", "pelanggaran kode etik", "dugaan pelanggaran etik", "pelanggaran disiplin"),
+    },
+    "JABATAN_MUTASI": {
+        "label": "Jabatan & Mutasi",
+        "terms": ("pelantikan", "pelantik", "dilantik", "lantik", "mutasi", "promosi", "rotasi", "diganti", "digantikan", "pencopotan", "dicopot", "plh", "plt", "menjabat", "jabatan", "pengganti"),
+        "phrases": ("pergantian jabatan", "perubahan jabatan", "serah terima jabatan", "pejabat baru"),
+    },
+    "TANAH_WAKAF_ASET": {
+        "label": "Tanah, Wakaf & Aset",
+        "terms": ("tanah wakaf", "wakaf", "sertifikasi tanah", "sertifikat tanah", "aset negara", "aset daerah", "tanah negara", "sengketa tanah"),
+        "phrases": ("sertifikasi tanah", "sertifikat tanah", "tanah wakaf", "pengamanan aset"),
+    },
+    "PELAYANAN_PUBLIK": {
+        "label": "Pelayanan Publik",
+        "terms": ("pelayanan publik", "bantuan hukum", "posbakum", "layanan hukum", "akses hukum", "pendampingan hukum"),
+        "phrases": ("pelayanan hukum", "bantuan hukum gratis", "akses keadilan", "pelayanan kepada masyarakat"),
+    },
+    "KEGIATAN_KELEMBAGAAN": {
+        "label": "Kegiatan Kelembagaan",
+        "terms": ("kunjungan", "rapat", "koordinasi", "sosialisasi", "peresmian", "kerja sama", "kerjasama", "penghargaan", "upacara", "apel", "donor darah", "peringatan", "harla", "harlah", "deklarasi", "launching", "peluncuran", "ziarah"),
+        "phrases": ("kunjungan kerja", "rapat koordinasi", "kerja sama", "sosialisasi hukum", "upacara peringatan"),
+    },
+    "BARANG_BUKTI": {
+        "label": "Barang Bukti & Pemusnahan",
+        "terms": ("barang bukti", "pemusnahan", "dimusnahkan", "lelang barang bukti", "barang rampasan", "rampasan negara", "pemusnahan barang"),
+        "phrases": ("pemusnahan barang bukti", "barang bukti perkara", "barang rampasan"),
+    },
+    "KEBIJAKAN_HUKUM": {
+        "label": "Kebijakan Hukum",
+        "terms": ("kebijakan", "regulasi", "peraturan", "peraturan daerah", "perda", "undang-undang", "reformasi hukum", "penyuluhan hukum"),
+        "phrases": ("kebijakan hukum", "reformasi hukum", "penyuluhan hukum", "peraturan baru"),
+    },
+    "KEJADIAN_KEAMANAN": {
+        "label": "Kejadian & Keamanan",
+        "terms": ("gangguan keamanan", "kecelakaan", "kebakaran", "bencana", "kerusuhan", "ancaman", "pengamanan"),
+        "phrases": ("gangguan keamanan", "situasi keamanan", "pengamanan kegiatan"),
+    },
+}
+
+
+def _feature11_norm_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", normalize_text(value or "").strip().lower())
+
+
+def _feature11_term_present(text: str, term: str) -> bool:
+    term = _feature11_norm_text(term)
+    if not term:
+        return False
+    return bool(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text))
+
+
+def _feature11_find_evidence(text: str, terms: tuple, phrases: tuple, limit: int = 12) -> Dict[str, Any]:
+    found_terms = []
+    found_phrases = []
+    for phrase in phrases:
+        if _feature11_term_present(text, phrase):
+            found_phrases.append(phrase)
+    for term in terms:
+        if _feature11_term_present(text, term):
+            found_terms.append(term)
+    return {
+        "terms": found_terms[:limit],
+        "phrases": found_phrases[:limit],
+    }
+
+
+def _feature11_score_issue(title: str, content: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+    title_e = _feature11_find_evidence(title, spec["terms"], spec["phrases"])
+    content_e = _feature11_find_evidence(content, spec["terms"], spec["phrases"])
+    title_terms = len(title_e["terms"])
+    title_phrases = len(title_e["phrases"])
+    content_terms = len(content_e["terms"])
+    content_phrases = len(content_e["phrases"])
+    score = (
+        FEATURE11_TITLE_WEIGHT * title_terms
+        + FEATURE11_CONTENT_WEIGHT * content_terms
+        + FEATURE11_PHRASE_BONUS * (title_phrases + content_phrases)
+    )
+    # Satu term substantif di judul adalah evidence yang lebih kuat daripada
+    # term procedural di content; taxonomy sendiri menentukan apa yang substantif.
+    return {
+        "score": round(float(score), 3),
+        "title": title_e,
+        "content": content_e,
+    }
+
+
+def _feature11_confidence(score: float, evidence: Dict[str, Any]) -> str:
+    title_count = len(evidence.get("title", {}).get("terms", [])) + len(evidence.get("title", {}).get("phrases", []))
+    content_count = len(evidence.get("content", {}).get("terms", [])) + len(evidence.get("content", {}).get("phrases", []))
+    if score >= FEATURE11_HIGH_CONFIDENCE_SCORE or (title_count >= 1 and content_count >= 1 and score >= FEATURE11_MEDIUM_CONFIDENCE_SCORE):
+        return "HIGH" if score >= FEATURE11_HIGH_CONFIDENCE_SCORE else "MEDIUM"
+    if score >= FEATURE11_MEDIUM_CONFIDENCE_SCORE:
+        return "MEDIUM"
+    return "LOW"
+
+
+def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
+    title = _feature11_norm_text(article.get("title"))
+    content = _feature11_norm_text(article.get("content"))
+    combined = f"{title} {content}".strip()
+    scored = []
+    for issue_key, spec in FEATURE11_ISSUE_TAXONOMY.items():
+        evidence = _feature11_score_issue(title, content, spec)
+        if evidence["score"] < FEATURE11_MIN_PRIMARY_SCORE:
+            continue
+        # Topic keywords are the concrete observed terms, not the issue label.
+        topics = sorted(set(
+            evidence["title"]["terms"]
+            + evidence["title"]["phrases"]
+            + evidence["content"]["terms"]
+            + evidence["content"]["phrases"]
+        ), key=lambda x: (len(x), x), reverse=True)[:10]
+        scored.append({
+            "issue": issue_key,
+            "label": spec["label"],
+            "score": evidence["score"],
+            "confidence": _feature11_confidence(evidence["score"], evidence),
+            "topics": topics,
+            "evidence": evidence,
+        })
+    scored.sort(key=lambda x: (-x["score"], x["issue"]))
+    if not scored:
+        return {
+            "primary_issue": "UNCLASSIFIED",
+            "primary_label": "Belum Terklasifikasi",
+            "primary_confidence": "LOW",
+            "secondary_issues": [],
+            "topic_keywords": [],
+            "issue_scores": [],
+            "classification_method": "RULE_BASED_EXPLAINABLE_MULTILABEL",
+        }
+    primary = scored[0]
+    secondary = [
+        {
+            "issue": x["issue"],
+            "label": x["label"],
+            "score": x["score"],
+            "confidence": x["confidence"],
+            "topic_keywords": x["topics"],
+        }
+        for x in scored[1:FEATURE11_MAX_SECONDARY + 1]
+    ]
+    all_topics = []
+    for x in scored:
+        all_topics.extend(x["topics"])
+    return {
+        "primary_issue": primary["issue"],
+        "primary_label": primary["label"],
+        "primary_confidence": primary["confidence"],
+        "primary_score": primary["score"],
+        "secondary_issues": secondary,
+        "topic_keywords": sorted(set(all_topics), key=lambda x: (len(x), x), reverse=True)[:20],
+        "issue_scores": [
+            {"issue": x["issue"], "label": x["label"], "score": x["score"], "confidence": x["confidence"]}
+            for x in scored
+        ],
+        "evidence": {
+            "primary": primary["evidence"],
+        },
+        "classification_method": "RULE_BASED_EXPLAINABLE_MULTILABEL",
+    }
+
+
+def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    production = [
+        a for a in (articles or [])
+        if isinstance(a, dict) and normalize_text(a.get("title")) and not _is_event_detection_test_article(a)
+    ]
+    production = production[:FEATURE11_MAX_ARTICLES]
+    rows = []
+    issue_counts: Dict[str, int] = {}
+    confidence_counts: Dict[str, int] = {"HIGH": 0, "MEDIUM": 0, "LOW": 0}
+    unclassified = 0
+    for article in production:
+        result = detect_article_issues(article)
+        row = {
+            "article_id": article.get("id"),
+            "title": str(article.get("title") or "").strip(),
+            "published_date": article.get("published_date"),
+            "source": article.get("source"),
+            "primary_issue": result["primary_issue"],
+            "primary_label": result["primary_label"],
+            "primary_confidence": result["primary_confidence"],
+            "primary_score": result.get("primary_score", 0.0),
+            "secondary_issues": result["secondary_issues"],
+            "topic_keywords": result["topic_keywords"],
+            "evidence": result.get("evidence", {}),
+        }
+        rows.append(row)
+        issue_counts[row["primary_issue"]] = issue_counts.get(row["primary_issue"], 0) + 1
+        confidence_counts[row["primary_confidence"]] += 1
+        if row["primary_issue"] == "UNCLASSIFIED":
+            unclassified += 1
+    issue_counts_sorted = dict(sorted(issue_counts.items(), key=lambda kv: (-kv[1], kv[0])))
+    return {
+        "issue_topic_detection_version": FEATURE11_VERSION,
+        "generated_at": now.isoformat(),
+        "mode": "READ-ONLY",
+        "database_write": False,
+        "telegram_send": False,
+        "event_key_changed": False,
+        "risk_score_changed": False,
+        "sentiment_changed": False,
+        "method": {
+            "type": "RULE_BASED_EXPLAINABLE_MULTILABEL",
+            "primary_issue": True,
+            "secondary_issues": True,
+            "title_weight": FEATURE11_TITLE_WEIGHT,
+            "content_weight": FEATURE11_CONTENT_WEIGHT,
+            "phrase_bonus": FEATURE11_PHRASE_BONUS,
+            "min_primary_score": FEATURE11_MIN_PRIMARY_SCORE,
+            "taxonomy_size": len(FEATURE11_ISSUE_TAXONOMY),
+        },
+        "summary": {
+            "production_articles": len(production),
+            "classified_articles": len(production) - unclassified,
+            "unclassified_articles": unclassified,
+            "classification_rate_pct": round(((len(production) - unclassified) / len(production) * 100), 2) if production else 0.0,
+            "issue_counts": issue_counts_sorted,
+            "confidence_counts": confidence_counts,
+        },
+        "articles": rows,
+    }
+
+
+def _write_issue_topic_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    json_path = "issue_topic_detection.json"
+    csv_path = "issue_topic_detection.csv"
+    html_path = "issue_topic_detection.html"
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(snapshot, fh, ensure_ascii=False, indent=2, default=str)
+    fields = ["article_id", "title", "published_date", "source", "primary_issue", "primary_label", "primary_confidence", "primary_score", "secondary_issues", "topic_keywords"]
+    with open(csv_path, "w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for row in snapshot.get("articles", []):
+            writer.writerow({
+                "article_id": row.get("article_id"),
+                "title": row.get("title"),
+                "published_date": row.get("published_date"),
+                "source": row.get("source"),
+                "primary_issue": row.get("primary_issue"),
+                "primary_label": row.get("primary_label"),
+                "primary_confidence": row.get("primary_confidence"),
+                "primary_score": row.get("primary_score"),
+                "secondary_issues": "; ".join(x.get("issue", "") for x in row.get("secondary_issues", [])),
+                "topic_keywords": "; ".join(row.get("topic_keywords", [])),
+            })
+    s = snapshot.get("summary", {})
+    rows = []
+    for row in snapshot.get("articles", [])[:200]:
+        secondary = ", ".join(x.get("label", "") for x in row.get("secondary_issues", [])) or "-"
+        topics = ", ".join(row.get("topic_keywords", [])[:8]) or "-"
+        rows.append(
+            "<tr>" +
+            f"<td>{html.escape(str(row.get('article_id') or '-'))}</td>" +
+            f"<td>{html.escape(str(row.get('title') or '-'))}</td>" +
+            f"<td>{html.escape(str(row.get('primary_label') or '-'))}</td>" +
+            f"<td>{html.escape(str(row.get('primary_confidence') or '-'))}</td>" +
+            f"<td>{html.escape(str(row.get('primary_score') or 0))}</td>" +
+            f"<td>{html.escape(secondary)}</td>" +
+            f"<td>{html.escape(topics)}</td>" +
+            "</tr>"
+        )
+    html_doc = f"""<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Patroli Siber Issue / Topic Detection</title><style>body{{font-family:Arial,sans-serif;margin:30px;background:#f6f7f9;color:#202124}}.grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}}.card{{background:white;padding:14px;border-radius:9px;box-shadow:0 1px 4px #ccc}}.value{{font-size:22px;font-weight:700}}table{{width:100%;border-collapse:collapse;background:white;margin-top:22px;font-size:12px}}th,td{{padding:8px;border-bottom:1px solid #ddd;text-align:left;vertical-align:top}}th{{background:#eee}}small{{color:#666}}</style></head><body><h1>Patroli Siber — Issue / Topic Detection</h1><p><b>Mode:</b> READ-ONLY &nbsp; <b>Version:</b> {html.escape(FEATURE11_VERSION)} &nbsp; <b>Generated:</b> {html.escape(str(snapshot.get('generated_at')))}</p><div class="grid"><div class="card">Production Articles<div class="value">{s.get('production_articles',0)}</div></div><div class="card">Classified<div class="value">{s.get('classified_articles',0)}</div></div><div class="card">Unclassified<div class="value">{s.get('unclassified_articles',0)}</div></div><div class="card">Classification Rate<div class="value">{s.get('classification_rate_pct',0)}%</div></div></div><p><small>Multi-label issue detection. Primary issue dipilih dari evidence berbobot title/content; secondary issues tetap disimpan. Ini bukan sentiment, bukan risk score baru, dan bukan inferensi kausal.</small></p><h2>Issue Distribution</h2><pre>{html.escape(json.dumps(s.get('issue_counts',{}),ensure_ascii=False,indent=2))}</pre><table><thead><tr><th>ID</th><th>Article</th><th>Primary Issue</th><th>Confidence</th><th>Score</th><th>Secondary Issues</th><th>Topics</th></tr></thead><tbody>{''.join(rows) or '<tr><td colspan="7">Tidak ada artikel.</td></tr>'}</tbody></table></body></html>"""
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(html_doc)
+    return {"json": json_path, "csv": csv_path, "html": html_path}
+
+
+def _feature11_regression() -> Dict[str, Any]:
+    cases = [
+        ({"title": "Kejagung Usut Dugaan Korupsi Dana Desa", "content": "Penyidik memeriksa perkara korupsi dan barang bukti."}, "KORUPSI"),
+        ({"title": "Polisi Ungkap Kasus Ganja", "content": "Barang bukti narkotika diamankan dalam penanganan perkara."}, "NARKOTIKA"),
+        ({"title": "Kajari Dilantik Sebagai Pejabat Baru", "content": "Pelantikan dan pergantian jabatan berlangsung di kantor."}, "JABATAN_MUTASI"),
+        ({"title": "Kajari Diperiksa Kejagung", "content": "Revanda Sitepu diperiksa terkait dugaan pelanggaran kode etik."}, "ETIKA_INTEGRITAS"),
+        ({"title": "Kejari Gelar Rapat Koordinasi", "content": "Kegiatan koordinasi antarinstansi berlangsung."}, "KEGIATAN_KELEMBAGAAN"),
+        ({"title": "Berita Pagi Ini", "content": "Informasi umum tanpa isu substantif yang terdeteksi."}, "UNCLASSIFIED"),
+    ]
+    for article, expected in cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status": "FAILED", "reason": "REGRESSION_PRIMARY_ISSUE", "expected": expected, "got": got}
+    # Multi-label: corruption + law enforcement should both appear.
+    multi = detect_article_issues({"title":"Kejagung Usut Dugaan Korupsi", "content":"Penyidikan kasus korupsi dan penyitaan barang bukti terus berjalan."})
+    secondary = {x.get("issue") for x in multi.get("secondary_issues", [])}
+    if multi.get("primary_issue") != "KORUPSI" or "PENEGAKAN_HUKUM" not in secondary:
+        return {"status":"FAILED", "reason":"MULTILABEL_REGRESSION", "result":multi}
+    return {"status":"PASSED", "cases":len(cases)}
+
+
+def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
+    print("=" * 70)
+    print("TEST FEATURE #11 — ISSUE / TOPIC DETECTION / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    regression = _feature11_regression()
+    if regression.get("status") != "PASSED":
+        print(f"[TEST FAIL] REGRESSION | {regression}")
+        return regression
+    print("[TEST PASS] ISSUE TAXONOMY REGRESSION | primary + multi-label")
+    before = get_all_articles()
+    if not before:
+        return {"status":"FAILED", "reason":"EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot = build_issue_topic_detection(before)
+    if snapshot.get("database_write") is not False or snapshot.get("telegram_send") is not False:
+        return {"status":"FAILED", "reason":"MUTATION_FLAG_ENABLED"}
+    if snapshot.get("event_key_changed") is not False or snapshot.get("risk_score_changed") is not False or snapshot.get("sentiment_changed") is not False:
+        return {"status":"FAILED", "reason":"UPSTREAM_FIELD_MUTATION_ENABLED"}
+    if snapshot.get("method",{}).get("primary_issue") is not True or snapshot.get("method",{}).get("secondary_issues") is not True:
+        return {"status":"FAILED", "reason":"ISSUE_OUTPUT_STRUCTURE_INVALID"}
+    for row in snapshot.get("articles", []):
+        if not row.get("primary_issue"):
+            return {"status":"FAILED", "reason":"MISSING_PRIMARY_ISSUE", "article_id":row.get("article_id")}
+        if row.get("primary_issue") != "UNCLASSIFIED" and not row.get("topic_keywords"):
+            return {"status":"FAILED", "reason":"CLASSIFIED_WITHOUT_TOPIC_EVIDENCE", "article_id":row.get("article_id")}
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status":"FAILED", "reason":"DATABASE_CHANGED"}
+    artifacts = _write_issue_topic_artifacts(snapshot)
+    html_text = Path(artifacts["html"]).read_text(encoding="utf-8")
+    if "Issue / Topic Detection" not in html_text or "READ-ONLY" not in html_text:
+        return {"status":"FAILED", "reason":"MALFORMED_ISSUE_TOPIC_HTML"}
+    print(f"[ISSUE] Production articles : {snapshot['summary']['production_articles']}")
+    print(f"[ISSUE] Classified           : {snapshot['summary']['classified_articles']}")
+    print(f"[ISSUE] Unclassified         : {snapshot['summary']['unclassified_articles']}")
+    print(f"[ISSUE] Classification rate  : {snapshot['summary']['classification_rate_pct']}%")
+    print(f"[ISSUE] Distribution         : {snapshot['summary']['issue_counts']}")
+    print(f"[ISSUE] Artifacts             : {artifacts}")
+    print("[TEST PASS] READ-ONLY | database ID tetap")
+    print("[TEST PASS] ISSUE EVIDENCE | setiap classified article memiliki topic evidence")
+    print("[TEST PASS] REAL PRODUCTION ARTICLE FILTER")
+    print("TEST ISSUE / TOPIC DETECTION REAL: PASSED")
+    return {"status":"PASSED", "snapshot":snapshot, "artifacts":artifacts}
+
+
+def issue_topic_detection_real_read_only() -> Dict[str, Any]:
+    print("=" * 70)
+    print("FEATURE #11 — ISSUE / TOPIC DETECTION / REAL PRODUCTION / READ-ONLY")
+    print("=" * 70)
+    articles = get_all_articles()
+    if not articles:
+        return {"status":"FAILED", "reason":"EMPTY_DATABASE"}
+    snapshot = build_issue_topic_detection(articles)
+    artifacts = _write_issue_topic_artifacts(snapshot)
+    print(f"[ISSUE] Production articles : {snapshot['summary']['production_articles']}")
+    print(f"[ISSUE] Classified           : {snapshot['summary']['classified_articles']}")
+    print(f"[ISSUE] Unclassified         : {snapshot['summary']['unclassified_articles']}")
+    print(f"[ISSUE] Classification rate  : {snapshot['summary']['classification_rate_pct']}%")
+    print(f"[ISSUE] Distribution         : {snapshot['summary']['issue_counts']}")
+    print(f"[ISSUE] Artifact JSON         : {artifacts['json']}")
+    print(f"[ISSUE] Artifact HTML         : {artifacts['html']}")
+    print(f"[ISSUE] Artifact CSV          : {artifacts['csv']}")
+    print("[ISSUE] READ-ONLY | database_write=False | telegram=False")
+    return {"status":"PASSED", "snapshot":snapshot, "artifacts":artifacts}
+
 
 # ============================================================
 # ENTRY POINT
