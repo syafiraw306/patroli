@@ -16127,7 +16127,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9.2-RECOVERY-APPLIED-METADATA-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9.3-PENUNTUTAN-RECOVERY-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16944,7 +16944,29 @@ def _feature11_recover_substantive_candidate(scored: List[Dict[str, Any]], title
                        if _feature11_term_present(combined, x)]
             return add_recovery_candidate("INFRASTRUKTUR_PUBLIK", "CONCRETE_PUBLIC_PROJECT_INVESTIGATION", matched)
 
-    # 4) Escape during a named legal process is a substantive legal-event
+    # 4) Explicit prosecution/hearing recovery. A generic mention of
+    # "tuntutan" or "sidang" is not enough. Require composition of a
+    # proceeding/hearing anchor with an explicit prosecution-stage anchor.
+    # This targets concrete reports such as "sidang pembacaan tuntutan"
+    # + "pelaku dituntut", while keeping ordinary hearing mentions as
+    # context-only. Never lower the global score threshold.
+    has_hearing_for_prosecution = any(_feature11_term_present(combined, x) for x in (
+        "sidang", "persidangan", "pembacaan tuntutan", "dibacakan tuntutannya",
+        "pengadilan", "jpu"
+    ))
+    has_explicit_prosecution = any(_feature11_term_present(combined, x) for x in (
+        "dituntut", "tuntutan", "penuntutan", "membacakan tuntutan",
+        "pembacaan tuntutan"
+    ))
+    if has_hearing_for_prosecution and has_explicit_prosecution:
+        matched = [x for x in (
+            "sidang", "persidangan", "pembacaan tuntutan", "jpu",
+            "dituntut", "tuntutan", "penuntutan", "membacakan tuntutan"
+        ) if _feature11_term_present(combined, x)]
+        if len(matched) >= 2:
+            return add_recovery_candidate("PENUNTUTAN", "EXPLICIT_HEARING_AND_PROSECUTION_STAGE", matched)
+
+    # 5) Escape during a named legal process is a substantive legal-event
     # issue, not merely the procedural label PENYIDIKAN.
     escape = any(_feature11_term_present(combined, x) for x in ("kabur", "melarikan diri", "melarikan diri dari"))
     legal_process = any(_feature11_term_present(combined, x) for x in ("proses penyidikan", "penyidikan", "penyelidikan", "proses hukum", "penuntutan", "persidangan", "sidang"))
@@ -17118,7 +17140,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
             "recovery": recovery_info,
         }
 
@@ -17149,7 +17171,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
+            "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
             "recovery": recovery_info,
         }
 
@@ -17207,7 +17229,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
+        "classification_method": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
         "recovery": recovery_info,
     }
 
@@ -17264,7 +17286,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_2_APPLIED_METADATA_GUARD",
+            "type": "RULE_BASED_ISSUE_FALSE_NEGATIVE_RECOVERY_V9_3",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -17506,14 +17528,34 @@ def _feature11_regression() -> Dict[str, Any]:
         if expected in {"PERSIDANGAN", "PELARIAN_PROSES_HUKUM", "PENGAWASAN_INTERNAL", "PEMBERHENTIAN"} and not got.get("recovery"):
             return {"status":"FAILED","reason":"V36_RECOVERY_METADATA_MISSING","expected":expected,"got":got,"title":article.get("title")}
 
-    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases) + len(v35_1_cases) + len(v36_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
+    # V36.5 narrow prosecution-stage recovery. Recover the clear procedural
+    # false negative while rejecting generic hearing coverage.
+    v36_5_cases = [
+        ({"title":"Sidang pembacaan tuntutan, 3 pelaku dituntut 8 sampai 10 tahun", "content":"Dalam sidang pembacaan tuntutan, jaksa menuntut tiga pelaku dengan pidana 8 sampai 10 tahun."}, "PENUNTUTAN", True),
+        ({"title":"Sidang perkara digelar di Pengadilan Negeri", "content":"Sidang berlangsung dengan agenda pemeriksaan saksi."}, "UNCLASSIFIED", False),
+        ({"title":"Penetapan Tersangka Dana BOS Sesuai Proses Hukum", "content":"Cabjari menegaskan proses hukum berjalan sesuai ketentuan."}, "UNCLASSIFIED", False),
+        ({"title":"Dugaan Korupsi Dana Desa Rugemuk", "content":"Penyidik mengusut dugaan korupsi dan kerugian negara."}, "KORUPSI", False),
+        ({"title":"Selidiki Proyek TPI Percut Sei Tuan Rp2,5 Miliar", "content":"Tim menyiapkan penyelidikan proyek rehabilitasi TPI."}, "INFRASTRUKTUR_PUBLIK", False),
+    ]
+    for article, expected, needs_recovery in v36_5_cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status":"FAILED","reason":"V36_5_PENUNTUTAN_RECOVERY_REGRESSION","expected":expected,"got":got,"title":article.get("title")}
+        if needs_recovery and (not got.get("recovery") or got.get("recovery", {}).get("reason") != "EXPLICIT_HEARING_AND_PROSECUTION_STAGE"):
+            return {"status":"FAILED","reason":"V36_5_RECOVERY_METADATA_MISSING","expected":expected,"got":got,"title":article.get("title")}
+        if not needs_recovery and got.get("recovery") and got.get("recovery", {}).get("issue") == "PENUNTUTAN":
+            return {"status":"FAILED","reason":"V36_5_GENERIC_PROSECUTION_RECOVERY_FALSE_POSITIVE","expected":expected,"got":got,"title":article.get("title")}
+
+    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5 + len(v34_cases) + len(v35_cases) + len(negative_cases) + len(v35_1_cases) + len(v36_cases) + len(v36_5_cases), "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True, "substantive_recovery_guard": True,
             "evidence_composition_guard": True, "financial_evidence_guard": True,
             "budget_topic_only_guard": True,
             "project_investigation_routing_guard": True,
             "false_negative_recovery_guard_v36": True,
             "hearing_disruption_recovery": True,
             "escape_recovery_override": True,
-            "disciplinary_mutation_recovery": True}
+            "disciplinary_mutation_recovery": True,
+            "prosecution_stage_recovery_v36_5": True,
+            "generic_hearing_false_positive_guard_v36_5": True}
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
@@ -17587,6 +17629,11 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
             return {"status":"FAILED","reason":"RECOVERY_LAYER_INVALID","article_id":row.get("article_id"),"title":row.get("title"),"issue_layer":row.get("issue_layer")}
         if recovery and recovery.get("issue") != row.get("primary_issue"):
             return {"status":"FAILED","reason":"RECOVERY_PRIMARY_MISMATCH","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery,"primary_issue":row.get("primary_issue")}
+        if recovery and recovery.get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE":
+            if row.get("primary_issue") != "PENUNTUTAN":
+                return {"status":"FAILED","reason":"PENUNTUTAN_RECOVERY_PRIMARY_INVALID","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery,"primary_issue":row.get("primary_issue")}
+            if not any(x in title for x in ("sidang", "persidangan", "pembacaan tuntutan", "jpu")) or not any(x in title for x in ("dituntut", "tuntutan", "penuntutan")):
+                return {"status":"FAILED","reason":"PENUNTUTAN_RECOVERY_WITHOUT_COMPOSITE_TITLE_EVIDENCE","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery}
         if recovery and row.get("primary_issue") == "PENGADAAN" and recovery.get("reason") == "CONCRETE_PROJECT_INVESTIGATION" and not any(x in _feature11_norm_text(row.get("title")) for x in ("proyek", "pengadaan", "tender")):
             return {"status":"FAILED","reason":"PROJECT_RECOVERY_WITHOUT_PROJECT_ANCHOR","article_id":row.get("article_id"),"title":row.get("title")}
         if recovery and row.get("primary_issue") == "PELARIAN_PROSES_HUKUM" and not any(x in _feature11_norm_text(row.get("title")) for x in ("kabur", "melarikan diri")):
