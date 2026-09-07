@@ -57,7 +57,8 @@ on:
           - incident-case-dossier
           - test-incident-case-dossier-real
           - cross-incident-relationships
-          - test-cross-incident-relationships-real
+          - issue-topic-detection
+          - test-issue-topic-detection-real
           - cross-incident-candidate-audit-real
           - send-intelligence-alerts
 
@@ -229,9 +230,13 @@ jobs:
               echo "Generate Cross-Incident Relationship & Entity Link Analysis REAL production (READ-ONLY)..."
               python patroli.py --cross-incident-relationships
 
-            elif [ "${{ inputs.mode }}" = "test-cross-incident-relationships-real" ]; then
-              echo "Menjalankan test Cross-Incident Relationship & Entity Link Analysis REAL production (READ-ONLY)..."
-              python patroli.py --test-cross-incident-relationships-real
+            elif [ "${{ inputs.mode }}" = "issue-topic-detection" ]; then
+              echo "Generate Issue/Topic Detection REAL production (READ-ONLY)..."
+              python patroli.py --issue-topic-detection
+
+            elif [ "${{ inputs.mode }}" = "test-issue-topic-detection-real" ]; then
+              echo "Menjalankan test Issue/Topic Detection REAL production (READ-ONLY)..."
+              python patroli.py --test-issue-topic-detection-real
 
             elif [ "${{ inputs.mode }}" = "cross-incident-candidate-audit-real" ]; then
               echo "Menjalankan Candidate Audit + Precision Guard Cross-Incident REAL production (READ-ONLY)..."
@@ -401,7 +406,7 @@ jobs:
       # UPLOAD FEATURE #10 — CROSS-INCIDENT RELATIONSHIP
       # ==========================================
       - name: Upload Cross-Incident Relationships
-        if: ${{ inputs.mode == 'cross-incident-relationships' || inputs.mode == 'test-cross-incident-relationships-real' }}
+        if: ${{ inputs.mode == 'cross-incident-relationships' }}
         uses: actions/upload-artifact@v4
         with:
           name: cross-incident-relationships
@@ -412,6 +417,21 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       
+      # ==========================================
+      # FEATURE #11 — ISSUE / TOPIC DETECTION
+      # ==========================================
+      - name: Upload Issue Topic Detection
+        if: ${{ inputs.mode == 'issue-topic-detection' || inputs.mode == 'test-issue-topic-detection-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-topic-detection
+          path: |
+            issue_topic_detection.json
+            issue_topic_detection.html
+            issue_topic_detection.csv
+          if-no-files-found: warn
+          retention-days: 30
+
       # ==========================================
       # FEATURE #10 — PERSON CONTEXT GUARD V26
       # ==========================================
