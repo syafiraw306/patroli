@@ -418,7 +418,7 @@ jobs:
           retention-days: 30
       
       # ==========================================
-      # FEATURE #11 — ISSUE / TOPIC DETECTION
+      # FEATURE #11 V2 — SEMANTIC ISSUE / TOPIC DETECTION
       # ==========================================
       - name: Upload Issue Topic Detection
         if: ${{ inputs.mode == 'issue-topic-detection' || inputs.mode == 'test-issue-topic-detection-real' }}
