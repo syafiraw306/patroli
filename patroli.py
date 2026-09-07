@@ -16047,7 +16047,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V5-INCIDENT-EVIDENCE-SUBSTANTIVE-RECOVERY-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V6-ISSUE-HIERARCHY-SUBSTANTIVE-OVERRIDE-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16452,6 +16452,27 @@ FEATURE11_INCIDENT_CUES = (
     "lelang", "sengketa", "protes", "didesak", "disorot",
 )
 
+# V33: narrow evidence-backed primary hierarchy rules. These rules only
+# reorder candidates that already have sufficient evidence; they never
+# create a classification merely to raise the classification rate.
+FEATURE11_EXPLICIT_SUBSTANTIVE_OVERRIDES = (
+    ("KORUPSI", ("korupsi", "tipikor", "tindak pidana korupsi", "dugaan korupsi", "kasus korupsi")),
+    ("NARKOTIKA", ("narkotika", "narkoba", "sabu", "ganja", "ekstasi", "kasus narkotika")),
+    ("PEMBUNUHAN", ("pembunuhan", "pembunuh", "membunuh", "dibunuh", "bunuh")),
+    ("PENGANIAYAAN", ("penganiayaan", "dianiaya", "menganiaya", "pembacokan", "dibacok")),
+    ("PENIPUAN", ("penipuan", "menipu", "ditipu", "tipu")),
+    ("PENGGELAPAN", ("penggelapan", "menggelapkan", "digelapkan")),
+    ("PENCURIAN", ("pencurian", "mencuri", "dicuri", "pencuri")),
+    ("PENYELUNDUPAN_SATWA", ("penyelundupan satwa", "satwa dilindungi", "perdagangan satwa")),
+    ("PENYELUNDUPAN", ("penyelundupan", "menyelundupkan", "diselundupkan")),
+    ("PUNGUTAN_LIAR", ("pungli", "pungutan liar", "pungutan dana desa")),
+    ("PELANGGARAN_ETIKA", ("pelanggaran etik", "pelanggaran etika", "pelanggaran kode etik", "melanggar kode etik")),
+)
+FEATURE11_REPUTATION_CONTEXT_TERMS = (
+    "papan bunga", "papan bunga sindiran", "heboh papan bunga",
+    "sindiran", "viral", "polemik", "kontroversi", "protes", "disorot",
+)
+
 FEATURE11_ISSUE_PRIORITY = {
     # Core incidents / misconduct
     "KORUPSI": 100, "NARKOTIKA": 99, "PEMBUNUHAN": 99, "PENGANIAYAAN": 98,
@@ -16545,9 +16566,31 @@ def _feature11_candidate_is_substantive(item: Dict[str, Any], combined: str, sig
     return True
 
 
+def _feature11_apply_primary_hierarchy(substantive: List[Dict[str, Any]], title: str) -> List[Dict[str, Any]]:
+    """Reorder evidence-backed candidates using narrow semantic rules."""
+    if not substantive:
+        return substantive
+    by_issue = {x["issue"]: x for x in substantive}
+    matched = []
+    for issue, anchors in FEATURE11_EXPLICIT_SUBSTANTIVE_OVERRIDES:
+        candidate = by_issue.get(issue)
+        if candidate and any(_feature11_term_present(title, anchor) for anchor in anchors):
+            matched.append(candidate)
+    if matched:
+        winner = max(matched, key=lambda x: (FEATURE11_ISSUE_PRIORITY.get(x["issue"], 0), float(x.get("score", 0))))
+        winner["_v33_primary_override"] = True
+        return substantive
+    reputation = by_issue.get("KONTROVERSI_REPUTASI")
+    personal = by_issue.get("PERILAKU_PERSONAL")
+    if reputation and personal and any(_feature11_term_present(title, term) for term in FEATURE11_REPUTATION_CONTEXT_TERMS):
+        reputation["_v33_primary_override"] = True
+    return substantive
+
+
 def _feature11_primary_sort_key(item: Dict[str, Any]) -> tuple:
     issue = item["issue"]
     return (
+        int(bool(item.get("_v33_primary_override"))),
         FEATURE11_ISSUE_PRIORITY.get(issue, 0),
         int(item.get("evidence", {}).get("title", {}).get("terms", []) != [] or
             item.get("evidence", {}).get("title", {}).get("phrases", []) != []),
@@ -16749,10 +16792,11 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_3",
+            "classification_method": "RULE_BASED_ISSUE_HIERARCHY_V6",
         }
 
-    # Semantic hierarchy: specific substantive issue wins over budget/procedure/context.
+    # V33 semantic hierarchy: reorder only candidates that already have evidence.
+    substantive = _feature11_apply_primary_hierarchy(substantive, title)
     primary = max(substantive, key=_feature11_primary_sort_key)
 
     # Confidence should still reflect evidence strength, not priority alone.
@@ -16769,7 +16813,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
+            "classification_method": "RULE_BASED_ISSUE_HIERARCHY_V6",
         }
 
     # Secondary labels preserve procedural stages and additional substantive issues,
@@ -16826,7 +16870,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5_3",
+        "classification_method": "RULE_BASED_ISSUE_HIERARCHY_V6",
     }
 
 def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -16877,7 +16921,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_INCIDENT_EVIDENCE_RECOVERY_V5",
+            "type": "RULE_BASED_ISSUE_HIERARCHY_V6",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -16996,6 +17040,18 @@ def _feature11_regression() -> Dict[str, Any]:
         if got.get("primary_issue") != expected:
             return {"status": "FAILED", "reason": "REGRESSION_PRIMARY_ISSUE", "expected": expected, "got": got, "title": article.get("title")}
 
+    hierarchy_corruption = detect_article_issues({"title":"Usut Dugaan Korupsi Dana Desa Batu Lokong Rp1 Miliar", "content":"Penyelidikan dugaan korupsi dana desa."})
+    if hierarchy_corruption.get("primary_issue") != "KORUPSI":
+        return {"status":"FAILED", "reason":"V33_CORRUPTION_HIERARCHY", "result":hierarchy_corruption}
+
+    hierarchy_reputation = detect_article_issues({"title":"Dugaan Perselingkuhan, Heboh Papan Bunga Sindiran di Acara Pelantikan", "content":"Polemik publik mencuat."})
+    if hierarchy_reputation.get("primary_issue") != "KONTROVERSI_REPUTASI":
+        return {"status":"FAILED", "reason":"V33_REPUTATION_HIERARCHY", "result":hierarchy_reputation}
+
+    hierarchy_animal = detect_article_issues({"title":"Mata Rantai Penyelundupan Satwa ke Thailand Terungkap", "content":"Petugas mengungkap jaringan penyelundupan satwa."})
+    if hierarchy_animal.get("primary_issue") != "PENYELUNDUPAN_SATWA":
+        return {"status":"FAILED", "reason":"V33_SPECIFIC_TOPIC_HIERARCHY", "result":hierarchy_animal}
+
     multi = detect_article_issues({"title":"Kejagung Usut Dugaan Korupsi", "content":"Penyidikan kasus korupsi dan penyitaan barang bukti terus berjalan."})
     secondary = {x.get("issue") for x in multi.get("secondary_issues", [])}
     if multi.get("primary_issue") != "KORUPSI":
@@ -17037,7 +17093,7 @@ def _feature11_regression() -> Dict[str, Any]:
     if removal_reason.get("primary_issue") != "PENGAWASAN_INTERNAL":
         return {"status":"FAILED","reason":"V32_REMOVAL_OVERSIGHT_RECOVERY","result":removal_reason}
 
-    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 2, "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True}
+    return {"status": "PASSED", "cases": len(cases) + len(v32_cases) + 5, "semantic_guard": True, "false_negative_guard": True, "issue_signal_guard": True, "incident_recovery_guard": True}
 
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
@@ -17085,6 +17141,8 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
             return {"status":"FAILED","reason":"NORMATIVE_GENERIC_ISSUE_ARTIFACT","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue}
         if issue == "PENGELOLAAN_ANGGARAN" and any(term in title for term in ("korupsi","tipikor","suap","gratifikasi")):
             return {"status":"FAILED","reason":"BUDGET_OVERRIDES_CORRUPTION","article_id":row.get("article_id"),"title":row.get("title")}
+        if issue == "PERILAKU_PERSONAL" and any(term in title for term in FEATURE11_REPUTATION_CONTEXT_TERMS):
+            return {"status":"FAILED","reason":"PERSONAL_OVERRIDES_REPUTATION_CONTEXT","article_id":row.get("article_id"),"title":row.get("title")}
 
     after = get_all_articles()
     after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
