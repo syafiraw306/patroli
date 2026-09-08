@@ -1,0 +1,43 @@
+name: Feature 13 - Location Real Integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_per_keyword:
+        description: 'Maksimum kandidat diproses per keyword lokasi'
+        required: false
+        default: '3'
+      max_candidates:
+        description: 'Maksimum total kandidat yang diproses'
+        required: false
+        default: '75'
+
+jobs:
+  feature13-real-integration:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Feature 13 real integration test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TAHUN_TARGET: '2026'
+          FEATURE13_REAL_MAX_PER_KEYWORD: ${{ inputs.max_per_keyword }}
+          FEATURE13_REAL_MAX_CANDIDATES: ${{ inputs.max_candidates }}
+          FEATURE13_REAL_MAX_WORKERS: '5'
+        run: |
+          python patroli.py --test-feature13-real
