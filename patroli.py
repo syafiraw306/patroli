@@ -16139,7 +16139,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9.8-PRODUCTION-QUALITY-GATE"
+FEATURE11_VERSION = "FEATURE11-READONLY-V10.0-PROCEDURAL-SUBSTANTIVE-PRECISION-GUARD"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -16799,6 +16799,17 @@ def _feature11_apply_semantic_precision_guard(substantive: List[Dict[str, Any]],
         )):
             removal["_v37_primary_override"] = True
 
+    # V38: an explicit alleged extortion issue must outrank a procedural
+    # removal label. Require both an existing PUNGUTAN_LIAR candidate and an
+    # explicit title anchor; do not manufacture a substantive issue here.
+    pungli = by_issue.get("PUNGUTAN_LIAR")
+    removal_primary = by_issue.get("PEMBERHENTIAN")
+    explicit_pungli = any(_feature11_term_present(title, x) for x in (
+        "pungli", "pungutan liar"
+    ))
+    if pungli and removal_primary and explicit_pungli:
+        pungli["_v38_primary_override"] = True
+
     # V37.3: when the headline explicitly says the legal status is based on
     # the person's role rather than their profession, do not let the profession
     # (e.g. guru) become the primary issue. Prefer an existing legal-process
@@ -16815,6 +16826,7 @@ def _feature11_apply_semantic_precision_guard(substantive: List[Dict[str, Any]],
 def _feature11_primary_sort_key(item: Dict[str, Any]) -> tuple:
     issue = item["issue"]
     return (
+        int(bool(item.get("_v38_primary_override"))),
         int(bool(item.get("_v37_primary_override"))),
         int(bool(item.get("_v33_primary_override"))),
         FEATURE11_ISSUE_PRIORITY.get(issue, 0),
@@ -17237,7 +17249,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
                 for x in scored
             ],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V10_0",
             "recovery": recovery_info,
         }
 
@@ -17269,7 +17281,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "context_tags": context_tags,
             "issue_scores": [],
             "evidence": {},
-            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
+            "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V10_0",
             "recovery": recovery_info,
         }
 
@@ -17327,7 +17339,7 @@ def detect_article_issues(article: Dict[str, Any]) -> Dict[str, Any]:
             "primary_is_substantive": True,
             "issue_signal": signal,
         },
-        "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
+        "classification_method": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V10_0",
         "recovery": recovery_info,
     }
 
@@ -17384,7 +17396,7 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
         "risk_score_changed": False,
         "sentiment_changed": False,
         "method": {
-            "type": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V9_7",
+            "type": "RULE_BASED_ISSUE_SEMANTIC_PRECISION_V10_0",
             "issue_signal": True,
             "issue_layer": True,
             "primary_issue": True,
@@ -17655,6 +17667,15 @@ def _feature11_regression() -> Dict[str, Any]:
         if got.get("primary_issue") != expected:
             return {"status":"FAILED","reason":"V37_SEMANTIC_PRECISION_REGRESSION","expected":expected,"got":got,"title":article.get("title")}
 
+    v38_procedural_substantive_cases = [
+        ({"title":"Kajari Padang Lawas dan Deli Serdang Dicopot Mendadak karena Diduga Pungli ke Kades", "content":"Kejati Sumut menjelaskan pencopotan tersebut terkait dugaan pungli kepada kepala desa."}, "PUNGUTAN_LIAR"),
+        ({"title":"Kajari Deli Serdang Dicopot", "content":"Kejari dicopot dan pejabat pengganti ditunjuk."}, "PEMBERHENTIAN"),
+    ]
+    for article, expected in v38_procedural_substantive_cases:
+        got = detect_article_issues(article)
+        if got.get("primary_issue") != expected:
+            return {"status":"FAILED","reason":"V38_PROCEDURAL_SUBSTANTIVE_PRECISION_REGRESSION","expected":expected,"got":got,"title":article.get("title")}
+
     v36_5_cases = [
         ({"title":"Sidang pembacaan tuntutan, 3 pelaku dituntut 8 sampai 10 tahun", "content":"Dalam sidang pembacaan tuntutan, jaksa menuntut tiga pelaku dengan pidana 8 sampai 10 tahun."}, "PENUNTUTAN", True),
         ({"title":"Sidang perkara digelar di Pengadilan Negeri", "content":"Sidang berlangsung dengan agenda pemeriksaan saksi."}, "UNCLASSIFIED", False),
@@ -17686,7 +17707,8 @@ def _feature11_regression() -> Dict[str, Any]:
             "semantic_precision_guard_v37": True,
             "kdrt_primary_guard_v37": True,
             "removal_primary_guard_v37": True,
-            "legal_status_vs_profession_guard_v37": True}
+            "legal_status_vs_profession_guard_v37": True,
+            "procedural_substantive_precision_guard_v38": True}
 
 
 def _feature11_production_quality_gate(snapshot: Dict[str, Any]) -> Dict[str, Any]:
@@ -17771,7 +17793,13 @@ def _feature11_production_quality_gate(snapshot: Dict[str, Any]) -> Dict[str, An
                 if not (has_hearing and has_prosecution):
                     findings.append({"type":"PROSECUTION_RECOVERY_TITLE_MISMATCH","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery})
 
-        # 6) Every classified row needs evidence; keep this duplicated in the
+        # 6) Explicit PUNGUTAN LIAR must not be hidden behind procedural
+        # PEMBERHENTIAN. This is a confirmed semantic contradiction, so the
+        # gate is fail-closed if a future regression reintroduces it.
+        if issue == "PEMBERHENTIAN" and any(_feature11_term_present(title, x) for x in ("pungli", "pungutan liar")):
+            findings.append({"type":"PROCEDURAL_SUBSTANTIVE_PRIMARY_CONTRADICTION","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue,"expected":"PUNGUTAN_LIAR"})
+
+        # 7) Every classified row needs evidence; keep this duplicated in the
         # quality gate so future test refactors cannot silently remove it.
         if issue != "UNCLASSIFIED" and not row.get("topic_keywords"):
             findings.append({"type":"CLASSIFIED_WITHOUT_TOPIC_EVIDENCE","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue})
