@@ -1,0 +1,40 @@
+name: Seed Deli Serdang Location Articles 2026
+
+on:
+  workflow_dispatch:
+
+jobs:
+  seed-deli-serdang:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install requests beautifulsoup4 python-dateutil python-dotenv supabase
+          fi
+
+      - name: Verify required files
+        run: |
+          test -f database.py
+          test -f seed_deli_serdang_location_2026.py
+
+      - name: Run Deli Serdang 2026 seed
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python seed_deli_serdang_location_2026.py
