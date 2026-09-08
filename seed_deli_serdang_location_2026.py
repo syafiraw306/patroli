@@ -18,6 +18,7 @@ import html as html_lib
 import json
 import re
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Tuple
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -64,6 +65,23 @@ VERIFIED_DATES: Dict[str, str] = {
     "https://rri.co.id/medan/berita-lain/2632822/pemkab-pertemukan-pt-indofarm-dan-petani-ikan-sengketa-berakhir-damai": "2026-08-07",
     "https://analisasibernews.com/2026/08/20/aktivitas-galian-c-di-tandukan-raga-disorot-warga-minta-aparat-dan-esdm-lakukan-verifikasi/": "2026-08-20",
     "https://gerindrasumut.id/pasang-pembatas-akses-truk-ke-sungai-ular-dibatasi-cegah-abrasi/": "2026-08-29",
+}
+
+# Expected titles for fallback discovery. These are used when the publisher returns 403
+# before the article page can be read, so the Google News RSS query still has a precise title.
+EXPECTED_TITLES: Dict[str, str] = {
+    "https://sinata.id/kontrak-perbaikan-jalan-darsono-hamparan-perak-masih-berjalan":
+        "Kontrak Perbaikan Jalan Darsono Hamparan Perak Masih Berjalan",
+    "https://rri.co.id/medan/regional/2563185/kwarcab-deli-serdang-raih-predikat-kontingen-terbaik-i-jamdasu-xi-sumut":
+        "Kwarcab Deli Serdang Raih Predikat Kontingen Terbaik I Jamdasu XI Sumut",
+    "https://mistar.id/news/sumut/20-ranperda-deli-serdang-2026-disahkan-pemekaran-percut-sei-tuan-dan-sunggal-jadi-sorotan":
+        "20 Ranperda Deli Serdang 2026 Disahkan, Pemekaran Percut Sei Tuan dan Sunggal Jadi Sorotan",
+    "https://tribrata.tv/11/08/sumatera-utara/178259/waduh-agunan-shm-diduga-hilang-di-bri/":
+        "Waduh! Agunan SHM Diduga Hilang di BRI",
+    "https://mistar.id/news/hukum-peristiwa/kaca-depan-dump-truk-dilempar-otk-pemilik-lapor-ke-polsek-talun-kenas":
+        "Kaca Depan Dump Truk Dilempar OTK, Pemilik Lapor ke Polsek Talun Kenas",
+    "https://rri.co.id/medan/berita-lain/2632822/pemkab-pertemukan-pt-indofarm-dan-petani-ikan-sengketa-berakhir-damai":
+        "Pemkab Pertemukan PT Indofarm dan Petani Ikan, Sengketa Berakhir Damai",
 }
 
 SEED_URLS: List[Tuple[str, str]] = [
@@ -316,6 +334,38 @@ def google_news_rss_query(title: str, domain: str) -> str:
     return "https://news.google.com/rss/search?q=" + quote_plus(q) + "&hl=id&gl=ID&ceid=ID:id"
 
 
+def _rss_text(element: Optional[ET.Element], tag: str) -> str:
+    if element is None:
+        return ""
+    node = element.find(tag)
+    if node is None:
+        return ""
+    return clean("".join(node.itertext()))
+
+
+def _rss_items(xml_text: str) -> List[Dict[str, str]]:
+    """Parse Google News RSS without BeautifulSoup's optional lxml/xml parser."""
+    root = ET.fromstring(xml_text)
+    items: List[Dict[str, str]] = []
+    for item in root.findall('.//item'):
+        items.append({
+            "title": _rss_text(item, "title"),
+            "description": _rss_text(item, "description"),
+            "pubDate": _rss_text(item, "pubDate"),
+            "link": _rss_text(item, "link"),
+            "source": _rss_text(item, "source"),
+        })
+    return items
+
+
+def _title_similarity(a: str, b: str) -> float:
+    ta = set(re.findall(r"[a-z0-9]+", a.lower()))
+    tb = set(re.findall(r"[a-z0-9]+", b.lower()))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(1, len(ta))
+
+
 def fetch_google_news_fallback(
     session: requests.Session,
     original_url: str,
@@ -323,43 +373,53 @@ def fetch_google_news_fallback(
     seed_keyword: str,
 ) -> Optional[Dict]:
     domain = urlparse(original_url).netloc.lower().replace("www.", "")
-    queries = [
-        google_news_rss_query(expected_title, domain),
-        "https://news.google.com/rss/search?q=" + quote_plus(f'"{seed_keyword}" "Deli Serdang" {domain}') + "&hl=id&gl=ID&ceid=ID:id",
-    ]
+    expected_title = expected_title or EXPECTED_TITLES.get(original_url, "")
 
-    for rss_url in queries:
+    queries = []
+    if expected_title:
+        queries.append(f'"{expected_title}" {domain}')
+    queries.append(f'"{seed_keyword}" "Deli Serdang" {domain}')
+
+    for q in queries:
+        rss_url = (
+            "https://news.google.com/rss/search?q=" + quote_plus(q) +
+            "&hl=id&gl=ID&ceid=ID:id"
+        )
         try:
             response = session.get(rss_url, timeout=TIMEOUT)
-            if response.status_code != 200:
-                continue
-            soup = BeautifulSoup(response.text, "xml")
-            items = soup.find_all("item")
-            for item in items[:15]:
-                title = clean(item.find("title").get_text(" ", strip=True) if item.find("title") else "")
-                description = clean(item.find("description").get_text(" ", strip=True) if item.find("description") else "")
-                pub = parse_date(item.find("pubDate").get_text(" ", strip=True) if item.find("pubDate") else "")
-                link = clean(item.find("link").get_text(" ", strip=True) if item.find("link") else "")
-
-                # Prefer an item whose title is materially similar to the seed title.
-                title_tokens = set(re.findall(r"[a-z0-9]+", expected_title.lower()))
-                item_tokens = set(re.findall(r"[a-z0-9]+", title.lower()))
-                similarity = len(title_tokens & item_tokens) / max(1, len(title_tokens))
-                if similarity < 0.45 and domain not in title.lower() and seed_keyword.lower() not in title.lower():
-                    continue
-
+            response.raise_for_status()
+            items = _rss_items(response.text)
+            best = None
+            best_score = 0.0
+            for item in items[:20]:
+                item_title = item.get("title", "")
+                description = clean(item.get("description", ""))
                 if not description:
                     continue
 
-                return {
-                    "title": expected_title or title,
-                    "published": pub,
-                    "content": description[:MAX_CONTENT_LENGTH],
-                    "images": [],
-                    "fallback_url": link,
-                    "source": domain,
-                    "content_source": "google_news_rss_excerpt",
-                }
+                score = _title_similarity(expected_title, item_title) if expected_title else 0.0
+                # Require a meaningful title match when we have an expected title.
+                if expected_title and score < 0.45:
+                    continue
+                if not expected_title and seed_keyword.lower() not in item_title.lower() and "deli serdang" not in item_title.lower():
+                    continue
+                if score > best_score:
+                    best_score = score
+                    best = item
+
+            if not best:
+                continue
+
+            pub = parse_date(best.get("pubDate", ""))
+            return {
+                "title": expected_title or best.get("title", ""),
+                "published": pub,
+                "content": best.get("description", ""),
+                "images": [],
+                "fallback_url": best.get("link", ""),
+                "source": domain,
+                "content_source": "google_news_rss_excerpt",
+            }
         except Exception as exc:
             print(f"[RSS FALLBACK WARNING] {domain} -> {type(exc).__name__}: {exc}")
 
@@ -495,7 +555,7 @@ def main() -> int:
         try:
             existing = get_existing(db, url)
             data = fetch_direct(session, url)
-            data["title"] = data.get("title") or (existing or {}).get("title", "")
+            data["title"] = data.get("title") or (existing or {}).get("title", "") or EXPECTED_TITLES.get(url, "")
 
             payload, reason = build_payload(url, seed_keyword, data, existing)
             if payload is None:
@@ -529,7 +589,7 @@ def main() -> int:
         except Exception as exc:
             # 403/5xx: use conservative RSS fallback instead of bypassing the publisher.
             try:
-                expected_title = (existing or {}).get("title", "")
+                expected_title = (existing or {}).get("title", "") or EXPECTED_TITLES.get(url, "")
                 fallback = fetch_google_news_fallback(session, url, expected_title, seed_keyword)
                 if fallback:
                     payload, reason = build_payload(url, seed_keyword, fallback, existing)
