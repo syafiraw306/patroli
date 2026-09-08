@@ -59,6 +59,8 @@ on:
           - cross-incident-relationships
           - issue-topic-detection
           - test-issue-topic-detection-real
+          - intelligence-briefing
+          - test-intelligence-briefing-real
           - cross-incident-candidate-audit-real
           - send-intelligence-alerts
 
@@ -238,6 +240,14 @@ jobs:
               echo "Menjalankan test Issue/Topic Detection REAL production (READ-ONLY)..."
               python patroli.py --test-issue-topic-detection-real
 
+            elif [ "${{ inputs.mode }}" = "intelligence-briefing" ]; then
+              echo "Generate Intelligence Briefing REAL production (READ-ONLY)..."
+              python patroli.py --intelligence-briefing
+
+            elif [ "${{ inputs.mode }}" = "test-intelligence-briefing-real" ]; then
+              echo "Menjalankan test Intelligence Briefing REAL production (READ-ONLY)..."
+              python patroli.py --test-intelligence-briefing-real
+
             elif [ "${{ inputs.mode }}" = "cross-incident-candidate-audit-real" ]; then
               echo "Menjalankan Candidate Audit + Precision Guard Cross-Incident REAL production (READ-ONLY)..."
               python patroli.py --cross-incident-candidate-audit-real
@@ -357,6 +367,22 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+
+      # ==========================================
+      # UPLOAD FEATURE #12 — INTELLIGENCE BRIEFING
+      # ==========================================
+      - name: Upload Intelligence Briefing
+        if: ${{ inputs.mode == 'intelligence-briefing' || inputs.mode == 'test-intelligence-briefing-real' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: intelligence-briefing
+          path: |
+            intelligence_briefing*.json
+            intelligence_briefing*.txt
+            intelligence_briefing*.html
+          if-no-files-found: warn
+          retention-days: 30
+
       # ==========================================
       # UPLOAD FEATURE #7 — INCIDENT TIMELINE
       # ==========================================
@@ -418,7 +444,7 @@ jobs:
           retention-days: 30
       
       # ==========================================
-      # FEATURE #11 V9.7 — KDRT CANDIDATE GUARD
+      # FEATURE #11 V2 — SEMANTIC ISSUE / TOPIC DETECTION
       # ==========================================
       - name: Upload Issue Topic Detection
         if: ${{ inputs.mode == 'issue-topic-detection' || inputs.mode == 'test-issue-topic-detection-real' }}
