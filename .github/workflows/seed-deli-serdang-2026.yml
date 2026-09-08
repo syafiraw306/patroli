@@ -35,6 +35,6 @@ jobs:
       - name: Run Deli Serdang 2026 seed
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           python seed_deli_serdang_location_2026.py
