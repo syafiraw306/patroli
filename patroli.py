@@ -1970,6 +1970,17 @@ DELI_SERDANG_LOCATION_TABLE = "deli_serdang_location_articles"
 # Ini adalah guard bisnis untuk tabel lokasi, bukan konfigurasi crawler umum.
 DELI_SERDANG_LOCATION_YEAR = 2026
 
+# Nama wilayah yang memang muncul di beberapa daerah lain di Indonesia.
+# Untuk keyword ambigu ini, keyword saja TIDAK cukup; artikel harus
+# memberikan konteks Deli Serdang (mis. menyebut Deli Serdang,
+# Kecamatan <lokasi>, atau bentuk administratif lain).
+DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS = {
+    "bangun purba",
+    "galang",
+    "gunung meriah",
+    "deli tua",
+}
+
 
 def _is_deli_serdang_location_search(candidate: Dict[str, Any]) -> bool:
     query = normalize_text(candidate.get("search_query"))
@@ -1994,35 +2005,48 @@ def _has_deli_serdang_location_context(
     content: str,
     location_matches: Optional[List[str]] = None,
 ) -> bool:
-    """
-    Validasi apakah keyword lokasi benar-benar merujuk ke Deli Serdang.
+    """Validasi apakah keyword lokasi benar-benar merujuk ke Deli Serdang.
 
-    Penting: keberadaan keyword saja TIDAK cukup. Beberapa nama wilayah
-    bersifat ambigu, misalnya ``galang``, ``gunung meriah`` dan ``bangun
-    purba``. Karena itu artikel harus mempunyai konteks administratif yang
-    mengikat keyword tersebut ke Deli Serdang, atau menyebut Deli Serdang
-    secara eksplisit.
+    Sebagian besar nama kecamatan pada daftar Feature #13 cukup spesifik
+    untuk discovery berita Sumut. Namun empat nama berikut bersifat
+    ambigu lintas daerah: Bangun Purba, Galang, Gunung Meriah, dan Deli Tua.
+    Untuk empat keyword tersebut, artikel wajib memiliki konteks
+    administratif Deli Serdang.
     """
     title_text = normalize_text(title or "")
     content_text = normalize_text(content or "")
     text = normalize_text(f"{title_text} ; {content_text}")
 
-    # 1. Bukti terkuat: artikel secara eksplisit menyebut Deli Serdang.
-    if re.search(r"\b(?:deli serdang|deliserdang)\b", text, flags=re.IGNORECASE):
-        return True
-
     matches = location_matches or find_location_matches(title, content)
     if not matches:
         return False
 
-    # 2. Nama lokasi dipakai sebagai kecamatan Deli Serdang.
+    # 1. Penyebutan eksplisit Deli Serdang adalah bukti kuat.
+    if re.search(r"\b(?:deli serdang|deliserdang)\b", text, flags=re.IGNORECASE):
+        return True
+
+    # 2. Keyword yang tidak ambigu dapat menjadi bukti lokasi secara langsung.
+    #    Ini mencegah false negative terhadap berita seperti
+    #    "Warga Sunggal..." atau "Kecelakaan di Namorambe..." yang memang
+    #    lazim diberitakan tanpa mengulang nama kabupaten.
+    non_ambiguous = [
+        m for m in matches
+        if normalize_text(m).lower() not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS
+    ]
+    if non_ambiguous:
+        return True
+
+    # 3. Untuk keyword ambigu, cari ikatan administratif yang eksplisit.
     for location in matches:
+        loc_norm = normalize_text(location).lower()
+        if loc_norm not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS:
+            continue
         loc = re.escape(location)
+
         if re.search(rf"\bkecamatan\s+{loc}\b", text, flags=re.IGNORECASE):
             return True
 
-        # 3. Bentuk berita yang umum: "Galang, Kabupaten Deli Serdang"
-        #    atau "Galang Kabupaten Deli Serdang".
+        # Contoh: "Galang, Kabupaten Deli Serdang".
         if re.search(
             rf"\b{loc}\s*,?\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
             text,
@@ -2030,7 +2054,7 @@ def _has_deli_serdang_location_context(
         ):
             return True
 
-        # 4. Bentuk terbalik: "Kabupaten Deli Serdang, Galang".
+        # Contoh: "Kabupaten Deli Serdang, Galang".
         if re.search(
             rf"\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\s*,?\s*(?:kecamatan\s+)?{loc}\b",
             text,
@@ -14774,6 +14798,32 @@ def test_feature13_location() -> Dict[str, Any]:
     # ------------------------------------------------------------
     # 8. False-positive location regression tests
     # ------------------------------------------------------------
+    standalone_valid_cases = [
+        (
+            "Warga Sunggal Keluhkan Jalan Rusak",
+            "Warga Sunggal meminta perbaikan jalan yang rusak.",
+            "Sunggal sebagai lokasi Deli Serdang",
+        ),
+        (
+            "43 Rumah di Namorambe Diterjang Angin",
+            "Puluhan rumah warga di Namorambe terdampak angin kencang.",
+            "Namorambe sebagai lokasi Deli Serdang",
+        ),
+        (
+            "Kegiatan di Batang Kuis",
+            "Kegiatan masyarakat berlangsung di Batang Kuis.",
+            "Batang Kuis sebagai lokasi Deli Serdang",
+        ),
+    ]
+
+    for valid_title, valid_content, label in standalone_valid_cases:
+        valid = _has_deli_serdang_location_context(valid_title, valid_content)
+        if not valid:
+            failures.append(f"False negative: {label}")
+            print(f"[FAIL] Standalone Deli Serdang location rejected: {label}")
+        else:
+            print(f"[PASS] Standalone Deli Serdang location accepted: {label}")
+
     ambiguous_cases = [
         (
             "GEBRAK Galang Aliansi Demo Kejati Sulbar",
@@ -14940,7 +14990,29 @@ def audit_feature13_location() -> Dict[str, Any]:
     print(f"[AUDIT] Context flag mismatch      : {len(flag_mismatch)}")
 
     if duplicate_links:
-        fail(f"Ditemukan {duplicate_links} duplicate link")
+        # Unique constraint database bekerja pada URL mentah, sedangkan audit
+        # menggunakan URL ternormalisasi. Karena itu istilah yang lebih tepat
+        # adalah collision URL setelah normalisasi. Tampilkan pasangan agar
+        # cleanup berikutnya dapat dilakukan secara aman.
+        normalized_groups: Dict[str, List[Dict[str, Any]]] = {}
+        for row in rows:
+            link = normalize_url(row.get("link"))
+            if link:
+                normalized_groups.setdefault(link, []).append(row)
+        collision_groups = [
+            (link, group) for link, group in normalized_groups.items() if len(group) > 1
+        ]
+        fail(f"Ditemukan {duplicate_links} normalized-link collision")
+        print("=" * 70)
+        print("[AUDIT] NORMALIZED LINK COLLISION DETAILS")
+        print("=" * 70)
+        for link, group in collision_groups[:20]:
+            print(f"[COLLISION] normalized={link}")
+            for row in group:
+                print(
+                    f"  id={row.get('id')} | raw_link={row.get('link')} | "
+                    f"title={normalize_text(row.get('title'))[:160]}"
+                )
     if missing_date:
         fail(f"Ditemukan {len(missing_date)} row tanpa publication date")
     if non_2026:
