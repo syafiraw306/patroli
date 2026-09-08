@@ -16139,7 +16139,7 @@ def test_cross_incident_relationship_real_read_only() -> Dict[str,Any]:
 #   - Tidak menggunakan blacklist nama orang/media sebagai mekanisme utama.
 # ============================================================
 
-FEATURE11_VERSION = "FEATURE11-READONLY-V9.5-SEMANTIC-PRECISION-GUARD"
+FEATURE11_VERSION = "FEATURE11-READONLY-V9.8-PRODUCTION-QUALITY-GATE"
 FEATURE11_MAX_ARTICLES = 5000
 FEATURE11_MAX_SECONDARY = 5
 FEATURE11_MIN_PRIMARY_SCORE = 3.5
@@ -17402,6 +17402,8 @@ def build_issue_topic_detection(articles: List[Dict[str, Any]], now: Optional[da
             "semantic_hierarchy_guard": True,
             "normative_ethics_guard": True,
             "taxonomy_size": len(FEATURE11_ISSUE_TAXONOMY),
+            "production_quality_gate": True,
+            "quality_gate_fail_closed": True,
         },
         "summary": {
             "production_articles": len(production),
@@ -17686,6 +17688,107 @@ def _feature11_regression() -> Dict[str, Any]:
             "removal_primary_guard_v37": True,
             "legal_status_vs_profession_guard_v37": True}
 
+
+def _feature11_production_quality_gate(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """Automatic semantic precision/recall gate for REAL production output.
+
+    The gate is intentionally conservative: it only FAILs on high-confidence
+    semantic contradictions. Ambiguous cases are reported as REVIEW findings.
+    It never changes classification and never writes to the database/Telegram.
+    """
+    findings = []
+    review = []
+
+    strong_issue_terms = {
+        "KORUPSI": ("korupsi", "tipikor", "suap", "gratifikasi"),
+        "NARKOTIKA": ("narkotika", "narkoba", "sabu", "ekstasi", "ganja"),
+        "PEMBUNUHAN": ("pembunuhan", "membunuh", "dibunuh"),
+        "PENGANIAYAAN": ("penganiayaan", "dianiaya"),
+        "KEKERASAN": ("kdrt", "kekerasan dalam rumah tangga", "kekerasan fisik"),
+        "PENIPUAN": ("penipuan", "ditipu", "menipu"),
+        "PENGGELAPAN": ("penggelapan",),
+        "PUNGUTAN_LIAR": ("pungli", "pungutan liar"),
+        "PENYELUNDUPAN_SATWA": ("penyelundupan satwa",),
+        "PEMBERHENTIAN": ("dicopot", "dipecat", "diberhentikan", "pemberhentian"),
+        "PENYALAHGUNAAN_KEWENANGAN": ("penyalahgunaan kewenangan", "penyalahgunaan wewenang"),
+    }
+    substantive_context = (
+        "dugaan", "kasus", "perkara", "tersangka", "terdakwa", "ditangkap",
+        "diamankan", "diperiksa", "diusut", "selidiki", "menyelidiki",
+        "penyidikan", "kerugian", "uang", "korban", "laporan", "dilaporkan",
+        "dianiaya", "dibunuh", "ditipu", "digelapkan", "pungli",
+    )
+    negation = ("tidak terbukti", "bukan korupsi", "bukan kasus", "membantah", "dibantah", "hoaks")
+
+    for row in snapshot.get("articles", []):
+        title = _feature11_norm_text(row.get("title"))
+        issue = str(row.get("primary_issue") or "UNCLASSIFIED").upper()
+        secondary = _feature11_norm_text(row.get("secondary_issues")).upper()
+        layer = str(row.get("issue_layer") or "UNCLASSIFIED").upper()
+        signal = str(row.get("issue_signal") or "UNKNOWN").upper()
+        recovery = row.get("recovery") or {}
+
+        # 1) Strong explicit title evidence that is completely absent from output.
+        for candidate, terms in strong_issue_terms.items():
+            if not any(_feature11_term_present(title, t) for t in terms):
+                continue
+            if any(_feature11_term_present(title, n) for n in negation):
+                continue
+            if candidate in issue or candidate in secondary:
+                continue
+            if not any(_feature11_term_present(title, c) for c in substantive_context):
+                review.append({"type":"TITLE_TERM_WITHOUT_SUBSTANTIVE_CONTEXT","article_id":row.get("article_id"),"issue":candidate,"title":row.get("title")})
+                continue
+            findings.append({
+                "type":"STRONG_TITLE_ISSUE_MISSING",
+                "article_id":row.get("article_id"),
+                "issue":candidate,
+                "primary_issue":issue,
+                "title":row.get("title"),
+            })
+
+        # 2) Explicit corruption in a budget-only primary is a contradiction.
+        if issue == "PENGELOLAAN_ANGGARAN" and any(_feature11_term_present(title, x) for x in ("korupsi", "tipikor", "suap", "gratifikasi")):
+            findings.append({"type":"BUDGET_OVERRIDES_CORRUPTION","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue})
+
+        # 3) Generic normative statements must not create substantive issue labels.
+        if signal == "NORMATIVE" and issue in {"KORUPSI","PENEGAKAN_HUKUM","PENGELOLAAN_ANGGARAN","PENDIDIKAN","PELANGGARAN_ETIKA"}:
+            findings.append({"type":"NORMATIVE_GENERIC_SUBSTANTIVE","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue})
+
+        # 4) Personal behavior should not outrank explicit reputation context.
+        if issue == "PERILAKU_PERSONAL" and any(_feature11_term_present(title, x) for x in FEATURE11_REPUTATION_CONTEXT_TERMS):
+            findings.append({"type":"PERSONAL_REPUTATION_PRIORITY_CONTRADICTION","article_id":row.get("article_id"),"title":row.get("title")})
+
+        # 5) Recovery must be self-consistent and evidence-backed.
+        if recovery:
+            if recovery.get("issue") != issue:
+                findings.append({"type":"RECOVERY_PRIMARY_MISMATCH","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery,"primary_issue":issue})
+            if not recovery.get("reason") or not recovery.get("matched_anchors"):
+                findings.append({"type":"RECOVERY_WITHOUT_EVIDENCE","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery})
+            if issue == "PENUNTUTAN" and recovery.get("reason") == "EXPLICIT_HEARING_AND_PROSECUTION_STAGE":
+                has_hearing = any(_feature11_term_present(title, x) for x in ("sidang","persidangan","pembacaan tuntutan","jpu"))
+                has_prosecution = any(_feature11_term_present(title, x) for x in ("dituntut","tuntutan","penuntutan"))
+                if not (has_hearing and has_prosecution):
+                    findings.append({"type":"PROSECUTION_RECOVERY_TITLE_MISMATCH","article_id":row.get("article_id"),"title":row.get("title"),"recovery":recovery})
+
+        # 6) Every classified row needs evidence; keep this duplicated in the
+        # quality gate so future test refactors cannot silently remove it.
+        if issue != "UNCLASSIFIED" and not row.get("topic_keywords"):
+            findings.append({"type":"CLASSIFIED_WITHOUT_TOPIC_EVIDENCE","article_id":row.get("article_id"),"title":row.get("title"),"primary_issue":issue})
+
+    result = {
+        "status": "FAILED" if findings else "PASSED",
+        "checked_articles": len(snapshot.get("articles", [])),
+        "confirmed_findings": findings,
+        "review_findings": review,
+        "confirmed_count": len(findings),
+        "review_count": len(review),
+        "fail_closed": True,
+        "read_only": True,
+    }
+    return result
+
+
 def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print("=" * 70)
     print("TEST FEATURE #11 — ISSUE / TOPIC DETECTION / REAL PRODUCTION / READ-ONLY")
@@ -17700,6 +17803,14 @@ def test_issue_topic_detection_real_read_only() -> Dict[str, Any]:
         return {"status":"FAILED", "reason":"EMPTY_DATABASE"}
     before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
     snapshot = build_issue_topic_detection(before)
+    quality_gate = _feature11_production_quality_gate(snapshot)
+    snapshot["production_quality_gate"] = quality_gate
+    if quality_gate.get("status") != "PASSED":
+        print(f"[TEST FAIL] PRODUCTION QUALITY GATE | confirmed={quality_gate.get('confirmed_count')} review={quality_gate.get('review_count')}")
+        for finding in quality_gate.get("confirmed_findings", [])[:10]:
+            print(f"[QUALITY GATE] {finding}")
+        return {"status":"FAILED", "reason":"PRODUCTION_QUALITY_GATE", "quality_gate":quality_gate}
+    print(f"[TEST PASS] PRODUCTION QUALITY GATE | checked={quality_gate.get('checked_articles')} confirmed=0 review={quality_gate.get('review_count')}")
     if snapshot.get("database_write") is not False or snapshot.get("telegram_send") is not False:
         return {"status":"FAILED", "reason":"MUTATION_FLAG_ENABLED"}
     if snapshot.get("event_key_changed") is not False or snapshot.get("risk_score_changed") is not False or snapshot.get("sentiment_changed") is not False:
