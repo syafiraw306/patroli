@@ -4095,6 +4095,8 @@ candidate: Dict[str, Any],
         "ok": False,
         "article": None,
         "reason": "",
+        "location_saved": False,
+        "location_reason": "",
     }
 
     # ========================================================
@@ -4270,13 +4272,17 @@ candidate: Dict[str, Any],
         else:
             discovery_content = content if content else rss_description
             if title or discovery_content:
-                save_deli_serdang_location_article(
+                location_saved = save_deli_serdang_location_article(
                     candidate,
                     title,
                     discovery_content,
                     final_url=final_url,
                     published_date=published,
                     article_images=article_images,
+                )
+                result["location_saved"] = bool(location_saved)
+                result["location_reason"] = (
+                    "saved" if location_saved else "rejected by location guard"
                 )
 
     # ========================================================
@@ -14845,6 +14851,145 @@ def test_feature13_location() -> Dict[str, Any]:
     return {"status": "PASSED"}
 
 
+
+def audit_feature13_location() -> Dict[str, Any]:
+    """Read-only audit seluruh data Feature #13 yang sudah ada di production."""
+    print("=" * 70)
+    print("FEATURE #13 — EXISTING LOCATION DATA AUDIT / READ-ONLY")
+    print("=" * 70)
+    print(f"Target year        : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location table     : {DELI_SERDANG_LOCATION_TABLE}")
+    print("Supabase write     : DISABLED")
+    print("Delete/update      : DISABLED")
+    print("Telegram           : NOT SENT")
+    print("=" * 70)
+
+    failures: List[str] = []
+
+    def fail(message: str) -> None:
+        failures.append(message)
+        print(f"[FAIL] {message}")
+
+    try:
+        supabase = get_supabase()
+        rows: List[Dict[str, Any]] = []
+        batch_size = 500
+        offset = 0
+        while True:
+            response = (
+                supabase.table(DELI_SERDANG_LOCATION_TABLE)
+                .select("id,title,link,content,published_date,matched_location_keywords,location_context_valid")
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            batch = list(response.data or [])
+            rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+    except Exception as exc:
+        fail(f"Gagal membaca tabel {DELI_SERDANG_LOCATION_TABLE}: {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "failures": failures}
+
+    links = [normalize_url(row.get("link")) for row in rows]
+    unique_links = {link for link in links if link}
+    duplicate_links = len([link for link in links if link]) - len(unique_links)
+    missing_date = []
+    non_2026 = []
+    missing_title = []
+    missing_content = []
+    stored_invalid = []
+    recomputed_invalid = []
+    flag_mismatch = []
+
+    for row in rows:
+        published = parse_date_safe(row.get("published_date"))
+        if published is None:
+            missing_date.append(row)
+        elif published.year != DELI_SERDANG_LOCATION_YEAR:
+            non_2026.append(row)
+
+        title = normalize_text(row.get("title"))
+        content = normalize_text(row.get("content"))
+        if not title:
+            missing_title.append(row)
+        if not content:
+            missing_content.append(row)
+
+        stored_valid = row.get("location_context_valid") is True
+        if not stored_valid:
+            stored_invalid.append(row)
+
+        recomputed_valid = _has_deli_serdang_location_context(
+            title, content, row.get("matched_location_keywords") or []
+        )
+        if not recomputed_valid:
+            recomputed_invalid.append(row)
+        if stored_valid != recomputed_valid:
+            flag_mismatch.append((row, stored_valid, recomputed_valid))
+
+    print(f"[AUDIT] Total rows                 : {len(rows)}")
+    print(f"[AUDIT] Unique links               : {len(unique_links)}")
+    print(f"[AUDIT] Duplicate links            : {duplicate_links}")
+    print(f"[AUDIT] Missing publication date    : {len(missing_date)}")
+    print(f"[AUDIT] Non-{DELI_SERDANG_LOCATION_YEAR} rows         : {len(non_2026)}")
+    print(f"[AUDIT] Missing title              : {len(missing_title)}")
+    print(f"[AUDIT] Missing content            : {len(missing_content)}")
+    print(f"[AUDIT] Stored context INVALID     : {len(stored_invalid)}")
+    print(f"[AUDIT] Recomputed context INVALID : {len(recomputed_invalid)}")
+    print(f"[AUDIT] Context flag mismatch      : {len(flag_mismatch)}")
+
+    if duplicate_links:
+        fail(f"Ditemukan {duplicate_links} duplicate link")
+    if missing_date:
+        fail(f"Ditemukan {len(missing_date)} row tanpa publication date")
+    if non_2026:
+        fail(f"Ditemukan {len(non_2026)} row bukan tahun {DELI_SERDANG_LOCATION_YEAR}")
+
+    if recomputed_invalid:
+        print("=" * 70)
+        print("[AUDIT] CONTOH ROW DENGAN KONTEKS TIDAK VALID")
+        print("=" * 70)
+        for row in recomputed_invalid[:20]:
+            print(
+                f"[REVIEW] id={row.get('id')} | "
+                f"keywords={row.get('matched_location_keywords') or []} | "
+                f"title={normalize_text(row.get('title'))[:180]}"
+            )
+        print("=" * 70)
+        print("[ACTION] Row invalid belum dihapus otomatis; review dahulu sebelum cleanup.")
+
+    if flag_mismatch:
+        print("=" * 70)
+        print("[AUDIT] CONTEXT FLAG MISMATCH")
+        print("=" * 70)
+        for row, stored_valid, recomputed_valid in flag_mismatch[:20]:
+            print(
+                f"[MISMATCH] id={row.get('id')} | stored={stored_valid} | "
+                f"recomputed={recomputed_valid} | title={normalize_text(row.get('title'))[:160]}"
+            )
+
+    if not missing_date and not non_2026:
+        print("[PASS] Existing data satisfies 2026-only invariant")
+    if not duplicate_links:
+        print("[PASS] No duplicate links detected")
+
+    print("=" * 70)
+    if failures:
+        print(f"FEATURE #13 EXISTING DATA AUDIT: FAILED ({len(failures)} checks)")
+        for failure in failures:
+            print(f" - {failure}")
+        print("=" * 70)
+        return {"status": "FAILED", "failures": failures, "total_rows": len(rows), "recomputed_invalid": len(recomputed_invalid)}
+
+    print("FEATURE #13 EXISTING DATA AUDIT: PASSED")
+    print("Read-only            : YES")
+    print("Production DB writes : NONE")
+    print("Telegram             : NOT SENT")
+    print("=" * 70)
+    return {"status": "PASSED", "total_rows": len(rows), "recomputed_invalid": len(recomputed_invalid), "flag_mismatch": len(flag_mismatch)}
+
+
 def test_feature13_real_integration() -> Dict[str, Any]:
     """
     Real integration test Feature #13.
@@ -15045,6 +15190,12 @@ def test_feature13_real_integration() -> Dict[str, Any]:
 
     processed_ok = sum(1 for item in results if item.get("ok"))
     processed_rejected = sum(1 for item in results if not item.get("ok"))
+    location_saved_count = sum(1 for item in results if item.get("location_saved"))
+    location_rejected_count = sum(
+        1
+        for item in results
+        if item.get("location_reason") == "rejected by location guard"
+    )
 
     print("=" * 70)
     print("REAL INTEGRATION SUMMARY")
@@ -15052,6 +15203,8 @@ def test_feature13_real_integration() -> Dict[str, Any]:
     print(f"[REAL] Candidates discovered : {len(candidates)}")
     print(f"[REAL] process_candidate OK   : {processed_ok}")
     print(f"[REAL] process_candidate skip : {processed_rejected}")
+    print(f"[REAL] location_saved          : {location_saved_count}")
+    print(f"[REAL] location rejected       : {location_rejected_count}")
     print(f"[REAL] Worker errors           : {worker_errors}")
     print(f"[REAL] Location rows before    : {len(before_rows)}")
     print(f"[REAL] Location rows after     : {len(after_rows)}")
@@ -15199,6 +15352,12 @@ def main() -> None:
         "--cross-incident-candidate-audit-real",
         action="store_true",
         help="audit candidate pair Cross-Incident Relationship pada production nyata secara read-only",
+    )
+
+    parser.add_argument(
+        "--audit-feature13-location",
+        action="store_true",
+        help="audit seluruh data Feature #13 existing di production secara read-only",
     )
 
     parser.add_argument(
@@ -15467,6 +15626,14 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.audit_feature13_location:
+        result = audit_feature13_location()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Audit Feature #13 gagal: {result.get('failures') or result.get('reason')}"
+            )
+        return
+
     if args.test_feature13_real:
         result = test_feature13_real_integration()
         if result.get("status") == "FAILED":
