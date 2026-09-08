@@ -18003,8 +18003,8 @@ def issue_topic_detection_real_read_only() -> Dict[str, Any]:
 #     semantic dapat diuji terlebih dahulu.
 # ============================================================
 
-FEATURE12_VERSION = "FEATURE12-READONLY-V1.1-DAILY-PRODUCTION-INTEGRITY"
-FEATURE12_METHOD = "EVIDENCE_GROUNDED_DAILY_INTELLIGENCE_BRIEFING_V1_1"
+FEATURE12_VERSION = "FEATURE12-READONLY-V1.2-PRIORITY-EWS-INTEGRATION"
+FEATURE12_METHOD = "EVIDENCE_GROUNDED_DAILY_INTELLIGENCE_BRIEFING_V1_2"
 FEATURE12_TOP_ARTICLES = 10
 FEATURE12_MAX_EVIDENCE = 5
 FEATURE12_MAX_TRENDS = 8
@@ -18187,13 +18187,57 @@ def _feature12_issue_counts(cards: List[Dict[str, Any]]) -> Dict[str, int]:
     return dict(counts.most_common(FEATURE12_MAX_ISSUES))
 
 
-def _feature12_build_trend_section(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _feature12_build_trend_section(cards: List[Dict[str, Any]], ews: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Build trend overview from both daily article cards and validated EWS.
+
+    Daily article trend is useful for same-day coverage, while EWS captures
+    multi-article/event momentum. Only CONFIRMED EWS contributes here.
+    """
     counter: Counter = Counter()
     for c in cards:
         status = str(c.get("trend_status") or "").upper()
         if status in {"ESCALATING", "EMERGING", "RISING", "STABLE", "DECLINING"}:
             counter[status] += 1
-    return [{"trend_status": k, "article_count": v} for k, v in counter.most_common(FEATURE12_MAX_TRENDS)]
+    for item in (ews or []):
+        if str(item.get("status") or "").upper() != "CONFIRMED":
+            continue
+        status = str(item.get("trend_status") or "").upper()
+        if status in {"ESCALATING", "EMERGING", "RISING", "STABLE", "DECLINING"}:
+            counter[status] += 1
+    return [{"trend_status": k, "signal_count": v} for k, v in counter.most_common(FEATURE12_MAX_TRENDS)]
+
+
+def _feature12_priority_intelligence(ews: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert confirmed EWS into leadership-facing priority signals.
+
+    These are event-level intelligence signals, not article-level evidence
+    anchors. The underlying event evidence remains in Feature #5 output.
+    """
+    out = []
+    level_weight = {"HIGH": 3, "WATCH": 2, "MONITOR": 1, "LOW": 0}
+    trend_weight = {"ESCALATING": 3, "RISING": 2, "EMERGING": 1, "STABLE": 0, "DECLINING": -1}
+    for item in (ews or []):
+        if str(item.get("status") or "").upper() != "CONFIRMED":
+            continue
+        score = _feature12_safe_float(item.get("score"), -1.0)
+        level = str(item.get("level") or "").upper()
+        trend = str(item.get("trend_status") or "").upper()
+        if score < 0 or level not in level_weight or trend not in trend_weight:
+            continue
+        priority_score = round(score + level_weight[level] * 10 + trend_weight[trend] * 8, 2)
+        out.append({
+            "event_key": item.get("event_key"),
+            "event_name": item.get("event_name") or item.get("event_key") or "Unknown event",
+            "score": score,
+            "level": level,
+            "trend_status": trend,
+            "reason": list(item.get("reason") or [])[:5],
+            "priority_score": priority_score,
+            "priority_level": _feature12_priority_label(priority_score),
+            "status": "CONFIRMED",
+        })
+    out.sort(key=lambda x: (-_feature12_safe_float(x.get("priority_score")), str(x.get("event_key") or "")))
+    return out[:FEATURE12_MAX_EWS]
 
 
 def _feature12_build_early_warnings(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -18242,13 +18286,17 @@ def _feature12_executive_summary(briefing_date: str, cards: List[Dict[str, Any]]
     high = sum(1 for c in cards if str(c.get("risk_level") or "").upper() in {"HIGH", "CRITICAL"})
     issue_counts = _feature12_issue_counts(cards)
     top_issue = next(iter(issue_counts), "belum teridentifikasi")
-    rising = sum(1 for c in cards if str(c.get("trend_status") or "").upper() in {"ESCALATING", "EMERGING", "RISING"})
-    ews_high = sum(1 for x in ews if str(x.get("level") or "").upper() == "HIGH")
+    confirmed = [x for x in ews if str(x.get("status") or "").upper() == "CONFIRMED"]
+    ews_high = sum(1 for x in confirmed if str(x.get("level") or "").upper() == "HIGH")
+    emerging = sum(1 for x in confirmed if str(x.get("trend_status") or "").upper() == "EMERGING")
+    rising = sum(1 for x in confirmed if str(x.get("trend_status") or "").upper() == "RISING")
+    escalating = sum(1 for x in confirmed if str(x.get("trend_status") or "").upper() == "ESCALATING")
     return (
-        f"Pada {briefing_date}, sistem memproses {total} artikel pada tanggal briefing. "
+        f"Pada {briefing_date}, sistem memproses {total} artikel production pada tanggal briefing. "
         f"Sebanyak {high} artikel memiliki risk level HIGH/CRITICAL, dengan isu utama '{top_issue}'. "
-        f"Terdapat {rising} artikel yang menunjukkan indikator perkembangan trend (RISING/EMERGING/ESCALATING). "
-        f"Early Warning level HIGH teridentifikasi sebanyak {ews_high}. "
+        f"Di tingkat event, teridentifikasi {len(confirmed)} early warning terkonfirmasi: {ews_high} HIGH, "
+        f"{emerging} EMERGING, {rising} RISING, dan {escalating} ESCALATING. "
+        "Prioritas pimpinan menggabungkan evidence artikel harian dengan momentum event yang terkonfirmasi. "
         "Ringkasan ini bersifat evidence-grounded; klaim substantif mengikuti evidence artikel dan hasil feature yang tersedia."
     )
 
@@ -18257,24 +18305,30 @@ def _feature12_render_text(snapshot: Dict[str, Any]) -> str:
     meta = snapshot.get("metadata", {})
     summary = snapshot.get("summary", {})
     cards = snapshot.get("top_priority_articles", [])
+    priorities = snapshot.get("priority_intelligence", [])
     issues = snapshot.get("issue_distribution", {})
     trends = snapshot.get("trend_overview", [])
     warnings = snapshot.get("early_warnings", [])
-
     lines = [
-        "INTELLIGENCE BRIEFING",
-        "=" * 72,
+        "INTELLIGENCE BRIEFING", "=" * 72,
         f"Tanggal briefing : {meta.get('briefing_date')}",
         f"Generated         : {meta.get('generated_at')}",
         f"Version           : {meta.get('version')}",
         f"Method            : {meta.get('method')}",
-        "Mode              : READ-ONLY",
-        "",
+        "Mode              : READ-ONLY", "",
         "EXECUTIVE SUMMARY",
         summary.get("executive_summary") or "REVIEW: executive summary tidak tersedia.",
-        "",
-        "TOP PRIORITY ISSUES / ARTICLES",
+        "", "PRIORITY INTELLIGENCE / EVENT SIGNALS",
     ]
+    if priorities:
+        for idx, item in enumerate(priorities, 1):
+            lines.append(f"{idx}. [{item.get('level')}] {item.get('event_name')} score={item.get('score')} trend={item.get('trend_status')} priority={item.get('priority_score')}")
+            if item.get("reason"):
+                lines.append(f"   Evidence signals: {item.get('reason')}")
+    else:
+        lines.append("- Tidak ada event priority terkonfirmasi.")
+
+    lines += ["", "DAILY PRODUCTION COVERAGE"]
     if cards:
         for idx, card in enumerate(cards, 1):
             lines.append(
@@ -18286,7 +18340,7 @@ def _feature12_render_text(snapshot: Dict[str, Any]) -> str:
             if card.get("link"):
                 lines.append(f"   Link: {card.get('link')}")
     else:
-        lines.append("REVIEW: tidak ada artikel pada tanggal briefing.")
+        lines.append("REVIEW: tidak ada artikel production pada tanggal briefing.")
 
     lines += ["", "ISSUE DISTRIBUTION"]
     for issue, count in issues.items():
@@ -18295,29 +18349,29 @@ def _feature12_render_text(snapshot: Dict[str, Any]) -> str:
     lines += ["", "TREND OVERVIEW"]
     if trends:
         for item in trends:
-            lines.append(f"- {item.get('trend_status')}: {item.get('article_count')} article(s)")
+            lines.append(f"- {item.get('trend_status')}: {item.get('signal_count')} signal(s)")
     else:
         lines.append("- INSUFFICIENT_DATA")
 
     lines += ["", "EARLY WARNING"]
     if warnings:
         for item in warnings:
-            lines.append(
-                f"- [{item.get('status', 'CONFIRMED')}] {item.get('level') or 'REVIEW'} "
-                f"{item.get('event_name') or item.get('event_key') or 'Unknown event'} "
-                f"score={item.get('score')} trend={item.get('trend_status')} reason={item.get('reason') or item.get('review_reason')}"
-            )
+            if item.get("status") == "REVIEW":
+                lines.append(f"- [REVIEW] {item.get('review_reason')}")
+            else:
+                lines.append(
+                    f"- [CONFIRMED] {item.get('level')} {item.get('event_name') or item.get('event_key')} "
+                    f"score={item.get('score')} trend={item.get('trend_status')} reason={item.get('reason')}"
+                )
     else:
         lines.append("- Tidak ada early warning yang tersedia dari evidence saat ini.")
 
     lines += [
-        "",
-        "ANALYST ATTENTION",
-        "- Prioritaskan item HIGH/CRITICAL yang memiliki evidence issue substantif dan/atau trend meningkat.",
+        "", "ANALYST ATTENTION",
+        "- Prioritaskan HIGH/CRITICAL serta event HIGH atau WATCH dengan trend RISING/EMERGING/ESCALATING.",
         "- Jangan memperlakukan konteks prosedural/aktivitas sebagai masalah substantif tanpa evidence tambahan.",
-        "- Item dengan evidence tidak cukup harus tetap REVIEW, bukan dipaksa menjadi kesimpulan.",
-        "",
-        "READ-ONLY INVARIANTS",
+        "- Event tanpa score/level/trend valid harus tetap REVIEW, bukan dipaksa menjadi kesimpulan.",
+        "", "READ-ONLY INVARIANTS",
         f"- database_write = {meta.get('database_write')}",
         f"- telegram_send = {meta.get('telegram_send')}",
         f"- source_article_mutation = {meta.get('source_article_mutation')}",
@@ -18332,6 +18386,7 @@ def build_intelligence_briefing(articles: List[Dict[str, Any]], requested_date: 
     cards = _feature12_build_article_cards(day_articles)
     top_cards = cards[:FEATURE12_TOP_ARTICLES]
     ews = _feature12_build_early_warnings(production_articles)
+    priority_intelligence = _feature12_priority_intelligence(ews)
     snapshot = {
         "metadata": {
             "version": FEATURE12_VERSION,
@@ -18353,11 +18408,13 @@ def build_intelligence_briefing(articles: List[Dict[str, Any]], requested_date: 
             "briefing_articles": len(day_articles),
             "top_priority_articles": len(top_cards),
             "high_or_critical": sum(1 for c in cards if str(c.get("risk_level") or "").upper() in {"HIGH", "CRITICAL"}),
+            "confirmed_early_warnings": len([x for x in ews if x.get("status") == "CONFIRMED"]),
             "executive_summary": _feature12_executive_summary(briefing_date, cards, ews),
         },
         "issue_distribution": _feature12_issue_counts(cards),
-        "trend_overview": _feature12_build_trend_section(cards),
+        "trend_overview": _feature12_build_trend_section(cards, ews),
         "early_warnings": ews,
+        "priority_intelligence": priority_intelligence,
         "top_priority_articles": top_cards,
         "evidence": top_cards[:FEATURE12_MAX_EVIDENCE],
     }
@@ -18407,7 +18464,7 @@ def intelligence_briefing_real_read_only(requested_date: Optional[str] = None) -
     return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
 
 
-def test_intelligence_briefing_v11_integrity() -> Dict[str, Any]:
+def test_intelligence_briefing_v12_integrity() -> Dict[str, Any]:
     """Synthetic regression for production-date and EWS integrity guards."""
     global build_early_warning_system
     original_ews = build_early_warning_system
@@ -18438,17 +18495,24 @@ def test_intelligence_briefing_v11_integrity() -> Dict[str, Any]:
             return {"status": "FAILED", "reason": "V11_EWS_KEY_MAPPING", "warnings": warnings}
         if not bad or bad.get("status") != "REVIEW" or bad.get("level") is not None or bad.get("score") is not None:
             return {"status": "FAILED", "reason": "V11_EWS_FAIL_CLOSED", "warnings": warnings}
-        return {"status": "PASSED", "default_date_excludes_test": True, "ews_integrity_guard": True}
+        priorities = snapshot.get("priority_intelligence", [])
+        if len(priorities) != 1 or priorities[0].get("event_key") != "EVT-VALID":
+            return {"status": "FAILED", "reason": "V12_PRIORITY_EWS_INTEGRATION", "priorities": priorities}
+        trends = snapshot.get("trend_overview", [])
+        if not any(t.get("trend_status") == "RISING" for t in trends):
+            return {"status": "FAILED", "reason": "V12_EWS_TREND_NOT_INTEGRATED", "trends": trends}
+        if "PRIORITY INTELLIGENCE / EVENT SIGNALS" not in snapshot.get("briefing_text", ""):
+            return {"status": "FAILED", "reason": "V12_PRIORITY_SECTION_MISSING"}
+        return {"status": "PASSED", "default_date_excludes_test": True, "ews_integrity_guard": True, "priority_ews_integration": True, "trend_ews_integration": True}
     finally:
         build_early_warning_system = original_ews
 
 
 def test_intelligence_briefing_real_read_only() -> Dict[str, Any]:
-    v11 = test_intelligence_briefing_v11_integrity()
-    if v11.get("status") != "PASSED":
-        return v11
-    print("[TEST PASS] FEATURE12 V1.1 DATE/TEST-ARTICLE GUARD")
-    print("[TEST PASS] FEATURE12 V1.1 EWS INTEGRITY GUARD")
+    v12 = test_intelligence_briefing_v12_integrity()
+    if v12.get("status") != "PASSED":
+        return v12
+    print("[TEST PASS] FEATURE12 V1.2 PRIORITY/EWS INTEGRATION GUARD")
     result = intelligence_briefing_real_read_only()
     if result.get("status") != "PASSED":
         return result
