@@ -69,6 +69,26 @@ VERIFIED_DATES: Dict[str, str] = {
 
 # Expected titles for fallback discovery. These are used when the publisher returns 403
 # before the article page can be read, so the Google News RSS query still has a precise title.
+# Known syndication/republish URLs for sources that block GitHub Actions with HTTP 403.
+# These are only used as a retrieval fallback; the canonical DB link remains the
+# original curated URL. Publication dates are still enforced by VERIFIED_DATES.
+ALTERNATE_SOURCE_URLS: Dict[str, List[str]] = {
+    "https://sinata.id/kontrak-perbaikan-jalan-darsono-hamparan-perak-masih-berjalan": [
+        "https://www.rubis.id/2026/08/23/kontrak-perbaikan-jalan-darsono-hamparan-perak-masih-berjalan-tak-benar-mangkrak/",
+        "https://wartaharian.com/tak-benar-mangkrakkontrak-perbaikan-jalan-darsono-hamparan-perak-masih-berjalan/",
+    ],
+    "https://utamanews.com/sosial-budaya/Selesai-Direnovasi--Kini-TPI-Pantai-Labu-Lebih-Modern-dan-Instagramable": [
+        "https://metro24jam.pikiran-rakyat.com/news/pr-4039931166/selesai-direnovasi-kini-tpi-pantai-labu-lebih-modern-dan-instagramable",
+        "https://analisadaily.com/berita/baca/2026/01/14/1070532/selesai-renovasi-tpi-pantai-labu-lebih-modern-dan-instagramable/",
+    ],
+    "https://mistar.id/news/hukum-peristiwa/kaca-depan-dump-truk-dilempar-otk-pemilik-lapor-ke-polsek-talun-kenas": [
+        "https://www.realitasonline.id/sumut/102417496669/kaca-depan-dump-truk-dilempar-otk-pemiliklapor-ke-polsek-talun-kenas-realitasonlineid-stm-hilir-dump-truk-isuzu-warna-putih-bk-8167-gm-menjadi-ko",
+    ],
+    "https://rri.co.id/medan/berita-lain/2632822/pemkab-pertemukan-pt-indofarm-dan-petani-ikan-sengketa-berakhir-damai": [
+        "https://infosumut.co/berita-pemkab-deli-serdang-pertemukan-pt-indofarm-dan-petani-ikan-sengketa-berakhir-damai",
+    ],
+}
+
 EXPECTED_TITLES: Dict[str, str] = {
     "https://sinata.id/kontrak-perbaikan-jalan-darsono-hamparan-perak-masih-berjalan":
         "Kontrak Perbaikan Jalan Darsono Hamparan Perak Masih Berjalan",
@@ -458,6 +478,25 @@ def fetch_direct(session: requests.Session, url: str) -> Dict:
     raise last_error if last_error else RuntimeError("fetch failed")
 
 
+def fetch_alternate_sources(
+    session: requests.Session,
+    original_url: str,
+) -> Optional[Dict]:
+    """Fetch a known syndication/republish copy when the canonical publisher blocks us."""
+    for alt_url in ALTERNATE_SOURCE_URLS.get(original_url, []):
+        try:
+            data = fetch_direct(session, alt_url)
+            data["content_source"] = "alternate_publisher_html"
+            data["alternate_source_url"] = alt_url
+            if data.get("content") and len(clean(data["content"])) >= MIN_CONTENT_LENGTH:
+                print(f"[ALTERNATE OK] {alt_url}")
+                return data
+            print(f"[ALTERNATE TOO SHORT] {alt_url} -> {len(clean(data.get('content','')))} chars")
+        except Exception as exc:
+            print(f"[ALTERNATE WARNING] {alt_url} -> {type(exc).__name__}: {exc}")
+    return None
+
+
 def get_existing(db, link: str) -> Optional[Dict]:
     try:
         result = db.table(TABLE).select(
@@ -525,7 +564,11 @@ def build_payload(
         "discovery_type": (
             "DELI_SERDANG_LOCATION_KEYWORD_RSS_FALLBACK"
             if data.get("content_source") == "google_news_rss_excerpt"
-            else "DELI_SERDANG_LOCATION_KEYWORD"
+            else (
+                "DELI_SERDANG_LOCATION_KEYWORD_ALTERNATE_SOURCE"
+                if data.get("content_source") == "alternate_publisher_html"
+                else "DELI_SERDANG_LOCATION_KEYWORD"
+            )
         ),
         "location_context_valid": context_valid(title, content, matches),
     }
@@ -559,6 +602,14 @@ def main() -> int:
 
             payload, reason = build_payload(url, seed_keyword, data, existing)
             if payload is None:
+                # If direct page is readable but date/content is bad, try a known
+                # syndication/republish copy before RSS.
+                alternate = fetch_alternate_sources(session, url)
+                if alternate:
+                    alternate["title"] = alternate.get("title") or data.get("title") or EXPECTED_TITLES.get(url, "")
+                    payload, reason = build_payload(url, seed_keyword, alternate, existing)
+
+            if payload is None:
                 # If direct page is readable but date/content is bad, still try RSS fallback.
                 fallback = fetch_google_news_fallback(
                     session,
@@ -587,8 +638,24 @@ def main() -> int:
             )
 
         except Exception as exc:
-            # 403/5xx: use conservative RSS fallback instead of bypassing the publisher.
+            # 403/5xx: first use a known syndication/republish copy, then RSS.
             try:
+                alternate = fetch_alternate_sources(session, url)
+                if alternate:
+                    expected_title = (existing or {}).get("title", "") or EXPECTED_TITLES.get(url, "")
+                    alternate["title"] = alternate.get("title") or expected_title
+                    payload, reason = build_payload(url, seed_keyword, alternate, existing)
+                    if payload:
+                        db.table(TABLE).upsert(payload, on_conflict="link").execute()
+                        ok += 1
+                        print(
+                            "[SAVED:ALTERNATE]",
+                            payload["published_date"][:10],
+                            payload["title"][:100],
+                            payload["matched_location_keywords"],
+                        )
+                        continue
+
                 expected_title = (existing or {}).get("title", "") or EXPECTED_TITLES.get(url, "")
                 fallback = fetch_google_news_fallback(session, url, expected_title, seed_keyword)
                 if fallback:
