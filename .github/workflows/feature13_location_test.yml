@@ -26,4 +26,4 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           TAHUN_TARGET: "2026"
         run: |
-          python patroli.py --once
+          python patroli.py --test-feature13
