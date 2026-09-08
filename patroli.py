@@ -14903,7 +14903,16 @@ def test_feature13_location() -> Dict[str, Any]:
 
 
 def audit_feature13_location() -> Dict[str, Any]:
-    """Read-only audit seluruh data Feature #13 yang sudah ada di production."""
+    """Read-only audit seluruh data Feature #13 yang sudah ada di production.
+
+    Tahap audit ini sengaja TIDAK melakukan INSERT/UPDATE/DELETE.
+    Fokusnya:
+      1. invariant data dasar (2026-only, tanggal, title, content),
+      2. collision URL setelah normalisasi,
+      3. seluruh row yang menurut validator terbaru masih tidak valid,
+      4. grouping invalid berdasarkan keyword dan domain,
+      5. mismatch antara flag lama di DB dan hasil validator terbaru.
+    """
     print("=" * 70)
     print("FEATURE #13 — EXISTING LOCATION DATA AUDIT / READ-ONLY")
     print("=" * 70)
@@ -14920,6 +14929,14 @@ def audit_feature13_location() -> Dict[str, Any]:
         failures.append(message)
         print(f"[FAIL] {message}")
 
+    def get_domain(url: Any) -> str:
+        """Ambil hostname bersih untuk grouping laporan audit."""
+        try:
+            parsed = urllib.parse.urlparse(str(url or "").strip())
+            return (parsed.netloc or "").lower().removeprefix("www.") or "[no-domain]"
+        except Exception:
+            return "[invalid-url]"
+
     try:
         supabase = get_supabase()
         rows: List[Dict[str, Any]] = []
@@ -14928,7 +14945,10 @@ def audit_feature13_location() -> Dict[str, Any]:
         while True:
             response = (
                 supabase.table(DELI_SERDANG_LOCATION_TABLE)
-                .select("id,title,link,content,published_date,matched_location_keywords,location_context_valid")
+                .select(
+                    "id,title,link,content,published_date,"
+                    "matched_location_keywords,location_context_valid"
+                )
                 .range(offset, offset + batch_size - 1)
                 .execute()
             )
@@ -14938,19 +14958,26 @@ def audit_feature13_location() -> Dict[str, Any]:
                 break
             offset += batch_size
     except Exception as exc:
-        fail(f"Gagal membaca tabel {DELI_SERDANG_LOCATION_TABLE}: {type(exc).__name__}: {exc}")
+        fail(
+            f"Gagal membaca tabel {DELI_SERDANG_LOCATION_TABLE}: "
+            f"{type(exc).__name__}: {exc}"
+        )
         return {"status": "FAILED", "failures": failures}
 
+    # ========================================================
+    # BASIC AUDIT
+    # ========================================================
     links = [normalize_url(row.get("link")) for row in rows]
     unique_links = {link for link in links if link}
     duplicate_links = len([link for link in links if link]) - len(unique_links)
-    missing_date = []
-    non_2026 = []
-    missing_title = []
-    missing_content = []
-    stored_invalid = []
-    recomputed_invalid = []
-    flag_mismatch = []
+
+    missing_date: List[Dict[str, Any]] = []
+    non_2026: List[Dict[str, Any]] = []
+    missing_title: List[Dict[str, Any]] = []
+    missing_content: List[Dict[str, Any]] = []
+    stored_invalid: List[Dict[str, Any]] = []
+    recomputed_invalid: List[Dict[str, Any]] = []
+    flag_mismatch: List[Tuple[Dict[str, Any], bool, bool]] = []
 
     for row in rows:
         published = parse_date_safe(row.get("published_date"))
@@ -14989,62 +15016,149 @@ def audit_feature13_location() -> Dict[str, Any]:
     print(f"[AUDIT] Recomputed context INVALID : {len(recomputed_invalid)}")
     print(f"[AUDIT] Context flag mismatch      : {len(flag_mismatch)}")
 
-    if duplicate_links:
-        # Unique constraint database bekerja pada URL mentah, sedangkan audit
-        # menggunakan URL ternormalisasi. Karena itu istilah yang lebih tepat
-        # adalah collision URL setelah normalisasi. Tampilkan pasangan agar
-        # cleanup berikutnya dapat dilakukan secara aman.
-        normalized_groups: Dict[str, List[Dict[str, Any]]] = {}
-        for row in rows:
-            link = normalize_url(row.get("link"))
-            if link:
-                normalized_groups.setdefault(link, []).append(row)
-        collision_groups = [
-            (link, group) for link, group in normalized_groups.items() if len(group) > 1
-        ]
-        fail(f"Ditemukan {duplicate_links} normalized-link collision")
+    # ========================================================
+    # NORMALIZED-LINK COLLISION DETAIL
+    # ========================================================
+    normalized_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        link = normalize_url(row.get("link"))
+        if link:
+            normalized_groups.setdefault(link, []).append(row)
+
+    collision_groups = [
+        (link, group)
+        for link, group in normalized_groups.items()
+        if len(group) > 1
+    ]
+
+    if collision_groups:
+        fail(f"Ditemukan {len(collision_groups)} normalized-link collision")
         print("=" * 70)
         print("[AUDIT] NORMALIZED LINK COLLISION DETAILS")
         print("=" * 70)
-        for link, group in collision_groups[:20]:
-            print(f"[COLLISION] normalized={link}")
+        for normalized_link, group in collision_groups[:20]:
+            print(f"[COLLISION] normalized={normalized_link}")
             for row in group:
+                content = normalize_text(row.get("content"))
                 print(
-                    f"  id={row.get('id')} | raw_link={row.get('link')} | "
-                    f"title={normalize_text(row.get('title'))[:160]}"
+                    f"  id={row.get('id')} | raw_link={row.get('link')}\n"
+                    f"  title={normalize_text(row.get('title'))[:200]}\n"
+                    f"  published_date={row.get('published_date')} | "
+                    f"domain={get_domain(row.get('link'))}\n"
+                    f"  keywords={row.get('matched_location_keywords') or []} | "
+                    f"stored_context={row.get('location_context_valid')}\n"
+                    f"  content_length={len(content)} | "
+                    f"content_preview={content[:300]}"
                 )
+                print("  " + "-" * 66)
+    else:
+        print("[PASS] No normalized-link collision detected")
+
+    # ========================================================
+    # RECOMPUTED INVALID — GROUP BY KEYWORD + DOMAIN
+    # ========================================================
+    if recomputed_invalid:
+        keyword_counts: Counter = Counter()
+        domain_counts: Counter = Counter()
+
+        for row in recomputed_invalid:
+            keywords = row.get("matched_location_keywords") or []
+            if not keywords:
+                keyword_counts["[no-keyword]"] += 1
+            else:
+                for keyword in keywords:
+                    keyword_counts[normalize_text(keyword).lower()] += 1
+            domain_counts[get_domain(row.get("link"))] += 1
+
+        print("=" * 70)
+        print("[AUDIT] RECOMPUTED INVALID — GROUP BY KEYWORD")
+        print("=" * 70)
+        for keyword, count in keyword_counts.most_common():
+            print(f"[INVALID-KEYWORD] {keyword} : {count}")
+
+        print("=" * 70)
+        print("[AUDIT] RECOMPUTED INVALID — GROUP BY DOMAIN")
+        print("=" * 70)
+        for domain, count in domain_counts.most_common():
+            print(f"[INVALID-DOMAIN] {domain} : {count}")
+
+        print("=" * 70)
+        print(
+            f"[AUDIT] SELURUH RECOMPUTED INVALID ROWS "
+            f"({len(recomputed_invalid)} ROWS)"
+        )
+        print("=" * 70)
+
+        for index, row in enumerate(recomputed_invalid, start=1):
+            keywords = row.get("matched_location_keywords") or []
+            content = normalize_text(row.get("content"))
+            published = row.get("published_date")
+            print(
+                f"[INVALID {index:03d}/{len(recomputed_invalid):03d}] "
+                f"id={row.get('id')} | date={published} | "
+                f"domain={get_domain(row.get('link'))} | "
+                f"keywords={keywords}\n"
+                f"  title={normalize_text(row.get('title'))[:240]}\n"
+                f"  link={row.get('link')}\n"
+                f"  content_preview={content[:500]}"
+            )
+
+        print("=" * 70)
+        print("[ACTION] Row invalid BELUM dihapus dan BELUM diubah.")
+        print("[ACTION] Laporan ini hanya untuk review sebelum cleanup.")
+    else:
+        print("[PASS] Tidak ada row yang invalid menurut validator terbaru")
+
+    # ========================================================
+    # CONTEXT FLAG MISMATCH
+    # ========================================================
+    if flag_mismatch:
+        stale_true = sum(
+            1 for _, stored_valid, recomputed_valid in flag_mismatch
+            if stored_valid is True and recomputed_valid is False
+        )
+        stale_false = sum(
+            1 for _, stored_valid, recomputed_valid in flag_mismatch
+            if stored_valid is False and recomputed_valid is True
+        )
+
+        print("=" * 70)
+        print("[AUDIT] CONTEXT FLAG MISMATCH SUMMARY")
+        print("=" * 70)
+        print(f"[MISMATCH] stored=False -> recomputed=True : {stale_false}")
+        print(f"[MISMATCH] stored=True  -> recomputed=False: {stale_true}")
+        print(
+            "[ACTION] Mismatch BELUM disinkronisasi; audit tetap read-only."
+        )
+
+        print("=" * 70)
+        print("[AUDIT] CONTEXT FLAG MISMATCH DETAILS (MAX 50)")
+        print("=" * 70)
+        for row, stored_valid, recomputed_valid in flag_mismatch[:50]:
+            print(
+                f"[MISMATCH] id={row.get('id')} | "
+                f"stored={stored_valid} | recomputed={recomputed_valid} | "
+                f"domain={get_domain(row.get('link'))} | "
+                f"keywords={row.get('matched_location_keywords') or []}\n"
+                f"  title={normalize_text(row.get('title'))[:220]}"
+            )
+    else:
+        print("[PASS] Tidak ada context flag mismatch")
+
+    # ========================================================
+    # OTHER DATA QUALITY CHECKS
+    # ========================================================
     if missing_date:
         fail(f"Ditemukan {len(missing_date)} row tanpa publication date")
     if non_2026:
         fail(f"Ditemukan {len(non_2026)} row bukan tahun {DELI_SERDANG_LOCATION_YEAR}")
-
-    if recomputed_invalid:
-        print("=" * 70)
-        print("[AUDIT] CONTOH ROW DENGAN KONTEKS TIDAK VALID")
-        print("=" * 70)
-        for row in recomputed_invalid[:20]:
-            print(
-                f"[REVIEW] id={row.get('id')} | "
-                f"keywords={row.get('matched_location_keywords') or []} | "
-                f"title={normalize_text(row.get('title'))[:180]}"
-            )
-        print("=" * 70)
-        print("[ACTION] Row invalid belum dihapus otomatis; review dahulu sebelum cleanup.")
-
-    if flag_mismatch:
-        print("=" * 70)
-        print("[AUDIT] CONTEXT FLAG MISMATCH")
-        print("=" * 70)
-        for row, stored_valid, recomputed_valid in flag_mismatch[:20]:
-            print(
-                f"[MISMATCH] id={row.get('id')} | stored={stored_valid} | "
-                f"recomputed={recomputed_valid} | title={normalize_text(row.get('title'))[:160]}"
-            )
+    if missing_title:
+        fail(f"Ditemukan {len(missing_title)} row tanpa title")
+    if missing_content:
+        fail(f"Ditemukan {len(missing_content)} row tanpa content")
 
     if not missing_date and not non_2026:
         print("[PASS] Existing data satisfies 2026-only invariant")
-    if not duplicate_links:
-        print("[PASS] No duplicate links detected")
 
     print("=" * 70)
     if failures:
@@ -15052,14 +15166,27 @@ def audit_feature13_location() -> Dict[str, Any]:
         for failure in failures:
             print(f" - {failure}")
         print("=" * 70)
-        return {"status": "FAILED", "failures": failures, "total_rows": len(rows), "recomputed_invalid": len(recomputed_invalid)}
+        return {
+            "status": "FAILED",
+            "failures": failures,
+            "total_rows": len(rows),
+            "recomputed_invalid": len(recomputed_invalid),
+            "flag_mismatch": len(flag_mismatch),
+            "collision_groups": len(collision_groups),
+        }
 
     print("FEATURE #13 EXISTING DATA AUDIT: PASSED")
     print("Read-only            : YES")
     print("Production DB writes : NONE")
     print("Telegram             : NOT SENT")
     print("=" * 70)
-    return {"status": "PASSED", "total_rows": len(rows), "recomputed_invalid": len(recomputed_invalid), "flag_mismatch": len(flag_mismatch)}
+    return {
+        "status": "PASSED",
+        "total_rows": len(rows),
+        "recomputed_invalid": len(recomputed_invalid),
+        "flag_mismatch": len(flag_mismatch),
+        "collision_groups": len(collision_groups),
+    }
 
 
 def test_feature13_real_integration() -> Dict[str, Any]:
