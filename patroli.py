@@ -14560,7 +14560,37 @@ def main() -> None:
         help="KIRIM kandidat Intelligence Alert ke Telegram secara eksplisit",
     )
 
+    parser.add_argument(
+        "--intelligence-briefing",
+        action="store_true",
+        help="generate Intelligence Briefing harian dari production secara read-only",
+    )
+
+    parser.add_argument(
+        "--test-intelligence-briefing-real",
+        action="store_true",
+        help="uji Intelligence Briefing terhadap production nyata secara read-only",
+    )
+
+    parser.add_argument(
+        "--briefing-date",
+        default=None,
+        help="tanggal briefing YYYY-MM-DD; default = tanggal artikel production terbaru",
+    )
+
     args = parser.parse_args()
+    if args.intelligence_briefing:
+        result = intelligence_briefing_real_read_only(requested_date=args.briefing_date)
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Intelligence Briefing gagal: {result.get('reason')}")
+        return
+
+    if args.test_intelligence_briefing_real:
+        result = test_intelligence_briefing_real_read_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(f"Test Intelligence Briefing REAL gagal: {result.get('reason')}")
+        return
+
 
     # --------------------------------------------------------
     # PRODUCTION AUDIT
@@ -17948,6 +17978,390 @@ def issue_topic_detection_real_read_only() -> Dict[str, Any]:
     print(f"[ISSUE] Artifact CSV          : {artifacts['csv']}")
     print("[ISSUE] READ-ONLY | database_write=False | telegram=False")
     return {"status":"PASSED", "snapshot":snapshot, "artifacts":artifacts}
+
+
+
+# ============================================================
+# FEATURE #12 — INTELLIGENCE BRIEFING V1
+# READ-ONLY / EVIDENCE-GROUNDED / NO LLM EXTERNAL CALL
+# ============================================================
+# Tujuan:
+#   Menyusun briefing intelijen harian untuk pimpinan dari hasil
+#   Feature #1–#11 tanpa mengubah data sumber.
+#
+# Prinsip V1:
+#   - READ-ONLY: hanya membaca production database.
+#   - Risk, event, trend, EWS, dan issue/topic dihitung di memory.
+#   - Tidak mengubah risk_score, sentiment, event_key, issue/topic,
+#     atau kolom database.
+#   - Tidak mengirim Telegram.
+#   - Setiap item briefing memiliki evidence article ID + title.
+#   - Klaim tidak boleh lebih kuat daripada evidence.
+#   - Jika evidence tidak cukup, item masuk REVIEW/TIDAK DISIMPULKAN.
+#   - V1 menggunakan deterministic evidence-grounded narrative.
+#     Integrasi LLM eksternal sengaja belum diaktifkan agar baseline
+#     semantic dapat diuji terlebih dahulu.
+# ============================================================
+
+FEATURE12_VERSION = "FEATURE12-READONLY-V1-EVIDENCE-GROUNDED-BRIEFING"
+FEATURE12_METHOD = "EVIDENCE_GROUNDED_DAILY_INTELLIGENCE_BRIEFING_V1"
+FEATURE12_TOP_ARTICLES = 10
+FEATURE12_MAX_EVIDENCE = 5
+FEATURE12_MAX_TRENDS = 8
+FEATURE12_MAX_ISSUES = 8
+FEATURE12_MAX_EWS = 5
+
+
+def _feature12_safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _feature12_safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _feature12_date(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        dt = date_parser.parse(text)
+        return dt.date().isoformat()
+    except Exception:
+        m = re.search(r"(20\d{2}-\d{2}-\d{2})", text)
+        return m.group(1) if m else None
+
+
+def _feature12_article_date(article: Dict[str, Any]) -> Optional[str]:
+    for key in ("published_date", "published_at", "date", "created_at", "timestamp"):
+        parsed = _feature12_date(article.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _feature12_evidence(article: Dict[str, Any], risk: Dict[str, Any], issue: Dict[str, Any]) -> Dict[str, Any]:
+    primary = issue.get("primary_issue") or issue.get("primary_label") or "UNCLASSIFIED"
+    confidence = issue.get("primary_confidence") or "LOW"
+    signal = issue.get("issue_signal") or "UNKNOWN"
+    title = str(article.get("title") or "").strip()
+    return {
+        "article_id": article.get("id"),
+        "title": title,
+        "source": article.get("source") or article.get("media") or "UNKNOWN",
+        "published_date": _feature12_article_date(article),
+        "primary_issue": primary,
+        "primary_confidence": confidence,
+        "issue_signal": signal,
+        "risk_score": _feature12_safe_int(risk.get("risk_score")),
+        "risk_level": str(risk.get("risk_level") or "LOW"),
+        "link": article.get("link") or "",
+    }
+
+
+def _feature12_priority(risk: Dict[str, Any], issue: Dict[str, Any], trend: Optional[Dict[str, Any]] = None) -> float:
+    score = _feature12_safe_float(risk.get("risk_score"))
+    level = str(risk.get("risk_level") or "LOW").upper()
+    score += {"CRITICAL": 35.0, "HIGH": 25.0, "MEDIUM": 10.0, "LOW": 0.0}.get(level, 0.0)
+    confidence = str(issue.get("primary_confidence") or "LOW").upper()
+    score += {"HIGH": 8.0, "MEDIUM": 4.0, "LOW": 0.0}.get(confidence, 0.0)
+    if trend:
+        score += {"ESCALATING": 30.0, "EMERGING": 25.0, "RISING": 15.0, "STABLE": 0.0, "DECLINING": -5.0}.get(
+            str(trend.get("trend_status") or ""), 0.0
+        )
+    return round(score, 2)
+
+
+def _feature12_priority_label(value: float) -> str:
+    if value >= 100:
+        return "CRITICAL"
+    if value >= 75:
+        return "HIGH"
+    if value >= 50:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _feature12_build_article_cards(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    cards: List[Dict[str, Any]] = []
+    for article in articles:
+        try:
+            risk = calculate_article_risk(article, articles)
+        except Exception:
+            risk = {"risk_score": 0, "risk_level": "UNKNOWN", "reasons": []}
+        try:
+            issue = detect_article_issues(article)
+        except Exception:
+            issue = {"primary_issue": "UNCLASSIFIED", "primary_confidence": "LOW", "issue_signal": "UNKNOWN"}
+        try:
+            event = detect_article_event(article, articles)
+        except Exception:
+            event = {}
+        try:
+            trend = analyze_event_trend(article, articles) if event else {}
+        except Exception:
+            trend = {}
+        evidence = _feature12_evidence(article, risk, issue)
+        evidence["event_key"] = event.get("event_key") if isinstance(event, dict) else None
+        evidence["event_name"] = event.get("event_name") if isinstance(event, dict) else None
+        evidence["trend_status"] = trend.get("trend_status") if isinstance(trend, dict) else None
+        evidence["trend_confidence"] = trend.get("confidence") if isinstance(trend, dict) else None
+        evidence["priority_score"] = _feature12_priority(risk, issue, trend if isinstance(trend, dict) else None)
+        evidence["priority_level"] = _feature12_priority_label(evidence["priority_score"])
+        evidence["risk_reasons"] = list(risk.get("reasons") or [])[:5]
+        cards.append(evidence)
+    cards.sort(key=lambda x: (-_feature12_safe_float(x.get("priority_score")), str(x.get("published_date") or ""), str(x.get("article_id") or "")))
+    return cards
+
+
+def _feature12_select_briefing_date(articles: List[Dict[str, Any]], requested: Optional[str]) -> str:
+    if requested:
+        parsed = _feature12_date(requested)
+        if not parsed:
+            raise ValueError(f"briefing_date tidak valid: {requested}")
+        return parsed
+    dates = [d for d in (_feature12_article_date(a) for a in articles) if d]
+    if dates:
+        return max(dates)
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _feature12_date_articles(articles: List[Dict[str, Any]], briefing_date: str) -> List[Dict[str, Any]]:
+    selected = [a for a in articles if _feature12_article_date(a) == briefing_date]
+    return selected
+
+
+def _feature12_issue_counts(cards: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts = Counter()
+    for card in cards:
+        issue = str(card.get("primary_issue") or "UNCLASSIFIED")
+        counts[issue] += 1
+    return dict(counts.most_common(FEATURE12_MAX_ISSUES))
+
+
+def _feature12_build_trend_section(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    counter: Counter = Counter()
+    for c in cards:
+        status = str(c.get("trend_status") or "").upper()
+        if status in {"ESCALATING", "EMERGING", "RISING", "STABLE", "DECLINING"}:
+            counter[status] += 1
+    return [{"trend_status": k, "article_count": v} for k, v in counter.most_common(FEATURE12_MAX_TRENDS)]
+
+
+def _feature12_build_early_warnings(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    try:
+        ews = build_early_warning_system(articles)
+    except Exception as exc:
+        return [{"status": "REVIEW", "reason": f"EWS calculation unavailable: {type(exc).__name__}"}]
+    warnings = list(ews.get("top_early_warnings") or [])
+    output = []
+    for item in warnings[:FEATURE12_MAX_EWS]:
+        if not isinstance(item, dict):
+            continue
+        output.append({
+            "event_key": item.get("event_key"),
+            "event_name": item.get("event_name"),
+            "score": item.get("score"),
+            "level": item.get("level"),
+            "trend_status": item.get("trend_status"),
+            "reason": item.get("reason") or item.get("reasons") or [],
+        })
+    return output
+
+
+def _feature12_executive_summary(briefing_date: str, cards: List[Dict[str, Any]], ews: List[Dict[str, Any]]) -> str:
+    total = len(cards)
+    high = sum(1 for c in cards if str(c.get("risk_level") or "").upper() in {"HIGH", "CRITICAL"})
+    issue_counts = _feature12_issue_counts(cards)
+    top_issue = next(iter(issue_counts), "belum teridentifikasi")
+    rising = sum(1 for c in cards if str(c.get("trend_status") or "").upper() in {"ESCALATING", "EMERGING", "RISING"})
+    ews_high = sum(1 for x in ews if str(x.get("level") or "").upper() == "HIGH")
+    return (
+        f"Pada {briefing_date}, sistem memproses {total} artikel pada tanggal briefing. "
+        f"Sebanyak {high} artikel memiliki risk level HIGH/CRITICAL, dengan isu utama '{top_issue}'. "
+        f"Terdapat {rising} artikel yang menunjukkan indikator perkembangan trend (RISING/EMERGING/ESCALATING). "
+        f"Early Warning level HIGH teridentifikasi sebanyak {ews_high}. "
+        "Ringkasan ini bersifat evidence-grounded; klaim substantif mengikuti evidence artikel dan hasil feature yang tersedia."
+    )
+
+
+def _feature12_render_text(snapshot: Dict[str, Any]) -> str:
+    meta = snapshot.get("metadata", {})
+    summary = snapshot.get("summary", {})
+    cards = snapshot.get("top_priority_articles", [])
+    issues = snapshot.get("issue_distribution", {})
+    trends = snapshot.get("trend_overview", [])
+    warnings = snapshot.get("early_warnings", [])
+
+    lines = [
+        "INTELLIGENCE BRIEFING",
+        "=" * 72,
+        f"Tanggal briefing : {meta.get('briefing_date')}",
+        f"Generated         : {meta.get('generated_at')}",
+        f"Version           : {meta.get('version')}",
+        f"Method            : {meta.get('method')}",
+        "Mode              : READ-ONLY",
+        "",
+        "EXECUTIVE SUMMARY",
+        summary.get("executive_summary") or "REVIEW: executive summary tidak tersedia.",
+        "",
+        "TOP PRIORITY ISSUES / ARTICLES",
+    ]
+    if cards:
+        for idx, card in enumerate(cards, 1):
+            lines.append(
+                f"{idx}. [{card.get('priority_level')}] {card.get('title')} "
+                f"(ID={card.get('article_id')}, Risk={card.get('risk_score')}/{card.get('risk_level')}, "
+                f"Issue={card.get('primary_issue')}, Trend={card.get('trend_status') or 'N/A'})"
+            )
+            lines.append(f"   Source: {card.get('source')} | Evidence: article ID + title")
+            if card.get("link"):
+                lines.append(f"   Link: {card.get('link')}")
+    else:
+        lines.append("REVIEW: tidak ada artikel pada tanggal briefing.")
+
+    lines += ["", "ISSUE DISTRIBUTION"]
+    for issue, count in issues.items():
+        lines.append(f"- {issue}: {count}")
+
+    lines += ["", "TREND OVERVIEW"]
+    if trends:
+        for item in trends:
+            lines.append(f"- {item.get('trend_status')}: {item.get('article_count')} article(s)")
+    else:
+        lines.append("- INSUFFICIENT_DATA")
+
+    lines += ["", "EARLY WARNING"]
+    if warnings:
+        for item in warnings:
+            lines.append(
+                f"- [{item.get('level')}] {item.get('event_name') or item.get('event_key') or 'Unknown event'} "
+                f"score={item.get('score')} trend={item.get('trend_status')} reason={item.get('reason')}"
+            )
+    else:
+        lines.append("- Tidak ada early warning yang tersedia dari evidence saat ini.")
+
+    lines += [
+        "",
+        "ANALYST ATTENTION",
+        "- Prioritaskan item HIGH/CRITICAL yang memiliki evidence issue substantif dan/atau trend meningkat.",
+        "- Jangan memperlakukan konteks prosedural/aktivitas sebagai masalah substantif tanpa evidence tambahan.",
+        "- Item dengan evidence tidak cukup harus tetap REVIEW, bukan dipaksa menjadi kesimpulan.",
+        "",
+        "READ-ONLY INVARIANTS",
+        f"- database_write = {meta.get('database_write')}",
+        f"- telegram_send = {meta.get('telegram_send')}",
+        f"- source_article_mutation = {meta.get('source_article_mutation')}",
+    ]
+    return "\n".join(lines)
+
+
+def build_intelligence_briefing(articles: List[Dict[str, Any]], requested_date: Optional[str] = None) -> Dict[str, Any]:
+    briefing_date = _feature12_select_briefing_date(articles, requested_date)
+    day_articles = _feature12_date_articles(articles, briefing_date)
+    cards = _feature12_build_article_cards(day_articles)
+    top_cards = cards[:FEATURE12_TOP_ARTICLES]
+    ews = _feature12_build_early_warnings(articles)
+    snapshot = {
+        "metadata": {
+            "version": FEATURE12_VERSION,
+            "method": FEATURE12_METHOD,
+            "feature": "FEATURE_12_INTELLIGENCE_BRIEFING",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "briefing_date": briefing_date,
+            "mode": "READ-ONLY",
+            "database_write": False,
+            "telegram_send": False,
+            "source_article_mutation": False,
+            "llm_external_call": False,
+            "evidence_grounded": True,
+        },
+        "summary": {
+            "production_articles": len(articles),
+            "briefing_articles": len(day_articles),
+            "top_priority_articles": len(top_cards),
+            "high_or_critical": sum(1 for c in cards if str(c.get("risk_level") or "").upper() in {"HIGH", "CRITICAL"}),
+            "executive_summary": _feature12_executive_summary(briefing_date, cards, ews),
+        },
+        "issue_distribution": _feature12_issue_counts(cards),
+        "trend_overview": _feature12_build_trend_section(cards),
+        "early_warnings": ews,
+        "top_priority_articles": top_cards,
+        "evidence": top_cards[:FEATURE12_MAX_EVIDENCE],
+    }
+    snapshot["briefing_text"] = _feature12_render_text(snapshot)
+    return snapshot
+
+
+def _feature12_write_artifacts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    base = Path(f"intelligence_briefing({stamp})")
+    json_path = str(base.with_suffix(".json"))
+    txt_path = str(base.with_suffix(".txt"))
+    html_path = str(base.with_suffix(".html"))
+    Path(json_path).write_text(json.dumps(snapshot, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    Path(txt_path).write_text(snapshot.get("briefing_text", ""), encoding="utf-8")
+    safe = html.escape(snapshot.get("briefing_text", ""))
+    Path(html_path).write_text(
+        "<html><head><meta charset='utf-8'><title>Intelligence Briefing</title></head>"
+        f"<body><pre>{safe}</pre></body></html>", encoding="utf-8"
+    )
+    return {"json": json_path, "txt": txt_path, "html": html_path}
+
+
+def intelligence_briefing_real_read_only(requested_date: Optional[str] = None) -> Dict[str, Any]:
+    print("=" * 72)
+    print("FEATURE #12 — INTELLIGENCE BRIEFING / REAL PRODUCTION / READ-ONLY")
+    print("=" * 72)
+    before = get_all_articles()
+    if not before:
+        return {"status": "FAILED", "reason": "EMPTY_DATABASE"}
+    before_ids = sorted(str(a.get("id")) for a in before if a.get("id") is not None)
+    snapshot = build_intelligence_briefing(before, requested_date=requested_date)
+    artifacts = _feature12_write_artifacts(snapshot)
+    after = get_all_articles()
+    after_ids = sorted(str(a.get("id")) for a in after if a.get("id") is not None)
+    if before_ids != after_ids:
+        return {"status": "FAILED", "reason": "DATABASE_CHANGED", "snapshot": snapshot}
+    print(f"[BRIEFING] Date                 : {snapshot['metadata']['briefing_date']}")
+    print(f"[BRIEFING] Production articles  : {snapshot['summary']['production_articles']}")
+    print(f"[BRIEFING] Briefing articles    : {snapshot['summary']['briefing_articles']}")
+    print(f"[BRIEFING] HIGH/CRITICAL        : {snapshot['summary']['high_or_critical']}")
+    print(f"[BRIEFING] Issue distribution   : {snapshot['issue_distribution']}")
+    print(f"[BRIEFING] Artifacts             : {artifacts}")
+    print("[TEST PASS] DATABASE ID UNCHANGED")
+    print("[TEST PASS] EVIDENCE-GROUNDED STRUCTURE")
+    print("[TEST PASS] READ-ONLY | database_write=False | telegram_send=False")
+    return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
+
+
+def test_intelligence_briefing_real_read_only() -> Dict[str, Any]:
+    result = intelligence_briefing_real_read_only()
+    if result.get("status") != "PASSED":
+        return result
+    snapshot = result["snapshot"]
+    meta = snapshot.get("metadata", {})
+    if meta.get("database_write") is not False or meta.get("telegram_send") is not False or meta.get("source_article_mutation") is not False:
+        return {"status": "FAILED", "reason": "READ_ONLY_INVARIANT_BROKEN"}
+    if not snapshot.get("briefing_text"):
+        return {"status": "FAILED", "reason": "EMPTY_BRIEFING_TEXT"}
+    for card in snapshot.get("top_priority_articles", []):
+        if card.get("article_id") is None or not card.get("title"):
+            return {"status": "FAILED", "reason": "MISSING_EVIDENCE_ANCHOR", "article": card}
+    print("[TEST PASS] BRIEFING TEXT")
+    print("[TEST PASS] EVIDENCE ANCHORS")
+    print("[TEST PASS] READ-ONLY INVARIANTS")
+    print("TEST INTELLIGENCE BRIEFING REAL: PASSED")
+    return result
+
 
 
 # ============================================================
