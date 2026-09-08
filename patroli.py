@@ -1966,6 +1966,9 @@ def check_satker_relevance(
 # ============================================================
 
 DELI_SERDANG_LOCATION_TABLE = "deli_serdang_location_articles"
+# Feature #13 wajib tetap 2026-only, terlepas dari TAHUN_TARGET.
+# Ini adalah guard bisnis untuk tabel lokasi, bukan konfigurasi crawler umum.
+DELI_SERDANG_LOCATION_YEAR = 2026
 
 
 def _is_deli_serdang_location_search(candidate: Dict[str, Any]) -> bool:
@@ -2044,12 +2047,29 @@ def save_deli_serdang_location_article(
     article_images: Optional[List[str]] = None,
 ) -> bool:
     """Simpan discovery lokasi ke tabel khusus, tanpa menyentuh articles."""
+    # HARD GUARD: tabel Feature #13 hanya boleh berisi artikel tahun 2026.
+    # Guard diletakkan di fungsi save agar semua jalur pemanggilan aman,
+    # termasuk jika fungsi ini dipanggil dari flow lain di masa depan.
+    parsed_published = parse_date_safe(published_date)
+    if not parsed_published or parsed_published.year != DELI_SERDANG_LOCATION_YEAR:
+        if parsed_published is None:
+            print(
+                "[LOCATION SKIP] tanggal artikel tidak ditemukan | "
+                f"{title[:100]}"
+            )
+        else:
+            print(
+                "[LOCATION SKIP] bukan tahun 2026 | "
+                f"{parsed_published.date()} | {title[:100]}"
+            )
+        return False
+
     payload = _feature13_location_record(
         candidate,
         title,
         content,
         final_url=final_url,
-        published_date=published_date,
+        published_date=parsed_published,
         article_images=article_images,
     )
     if not payload or not payload.get("link"):
@@ -4187,16 +4207,29 @@ candidate: Dict[str, Any],
     # Jalur ini tidak melewati gate satker dan tidak menulis `articles`.
     # ========================================================
     if _is_deli_serdang_location_search(candidate):
-        discovery_content = content if content else rss_description
-        if title or discovery_content:
-            save_deli_serdang_location_article(
-                candidate,
-                title,
-                discovery_content,
-                final_url=final_url,
-                published_date=published,
-                article_images=article_images,
+        # Feature #13 STRICTLY 2026-only. Jangan pernah menulis artikel
+        # tanpa tanggal atau artikel tahun selain 2026 ke tabel lokasi.
+        if not published:
+            print(
+                "[LOCATION SKIP] tanggal artikel tidak ditemukan | "
+                f"{title[:100]}"
             )
+        elif published.year != DELI_SERDANG_LOCATION_YEAR:
+            print(
+                "[LOCATION SKIP] bukan tahun 2026 | "
+                f"{published.date()} | {title[:100]}"
+            )
+        else:
+            discovery_content = content if content else rss_description
+            if title or discovery_content:
+                save_deli_serdang_location_article(
+                    candidate,
+                    title,
+                    discovery_content,
+                    final_url=final_url,
+                    published_date=published,
+                    article_images=article_images,
+                )
 
     # ========================================================
     # KONTEN TERLALU PENDEK
