@@ -1989,18 +1989,55 @@ def find_location_matches(title: str, content: str) -> List[str]:
     return sorted(set(matches))
 
 
-def _has_deli_serdang_location_context(title: str, content: str, location_matches: Optional[List[str]] = None) -> bool:
-    text = normalize_text(f"{title or ''} ; {content or ''}")
+def _has_deli_serdang_location_context(
+    title: str,
+    content: str,
+    location_matches: Optional[List[str]] = None,
+) -> bool:
+    """
+    Validasi apakah keyword lokasi benar-benar merujuk ke Deli Serdang.
+
+    Penting: keberadaan keyword saja TIDAK cukup. Beberapa nama wilayah
+    bersifat ambigu, misalnya ``galang``, ``gunung meriah`` dan ``bangun
+    purba``. Karena itu artikel harus mempunyai konteks administratif yang
+    mengikat keyword tersebut ke Deli Serdang, atau menyebut Deli Serdang
+    secara eksplisit.
+    """
+    title_text = normalize_text(title or "")
+    content_text = normalize_text(content or "")
+    text = normalize_text(f"{title_text} ; {content_text}")
+
+    # 1. Bukti terkuat: artikel secara eksplisit menyebut Deli Serdang.
     if re.search(r"\b(?:deli serdang|deliserdang)\b", text, flags=re.IGNORECASE):
         return True
-    for location in (location_matches or find_location_matches(title, content)):
+
+    matches = location_matches or find_location_matches(title, content)
+    if not matches:
+        return False
+
+    # 2. Nama lokasi dipakai sebagai kecamatan Deli Serdang.
+    for location in matches:
         loc = re.escape(location)
         if re.search(rf"\bkecamatan\s+{loc}\b", text, flags=re.IGNORECASE):
             return True
-        if re.search(rf"\b{loc}\s*,\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b", text, flags=re.IGNORECASE):
+
+        # 3. Bentuk berita yang umum: "Galang, Kabupaten Deli Serdang"
+        #    atau "Galang Kabupaten Deli Serdang".
+        if re.search(
+            rf"\b{loc}\s*,?\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
             return True
-        if re.search(rf"\b{loc}\s+(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b", text, flags=re.IGNORECASE):
+
+        # 4. Bentuk terbalik: "Kabupaten Deli Serdang, Galang".
+        if re.search(
+            rf"\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\s*,?\s*(?:kecamatan\s+)?{loc}\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
             return True
+
     return False
 
 
@@ -2073,6 +2110,17 @@ def save_deli_serdang_location_article(
         article_images=article_images,
     )
     if not payload or not payload.get("link"):
+        return False
+
+    # HARD GUARD LOCATION: keyword ambigu saja tidak boleh masuk DB.
+    # Sebelum patch ini payload hanya menyimpan flag location_context_valid
+    # tetapi tetap di-upsert walaupun flag tersebut False.
+    if payload.get("location_context_valid") is not True:
+        print(
+            "[LOCATION SKIP] konteks Deli Serdang tidak tervalidasi | "
+            f"keywords={payload.get('matched_location_keywords')} | "
+            f"{title[:100]}"
+        )
         return False
 
     try:
@@ -14718,6 +14766,67 @@ def test_feature13_location() -> Dict[str, Any]:
     )
 
     # ------------------------------------------------------------
+    # 8. False-positive location regression tests
+    # ------------------------------------------------------------
+    ambiguous_cases = [
+        (
+            "GEBRAK Galang Aliansi Demo Kejati Sulbar",
+            "Masyarakat Sulawesi Barat menggalang aksi di Galang.",
+            "Galang tanpa konteks Deli Serdang",
+        ),
+        (
+            "LDKS OSIS SMKN 1 Gunung Meriah Bekali Siswa",
+            "Kegiatan berlangsung di Gunung Meriah, Aceh Singkil.",
+            "Gunung Meriah di luar Deli Serdang",
+        ),
+        (
+            "Kasus Pencurian Rumah di Bangun Purba",
+            "Polres Rokan Hulu menangani perkara di Bangun Purba.",
+            "Bangun Purba Rokan Hulu",
+        ),
+        (
+            "Bhabinkamtibmas Polsek Deli Tua Mediasi Konflik",
+            "Polsek Deli Tua melakukan mediasi konflik pemuda.",
+            "Deli Tua tanpa konteks administratif Deli Serdang",
+        ),
+    ]
+
+    # Re-enable mock after the valid-date test so false-positive regression
+    # cases can prove that the DB write path is never reached.
+    globals()["get_supabase"] = lambda: mock_supabase
+    calls_before_ambiguous = len(mock_supabase.calls)
+    for false_title, false_content, label in ambiguous_cases:
+        false_matches = find_location_matches(false_title, false_content)
+        false_context = _has_deli_serdang_location_context(
+            false_title, false_content, false_matches
+        )
+        check(
+            false_context is False,
+            f"Reject false-positive: {label}",
+            f"matches={false_matches}, context_valid={false_context}",
+        )
+
+        false_saved = save_deli_serdang_location_article(
+            candidate,
+            false_title,
+            false_content,
+            final_url="https://example.test/false-positive",
+            published_date=published_2026,
+            article_images=[],
+        )
+        check(
+            false_saved is False,
+            f"False-positive does not enter DB: {label}",
+        )
+
+    check(
+        len(mock_supabase.calls) == calls_before_ambiguous,
+        "False-positive cases do not reach DB write path",
+        f"calls={len(mock_supabase.calls)}",
+    )
+    globals()["get_supabase"] = original_get_supabase
+
+    # ------------------------------------------------------------
     # Final result
     # ------------------------------------------------------------
     print("=" * 70)
@@ -14779,7 +14888,7 @@ def test_feature13_real_integration() -> Dict[str, Any]:
         response = (
             supabase
             .table(DELI_SERDANG_LOCATION_TABLE)
-            .select("id,link,published_date,title,matched_location_keywords")
+            .select("id,link,published_date,title,matched_location_keywords,location_context_valid")
             .execute()
         )
         return list(response.data or [])
@@ -14807,7 +14916,13 @@ def test_feature13_real_integration() -> Dict[str, Any]:
 
     print(f"[REAL] Existing location rows : {len(before_rows)}")
     print(f"[REAL] Existing unique links  : {len(before_links)}")
+    before_invalid_context = [
+        row for row in before_rows
+        if row.get("location_context_valid") is not True
+    ]
+
     print(f"[REAL] Existing non-2026 rows : {len(before_non_2026)}")
+    print(f"[REAL] Existing invalid location context : {len(before_invalid_context)}")
 
     if before_non_2026:
         fail(
@@ -14915,6 +15030,19 @@ def test_feature13_real_integration() -> Dict[str, Any]:
         else:
             after_non_2026.append(row)
 
+    after_invalid_context = [
+        row for row in after_rows
+        if row.get("location_context_valid") is not True
+    ]
+    new_rows = [
+        row for row in after_rows
+        if normalize_url(row.get("link")) in new_links
+    ]
+    new_invalid_context = [
+        row for row in new_rows
+        if row.get("location_context_valid") is not True
+    ]
+
     processed_ok = sum(1 for item in results if item.get("ok"))
     processed_rejected = sum(1 for item in results if not item.get("ok"))
 
@@ -14930,6 +15058,8 @@ def test_feature13_real_integration() -> Dict[str, Any]:
     print(f"[REAL] New location links      : {len(new_links)}")
     print(f"[REAL] Location rows 2026      : {after_2026}")
     print(f"[REAL] Location non-2026       : {len(after_non_2026)}")
+    print(f"[REAL] Location invalid context: {len(after_invalid_context)}")
+    print(f"[REAL] New invalid context    : {len(new_invalid_context)}")
 
     # ------------------------------------------------------------
     # 5. Hard production invariant.
@@ -14942,11 +15072,7 @@ def test_feature13_real_integration() -> Dict[str, Any]:
     else:
         print("[PASS] Production location table remains 2026-only")
 
-    # New rows must all be 2026.
-    new_rows = [
-        row for row in after_rows
-        if normalize_url(row.get("link")) in new_links
-    ]
+    # New rows must all be 2026 and have validated Deli Serdang context.
     new_non_2026 = []
     for row in new_rows:
         published = parse_date_safe(row.get("published_date"))
@@ -14957,6 +15083,14 @@ def test_feature13_real_integration() -> Dict[str, Any]:
         fail(f"Ditemukan {len(new_non_2026)} row baru non-2026")
     else:
         print("[PASS] Every newly persisted location article is 2026")
+
+    if new_invalid_context:
+        fail(
+            f"Ditemukan {len(new_invalid_context)} row baru dengan "
+            "location_context_valid=False"
+        )
+    else:
+        print("[PASS] Every newly persisted location article has valid Deli Serdang context")
 
     # The test must not touch the production articles table. This function
     # never calls run_once()/upsert_article(); this is an explicit contract check.
