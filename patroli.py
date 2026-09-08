@@ -14506,6 +14506,236 @@ def test_incident_case_dossier_real_read_only() -> Dict[str, Any]:
     return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
 
 
+
+def test_feature13_location() -> Dict[str, Any]:
+    """
+    Regression test Feature #13 — Deli Serdang Location Discovery.
+
+    TEST INI READ-ONLY terhadap Supabase production.
+    Tidak melakukan network crawl dan tidak melakukan INSERT/UPSERT nyata.
+
+    Yang diuji:
+      1. keyword discovery lokasi;
+      2. validasi konteks administratif;
+      3. payload Feature #13;
+      4. hard guard: hanya tahun 2026;
+      5. artikel tanpa tanggal ditolak;
+      6. upsert path dipanggil hanya untuk artikel valid 2026;
+      7. article_images ikut masuk payload.
+    """
+    print("=" * 70)
+    print("FEATURE #13 — DELI SERDANG LOCATION TEST / READ-ONLY")
+    print("=" * 70)
+    print(f"Target year        : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location keywords  : {len(DELI_SERDANG_LOCATION_KEYWORDS)}")
+    print("Supabase write     : MOCK / DISABLED")
+    print("Crawler network    : DISABLED")
+    print("Production DB      : TIDAK DIUBAH")
+    print("=" * 70)
+
+    failures: List[str] = []
+
+    def check(condition: bool, label: str, detail: str = "") -> None:
+        if condition:
+            print(f"[PASS] {label}")
+        else:
+            message = f"[FAIL] {label}"
+            if detail:
+                message += f" | {detail}"
+            print(message)
+            failures.append(label)
+
+    # ------------------------------------------------------------
+    # 1. Keyword discovery
+    # ------------------------------------------------------------
+    title = "Kegiatan di Kecamatan Sunggal, Kabupaten Deli Serdang"
+    content = (
+        "Kegiatan masyarakat berlangsung di Kecamatan Sunggal, "
+        "Kabupaten Deli Serdang pada tahun 2026."
+    )
+    matches = find_location_matches(title, content)
+    check(
+        "sunggal" in matches and "deli serdang" in matches,
+        "Location keyword detection",
+        f"matches={matches}",
+    )
+
+    # ------------------------------------------------------------
+    # 2. Administrative context
+    # ------------------------------------------------------------
+    context_valid = _has_deli_serdang_location_context(title, content, matches)
+    check(
+        context_valid,
+        "Administrative location context validation",
+        f"context_valid={context_valid}",
+    )
+
+    # ------------------------------------------------------------
+    # 3. Candidate search-query detection
+    # ------------------------------------------------------------
+    candidate = {
+        "link": "https://example.test/feature13-2026",
+        "search_query": "sunggal",
+        "source": "Google News",
+    }
+    check(
+        _is_deli_serdang_location_search(candidate),
+        "Location discovery query detection",
+    )
+
+    # ------------------------------------------------------------
+    # 4. Payload construction + article_images
+    # ------------------------------------------------------------
+    published_2026 = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    images = [
+        "https://example.test/image-1.jpg",
+        "https://example.test/image-2.jpg",
+    ]
+    payload = _feature13_location_record(
+        candidate,
+        title,
+        content,
+        final_url="https://example.test/final-article-2026",
+        published_date=published_2026,
+        article_images=images,
+    )
+    check(payload is not None, "Feature #13 payload construction")
+    check(
+        bool(payload) and payload.get("published_date", "").startswith("2026-"),
+        "2026 publication date in payload",
+        f"published_date={payload.get('published_date') if payload else None}",
+    )
+    check(
+        bool(payload) and payload.get("article_images") == images,
+        "Article images included in payload",
+        f"article_images={payload.get('article_images') if payload else None}",
+    )
+    check(
+        bool(payload) and payload.get("location_context_valid") is True,
+        "Location context flag in payload",
+        f"location_context_valid={payload.get('location_context_valid') if payload else None}",
+    )
+
+    # ------------------------------------------------------------
+    # 5. Mock Supabase write path
+    # ------------------------------------------------------------
+    class _MockResponse:
+        data = [{"id": 999999}]
+
+    class _MockQuery:
+        def __init__(self, table_name: str, calls: List[Dict[str, Any]]):
+            self.table_name = table_name
+            self.calls = calls
+
+        def upsert(self, row: Dict[str, Any], on_conflict: str = ""):
+            self.calls.append({
+                "table": self.table_name,
+                "row": row,
+                "on_conflict": on_conflict,
+            })
+            return self
+
+        def execute(self):
+            return _MockResponse()
+
+    class _MockSupabase:
+        def __init__(self):
+            self.calls: List[Dict[str, Any]] = []
+
+        def table(self, table_name: str):
+            return _MockQuery(table_name, self.calls)
+
+    mock_supabase = _MockSupabase()
+    original_get_supabase = globals().get("get_supabase")
+    globals()["get_supabase"] = lambda: mock_supabase
+    try:
+        saved_2026 = save_deli_serdang_location_article(
+            candidate,
+            title,
+            content,
+            final_url="https://example.test/final-article-2026",
+            published_date=published_2026,
+            article_images=images,
+        )
+    finally:
+        globals()["get_supabase"] = original_get_supabase
+
+    check(saved_2026 is True, "2026 article accepted by save guard")
+    check(
+        len(mock_supabase.calls) == 1,
+        "Exactly one mocked upsert for valid 2026 article",
+        f"calls={len(mock_supabase.calls)}",
+    )
+    if mock_supabase.calls:
+        call = mock_supabase.calls[0]
+        check(
+            call.get("table") == DELI_SERDANG_LOCATION_TABLE,
+            "Correct Feature #13 table",
+            f"table={call.get('table')}",
+        )
+        check(
+            call.get("on_conflict") == "link",
+            "Upsert uses link conflict key",
+            f"on_conflict={call.get('on_conflict')}",
+        )
+
+    # ------------------------------------------------------------
+    # 6. Non-2026 must be rejected BEFORE DB access
+    # ------------------------------------------------------------
+    calls_before_2025 = len(mock_supabase.calls)
+    saved_2025 = save_deli_serdang_location_article(
+        candidate,
+        title,
+        content,
+        final_url="https://example.test/final-article-2025",
+        published_date=datetime(2025, 12, 31, tzinfo=timezone.utc),
+        article_images=images,
+    )
+    check(saved_2025 is False, "2025 article rejected")
+    check(
+        len(mock_supabase.calls) == calls_before_2025,
+        "2025 article does not reach DB write path",
+        f"calls={len(mock_supabase.calls)}",
+    )
+
+    # ------------------------------------------------------------
+    # 7. Missing date must be rejected BEFORE DB access
+    # ------------------------------------------------------------
+    calls_before_missing_date = len(mock_supabase.calls)
+    saved_missing_date = save_deli_serdang_location_article(
+        candidate,
+        title,
+        content,
+        final_url="https://example.test/final-article-no-date",
+        published_date=None,
+        article_images=images,
+    )
+    check(saved_missing_date is False, "Article without publication date rejected")
+    check(
+        len(mock_supabase.calls) == calls_before_missing_date,
+        "Missing-date article does not reach DB write path",
+        f"calls={len(mock_supabase.calls)}",
+    )
+
+    # ------------------------------------------------------------
+    # Final result
+    # ------------------------------------------------------------
+    print("=" * 70)
+    if failures:
+        print(f"FEATURE #13 TEST RESULT: FAILED ({len(failures)} checks)")
+        for failure in failures:
+            print(f" - {failure}")
+        print("=" * 70)
+        return {"status": "FAILED", "failures": failures}
+
+    print("FEATURE #13 TEST RESULT: PASSED")
+    print("Production database : UNCHANGED")
+    print("Telegram            : NOT SENT")
+    print("Network crawl       : NOT RUN")
+    print("=" * 70)
+    return {"status": "PASSED"}
+
+
 def main() -> None:
 
     parser = argparse.ArgumentParser(
@@ -14579,6 +14809,15 @@ def main() -> None:
         "--cross-incident-candidate-audit-real",
         action="store_true",
         help="audit candidate pair Cross-Incident Relationship pada production nyata secara read-only",
+    )
+
+    parser.add_argument(
+        "--test-feature13",
+        action="store_true",
+        help=(
+            "uji Feature #13 Deli Serdang Location Discovery secara read-only; "
+            "tanpa crawl, tanpa write Supabase production, dan tanpa Telegram"
+        ),
     )
 
     parser.add_argument(
@@ -14829,6 +15068,15 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.test_feature13:
+        result = test_feature13_location()
+        if result.get("status") != "PASSED":
+            raise RuntimeError(
+                "Feature #13 test gagal: "
+                + ", ".join(result.get("failures", []))
+            )
+        return
     if args.intelligence_briefing:
         result = intelligence_briefing_real_read_only(requested_date=args.briefing_date)
         if result.get("status") == "FAILED":
