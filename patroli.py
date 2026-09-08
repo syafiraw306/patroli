@@ -136,6 +136,52 @@ TARGET_KEJARI_KEYWORDS = [
 ]
 
 
+# ============================================================
+# WILAYAH HUKUM / LOCATION DISCOVERY
+#
+# Keyword di bawah digunakan untuk MEMPERLUAS DISCOVERY berita
+# di wilayah hukum Kejari Deli Serdang.
+#
+# PENTING:
+# - Tidak dicampur ke TARGET_KEJARI_KEYWORDS agar nama kecamatan
+#   tidak otomatis dianggap sebagai penyebutan satker.
+# - Keyword lokasi hanya menjadi sinyal discovery.
+# - Relevansi akhir tetap divalidasi dengan konteks artikel.
+# - "Sunggal" dapat muncul dalam konteks Medan maupun Deli Serdang,
+#   sehingga artikel tidak boleh dianggap Deli Serdang hanya karena
+#   menemukan kata "sunggal".
+# ============================================================
+
+DELI_SERDANG_LOCATION_KEYWORDS = [
+    "kabupaten deli serdang",
+    "deli serdang",
+    "kabupaten deliserdang",
+    "deliserdang",
+
+    "bangun purba",
+    "batang kuis",
+    "sibiru-biru",
+    "deli tua",
+    "galang",
+    "gunung meriah",
+    "hamparan perak",
+    "kutalimbaru",
+    "labuhan deli",
+    "lubuk pakam",
+    "namorambe",
+    "pagar merbau",
+    "pancur batu",
+    "pantai labu",
+    "patumbak",
+    "percut sei tuan",
+    "sibolangit",
+    "stm hilir",
+    "stm hulu",
+    "sunggal",
+    "tanjung morawa",
+]
+
+
 SEARCH_TARGETS = [
     '"Kejaksaan Negeri Deli Serdang"',
     '"Kejari Deli Serdang"',
@@ -145,6 +191,14 @@ SEARCH_TARGETS = [
     '"Cabjari Pancur Batu"',
     '"Cabjari Labuhan Deli"',
 ]
+
+
+# Discovery tambahan berdasarkan wilayah hukum Kejari Deli Serdang.
+# Query dibuat sebagai quoted phrase agar pencarian RSS lebih terarah.
+SEARCH_TARGETS.extend(
+    f'"{keyword}"'
+    for keyword in DELI_SERDANG_LOCATION_KEYWORDS
+)
 
 
 # ============================================================
@@ -1864,17 +1918,192 @@ def find_satker_match_location(
     return ""
 
 
+def find_location_matches(
+    title: str,
+    content: str,
+) -> List[str]:
+    """
+    Mencari keyword wilayah hukum Kejari Deli Serdang.
+
+    Fungsi ini hanya untuk discovery lokasi dan TIDAK menggantikan
+    kecocokan satker. Nama kecamatan yang ambigu tetap dicatat sebagai
+    sinyal lokasi, bukan bukti otomatis bahwa artikel berasal dari
+    Kabupaten Deli Serdang.
+    """
+
+    text = normalize_text(
+        f"{title}. {content}"
+    ).lower()
+
+    matches = []
+
+    for keyword in DELI_SERDANG_LOCATION_KEYWORDS:
+        keyword_clean = normalize_text(
+            keyword
+        ).lower()
+
+        if not keyword_clean:
+            continue
+
+        pattern = (
+            r"(?<!\w)"
+            + re.escape(keyword_clean)
+            + r"(?!\w)"
+        )
+
+        if re.search(
+            pattern,
+            text,
+            flags=re.IGNORECASE,
+        ):
+            matches.append(
+                keyword
+            )
+
+    return list(
+        dict.fromkeys(
+            matches
+        )
+    )
+
+
+def _has_deli_serdang_location_context(
+    title: str,
+    content: str,
+    location_matches: Optional[List[str]] = None,
+) -> bool:
+    """
+    Memastikan keyword lokasi memiliki konteks yang cukup kuat.
+
+    Untuk keyword kecamatan, penyebutan nama saja tidak cukup.
+    Konteks Kabupaten Deli Serdang atau pola administratif seperti
+    "Kecamatan X" diperlukan agar tidak salah mengaitkan lokasi lain.
+    """
+
+    text = normalize_text(
+        f"{title}. {content}"
+    ).lower()
+
+    if not text:
+        return False
+
+    matches = location_matches or find_location_matches(
+        title,
+        content,
+    )
+
+    if not matches:
+        return False
+
+    # Penyebutan eksplisit Deli Serdang adalah bukti lokasi terkuat.
+    if re.search(
+        r"(?<!\w)(?:kabupaten\s+)?deli\s*serdang(?!\w)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+
+    # Nama kecamatan + penanda administratif.
+    for location in matches:
+        if location in {
+            "kabupaten deli serdang",
+            "deli serdang",
+            "kabupaten deliserdang",
+            "deliserdang",
+        }:
+            return True
+
+        location_pattern = re.escape(
+            normalize_text(location).lower()
+        )
+
+        if re.search(
+            rf"(?i)\bkecamatan\s+{location_pattern}\b",
+            text,
+        ):
+            return True
+
+        if re.search(
+            rf"(?i)\b{location_pattern}\s*,\s*(?:kabupaten\s+)?deli\s*serdang\b",
+            text,
+        ):
+            return True
+
+        if re.search(
+            rf"(?i)\b{location_pattern}\s+(?:kabupaten|pemkab)\s+deli\s*serdang\b",
+            text,
+        ):
+            return True
+
+    return False
+
+
 def check_satker_relevance(
     title: str,
     content: str,
 ) -> bool:
+    """
+    Relevansi artikel menggunakan dua jalur:
 
-    return bool(
-        find_satker_matches(
-            title,
-            content,
+    1. SATKER:
+       Artikel secara eksplisit menyebut Kejari/Kejaksaan/Cabjari target.
+
+    2. LOCATION DISCOVERY:
+       Artikel menyebut wilayah hukum Deli Serdang dengan konteks lokasi
+       yang cukup kuat DAN memiliki konteks substantif yang relevan.
+
+    Jalur kedua dibuat konservatif agar keyword seperti "sunggal",
+    "galang", atau nama kecamatan lain tidak otomatis menjadi artikel
+    satker hanya karena kebetulan muncul.
+    """
+
+    # Jalur utama: penyebutan satker eksplisit.
+    if find_satker_matches(
+        title,
+        content,
+    ):
+        return True
+
+    # Jalur discovery: lokasi + konteks Deli Serdang.
+    location_matches = find_location_matches(
+        title,
+        content,
+    )
+
+    if not _has_deli_serdang_location_context(
+        title,
+        content,
+        location_matches,
+    ):
+        return False
+
+    text = normalize_text(
+        f"{title}. {content}"
+    ).lower()
+
+    # Harus ada konteks substantif/legal atau aktivitas kedinasan.
+    # Ini mencegah berita lokal yang sama sekali tidak berkaitan
+    # dengan monitoring patroli ikut masuk hanya karena lokasi.
+    has_legal_context = bool(
+        re.search(
+            r"(?i)(?<!\w)(?:"
+            + "|".join(
+                re.escape(term)
+                for term in sorted(LEGAL_EVENT_TERMS, key=len, reverse=True)
+            )
+            + r")(?!\w)",
+            text,
         )
     )
+
+    has_official_activity = bool(
+        regex_hits(
+            text,
+            OFFICIAL_ACTIVITY_PATTERNS,
+        )
+    )
+
+    return has_legal_context or has_official_activity
 
 
 # ============================================================
