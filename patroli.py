@@ -18003,8 +18003,8 @@ def issue_topic_detection_real_read_only() -> Dict[str, Any]:
 #     semantic dapat diuji terlebih dahulu.
 # ============================================================
 
-FEATURE12_VERSION = "FEATURE12-READONLY-V1-EVIDENCE-GROUNDED-BRIEFING"
-FEATURE12_METHOD = "EVIDENCE_GROUNDED_DAILY_INTELLIGENCE_BRIEFING_V1"
+FEATURE12_VERSION = "FEATURE12-READONLY-V1.1-DAILY-PRODUCTION-INTEGRITY"
+FEATURE12_METHOD = "EVIDENCE_GROUNDED_DAILY_INTELLIGENCE_BRIEFING_V1_1"
 FEATURE12_TOP_ARTICLES = 10
 FEATURE12_MAX_EVIDENCE = 5
 FEATURE12_MAX_TRENDS = 8
@@ -18046,6 +18046,43 @@ def _feature12_article_date(article: Dict[str, Any]) -> Optional[str]:
         if parsed:
             return parsed
     return None
+
+
+def _feature12_is_test_article(article: Dict[str, Any]) -> bool:
+    """Exclude known synthetic/end-to-end test records from leadership briefing.
+
+    This guard is intentionally narrow. It relies on explicit test markers and
+    the synthetic example.com host used by the project's E2E tests; it does not
+    exclude ordinary articles merely because their title contains words such as
+    'uji' or 'pemeriksaan'.
+    """
+    if not isinstance(article, dict):
+        return True
+    title = normalize_text(article.get("title"))
+    source = normalize_text(article.get("source") or article.get("media"))
+    link = str(article.get("link") or "").strip().lower()
+    explicit_markers = (
+        "test patroli siber",
+        "patroli siber test",
+        "end to end",
+        "e2e test",
+    )
+    if any(marker in title for marker in explicit_markers):
+        return True
+    if "patroli siber test" in source:
+        return True
+    if link.startswith("https://example.com/") or link.startswith("http://example.com/"):
+        return True
+    return False
+
+
+def _feature12_production_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        a for a in (articles or [])
+        if isinstance(a, dict)
+        and normalize_text(a.get("title"))
+        and not _feature12_is_test_article(a)
+    ]
 
 
 def _feature12_evidence(article: Dict[str, Any], risk: Dict[str, Any], issue: Dict[str, Any]) -> Dict[str, Any]:
@@ -18123,20 +18160,23 @@ def _feature12_build_article_cards(articles: List[Dict[str, Any]]) -> List[Dict[
 
 
 def _feature12_select_briefing_date(articles: List[Dict[str, Any]], requested: Optional[str]) -> str:
+    production = _feature12_production_articles(articles)
     if requested:
         parsed = _feature12_date(requested)
         if not parsed:
             raise ValueError(f"briefing_date tidak valid: {requested}")
         return parsed
-    dates = [d for d in (_feature12_article_date(a) for a in articles) if d]
+    dates = [d for d in (_feature12_article_date(a) for a in production) if d]
     if dates:
         return max(dates)
     return datetime.now(timezone.utc).date().isoformat()
 
 
 def _feature12_date_articles(articles: List[Dict[str, Any]], briefing_date: str) -> List[Dict[str, Any]]:
-    selected = [a for a in articles if _feature12_article_date(a) == briefing_date]
-    return selected
+    return [
+        a for a in _feature12_production_articles(articles)
+        if _feature12_article_date(a) == briefing_date
+    ]
 
 
 def _feature12_issue_counts(cards: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -18166,14 +18206,34 @@ def _feature12_build_early_warnings(articles: List[Dict[str, Any]]) -> List[Dict
     for item in warnings[:FEATURE12_MAX_EWS]:
         if not isinstance(item, dict):
             continue
-        output.append({
+        score = item.get("early_warning_score")
+        level = item.get("early_warning_level")
+        trend_status = item.get("trend_status")
+        reason = item.get("trigger_reasons") or item.get("reason") or item.get("reasons") or []
+        base = {
             "event_key": item.get("event_key"),
             "event_name": item.get("event_name"),
-            "score": item.get("score"),
-            "level": item.get("level"),
-            "trend_status": item.get("trend_status"),
-            "reason": item.get("reason") or item.get("reasons") or [],
-        })
+            "score": score,
+            "level": level,
+            "trend_status": trend_status,
+            "reason": reason,
+        }
+        # EWS integrity: the source Feature #5 uses early_warning_score and
+        # early_warning_level. Never expose null score/level as a normal warning.
+        try:
+            score_valid = score is not None and float(score) >= 0
+        except (TypeError, ValueError):
+            score_valid = False
+        level_valid = str(level or "").upper() in {"HIGH", "WATCH", "MONITOR", "LOW"}
+        trend_valid = str(trend_status or "").upper() in {"ESCALATING", "RISING", "EMERGING", "STABLE", "DECLINING"}
+        if not (score_valid and level_valid and trend_valid):
+            base.update({
+                "status": "REVIEW",
+                "review_reason": "EWS score/level/trend tidak lengkap atau tidak valid; tidak diperlakukan sebagai early warning terkonfirmasi.",
+            })
+        else:
+            base["status"] = "CONFIRMED"
+        output.append(base)
     return output
 
 
@@ -18243,8 +18303,9 @@ def _feature12_render_text(snapshot: Dict[str, Any]) -> str:
     if warnings:
         for item in warnings:
             lines.append(
-                f"- [{item.get('level')}] {item.get('event_name') or item.get('event_key') or 'Unknown event'} "
-                f"score={item.get('score')} trend={item.get('trend_status')} reason={item.get('reason')}"
+                f"- [{item.get('status', 'CONFIRMED')}] {item.get('level') or 'REVIEW'} "
+                f"{item.get('event_name') or item.get('event_key') or 'Unknown event'} "
+                f"score={item.get('score')} trend={item.get('trend_status')} reason={item.get('reason') or item.get('review_reason')}"
             )
     else:
         lines.append("- Tidak ada early warning yang tersedia dari evidence saat ini.")
@@ -18265,11 +18326,12 @@ def _feature12_render_text(snapshot: Dict[str, Any]) -> str:
 
 
 def build_intelligence_briefing(articles: List[Dict[str, Any]], requested_date: Optional[str] = None) -> Dict[str, Any]:
-    briefing_date = _feature12_select_briefing_date(articles, requested_date)
-    day_articles = _feature12_date_articles(articles, briefing_date)
+    production_articles = _feature12_production_articles(articles)
+    briefing_date = _feature12_select_briefing_date(production_articles, requested_date)
+    day_articles = _feature12_date_articles(production_articles, briefing_date)
     cards = _feature12_build_article_cards(day_articles)
     top_cards = cards[:FEATURE12_TOP_ARTICLES]
-    ews = _feature12_build_early_warnings(articles)
+    ews = _feature12_build_early_warnings(production_articles)
     snapshot = {
         "metadata": {
             "version": FEATURE12_VERSION,
@@ -18285,7 +18347,9 @@ def build_intelligence_briefing(articles: List[Dict[str, Any]], requested_date: 
             "evidence_grounded": True,
         },
         "summary": {
-            "production_articles": len(articles),
+            "source_articles": len(articles or []),
+            "production_articles": len(production_articles),
+            "excluded_test_articles": max(0, len(articles or []) - len(production_articles)),
             "briefing_articles": len(day_articles),
             "top_priority_articles": len(top_cards),
             "high_or_critical": sum(1 for c in cards if str(c.get("risk_level") or "").upper() in {"HIGH", "CRITICAL"}),
@@ -18343,7 +18407,48 @@ def intelligence_briefing_real_read_only(requested_date: Optional[str] = None) -
     return {"status": "PASSED", "snapshot": snapshot, "artifacts": artifacts}
 
 
+def test_intelligence_briefing_v11_integrity() -> Dict[str, Any]:
+    """Synthetic regression for production-date and EWS integrity guards."""
+    global build_early_warning_system
+    original_ews = build_early_warning_system
+    try:
+        synthetic = [
+            {"id": 9001, "title": "TEST PATROLI SIBER END TO END 20260908", "source": "Patroli Siber Test", "published_date": "2026-09-08", "link": "https://example.com/patroli-test-20260908"},
+            {"id": 9002, "title": "Kasus dugaan penganiayaan diperiksa", "source": "Media Production", "published_date": "2026-09-07", "content": "Kasus dugaan penganiayaan diperiksa.", "link": "https://media.example/article-9002"},
+            {"id": 9003, "title": "Perkembangan penyidikan perkara", "source": "Media Production", "published_date": "2026-09-07", "content": "Penyidikan perkara terus berjalan.", "link": "https://media.example/article-9003"},
+        ]
+        fake_ews = {
+            "top_early_warnings": [
+                {"event_key": "EVT-VALID", "event_name": "Valid Event", "early_warning_score": 72.5, "early_warning_level": "WATCH", "trend_status": "RISING", "trigger_reasons": ["trend meningkat"]},
+                {"event_key": "EVT-BAD", "event_name": "Broken Event", "early_warning_score": None, "early_warning_level": None, "trend_status": "EMERGING", "trigger_reasons": []},
+            ]
+        }
+        build_early_warning_system = lambda _articles: fake_ews
+        snapshot = build_intelligence_briefing(synthetic)
+        if snapshot["metadata"]["briefing_date"] != "2026-09-07":
+            return {"status": "FAILED", "reason": "V11_DEFAULT_DATE_INCLUDED_TEST_ARTICLE", "date": snapshot["metadata"]["briefing_date"]}
+        if snapshot["summary"]["excluded_test_articles"] != 1 or snapshot["summary"]["production_articles"] != 2:
+            return {"status": "FAILED", "reason": "V11_TEST_ARTICLE_FILTER", "summary": snapshot["summary"]}
+        if any(c.get("article_id") == 9001 for c in snapshot.get("top_priority_articles", [])):
+            return {"status": "FAILED", "reason": "V11_TEST_ARTICLE_IN_BRIEFING"}
+        warnings = snapshot.get("early_warnings", [])
+        valid = next((x for x in warnings if x.get("event_key") == "EVT-VALID"), None)
+        bad = next((x for x in warnings if x.get("event_key") == "EVT-BAD"), None)
+        if not valid or valid.get("score") != 72.5 or valid.get("level") != "WATCH" or valid.get("status") != "CONFIRMED":
+            return {"status": "FAILED", "reason": "V11_EWS_KEY_MAPPING", "warnings": warnings}
+        if not bad or bad.get("status") != "REVIEW" or bad.get("level") is not None or bad.get("score") is not None:
+            return {"status": "FAILED", "reason": "V11_EWS_FAIL_CLOSED", "warnings": warnings}
+        return {"status": "PASSED", "default_date_excludes_test": True, "ews_integrity_guard": True}
+    finally:
+        build_early_warning_system = original_ews
+
+
 def test_intelligence_briefing_real_read_only() -> Dict[str, Any]:
+    v11 = test_intelligence_briefing_v11_integrity()
+    if v11.get("status") != "PASSED":
+        return v11
+    print("[TEST PASS] FEATURE12 V1.1 DATE/TEST-ARTICLE GUARD")
+    print("[TEST PASS] FEATURE12 V1.1 EWS INTEGRITY GUARD")
     result = intelligence_briefing_real_read_only()
     if result.get("status") != "PASSED":
         return result
