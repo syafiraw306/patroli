@@ -1,0 +1,29 @@
+name: Feature 13 - Deli Serdang Location Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-feature13:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Feature 13 test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TAHUN_TARGET: "2026"
+        run: |
+          python patroli_feature13_test.py --once
