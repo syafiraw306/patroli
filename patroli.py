@@ -1830,6 +1830,37 @@ def extract_article_text(
 # ============================================================
 
 
+
+
+def extract_article_image_urls(raw_html: str, base_url: str = "") -> List[str]:
+    """Ekstrak kandidat gambar artikel untuk dokumentasi LAPINSUS."""
+    if not raw_html:
+        return []
+    urls: List[str] = []
+    try:
+        soup = BeautifulSoup(raw_html, "html.parser")
+        for attrs in ({"property": "og:image"}, {"name": "twitter:image"}, {"property": "og:image:url"}):
+            for tag in soup.find_all("meta", attrs=attrs):
+                value = normalize_text(tag.get("content"))
+                if value:
+                    urls.append(urllib.parse.urljoin(base_url, value))
+        for img in soup.find_all("img"):
+            for attr in ("src", "data-src", "data-original", "data-lazy-src"):
+                value = normalize_text(img.get(attr))
+                if value:
+                    urls.append(urllib.parse.urljoin(base_url, value))
+                    break
+    except Exception as exc:
+        print(f"[IMAGE EXTRACT WARNING] {type(exc).__name__}: {exc}")
+        return []
+    out=[]; seen=set()
+    for url in urls:
+        url=normalize_url(url)
+        if not url or not re.match(r"^https?://",url,re.I) or url in seen:
+            continue
+        seen.add(url); out.append(url)
+        if len(out)>=10: break
+    return out
 def find_satker_matches(
     title: str,
     content: str,
@@ -1974,6 +2005,9 @@ def _feature13_location_record(
     candidate: Dict[str, Any],
     title: str,
     content: str,
+    final_url: Optional[str] = None,
+    published_date: Optional[Any] = None,
+    article_images: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Membentuk payload artikel discovery lokasi untuk tabel terpisah."""
     matches = find_location_matches(title, content)
@@ -1982,13 +2016,14 @@ def _feature13_location_record(
 
     return {
         "title": title,
-        "link": normalize_url(candidate.get("link")),
+        "link": normalize_url(final_url or candidate.get("link")),
         "content": content[:30000],
         "published_date": (
-            parse_date_safe(candidate.get("published_date")).isoformat()
-            if parse_date_safe(candidate.get("published_date"))
-            else None
+            published_date.isoformat()
+            if hasattr(published_date, "isoformat")
+            else (parse_date_safe(published_date).isoformat() if parse_date_safe(published_date) else None)
         ),
+        "article_images": list(article_images or []),
         "source": normalize_text(candidate.get("source")) or "Google News",
         "publisher": get_publisher_from_title(title),
         "matched_location_keywords": sorted(set(matches)),
@@ -2004,9 +2039,19 @@ def save_deli_serdang_location_article(
     candidate: Dict[str, Any],
     title: str,
     content: str,
+    final_url: Optional[str] = None,
+    published_date: Optional[Any] = None,
+    article_images: Optional[List[str]] = None,
 ) -> bool:
     """Simpan discovery lokasi ke tabel khusus, tanpa menyentuh articles."""
-    payload = _feature13_location_record(candidate, title, content)
+    payload = _feature13_location_record(
+        candidate,
+        title,
+        content,
+        final_url=final_url,
+        published_date=published_date,
+        article_images=article_images,
+    )
     if not payload or not payload.get("link"):
         return False
 
@@ -4030,15 +4075,10 @@ candidate: Dict[str, Any],
     
     if (
         rss_date
-        and not is_article_2026(
-            rss_date
-        )
+        and not is_article_2026(rss_date)
+        and not _is_deli_serdang_location_search(candidate)
     ):
-    
-        result["reason"] = (
-            "bukan tahun target"
-        )
-    
+        result["reason"] = "bukan tahun target"
         return result
     
     # ========================================================
@@ -4127,6 +4167,19 @@ candidate: Dict[str, Any],
             content = rss_description
     
     # ========================================================
+    # TANGGAL FINAL / IMAGE DISCOVERY
+    # Dihitung sebelum gate satker agar discovery lokasi tetap independen.
+    # ========================================================
+    published = rss_date
+    if not published:
+        try:
+            published = extract_published_date(candidate)
+        except Exception as exc:
+            print(f"[DATE WARNING] {rss_link} -> {type(exc).__name__}: {exc}")
+
+    article_images = extract_article_image_urls(raw_html, final_url)
+
+    # ========================================================
     # DELI SERDANG LOCATION DISCOVERY
     #
     # Kandidat dari query location disimpan ke tabel khusus jika
@@ -4137,7 +4190,12 @@ candidate: Dict[str, Any],
         discovery_content = content if content else rss_description
         if title or discovery_content:
             save_deli_serdang_location_article(
-                candidate, title, discovery_content
+                candidate,
+                title,
+                discovery_content,
+                final_url=final_url,
+                published_date=published,
+                article_images=article_images,
             )
 
     # ========================================================
@@ -4187,27 +4245,8 @@ candidate: Dict[str, Any],
     # dianggap sebagai artikel tahun 2026.
     # ========================================================
     
-    published = rss_date
-    
-    if not published:
-    
-        try:
-    
-            published = (
-                extract_published_date(
-                    candidate
-                )
-            )
-    
-        except Exception as exc:
-    
-            print(
-                "[DATE WARNING] "
-                f"{rss_link} -> "
-                f"{type(exc).__name__}: "
-                f"{exc}"
-            )
-    
+    # `published` sudah dihitung sebelum discovery lokasi.
+    # Untuk pipeline satker, tanggal tetap wajib tersedia.
     # ========================================================
     # TANGGAL TIDAK DITEMUKAN
     # ========================================================
