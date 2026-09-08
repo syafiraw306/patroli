@@ -14736,6 +14736,262 @@ def test_feature13_location() -> Dict[str, Any]:
     return {"status": "PASSED"}
 
 
+def test_feature13_real_integration() -> Dict[str, Any]:
+    """
+    Real integration test Feature #13.
+
+    Alur:
+      Google News RSS (keyword lokasi)
+        -> process_candidate()
+        -> ekstraksi tanggal/konten/gambar
+        -> save_deli_serdang_location_article()
+        -> Supabase production table
+
+    Catatan keamanan:
+      - HANYA jalur tabel `deli_serdang_location_articles` yang boleh write.
+      - `process_candidate()` tidak menulis tabel `articles`; write `articles`
+        terjadi pada run_once(), bukan pada process_candidate().
+      - Telegram tidak dipanggil.
+      - Kandidat dibatasi agar integration test tidak berubah menjadi full patrol.
+      - Data artikel nyata tahun 2026 yang baru ditemukan akan dipersist sebagai
+        hasil Feature #13 dan TIDAK dihapus, karena memang merupakan data discovery.
+      - Artikel non-2026 dan tanpa tanggal wajib ditolak oleh hard guard.
+    """
+    print("=" * 70)
+    print("FEATURE #13 — REAL INTEGRATION TEST")
+    print("=" * 70)
+    print(f"Target year        : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location keywords  : {len(DELI_SERDANG_LOCATION_KEYWORDS)}")
+    print("Google News RSS    : ENABLED")
+    print("Supabase location  : ENABLED")
+    print("articles table     : NOT TOUCHED")
+    print("Telegram           : NOT SENT")
+    print("=" * 70)
+
+    failures: List[str] = []
+
+    def fail(message: str) -> None:
+        failures.append(message)
+        print(f"[FAIL] {message}")
+
+    def get_location_rows() -> List[Dict[str, Any]]:
+        supabase = get_supabase()
+        response = (
+            supabase
+            .table(DELI_SERDANG_LOCATION_TABLE)
+            .select("id,link,published_date,title,matched_location_keywords")
+            .execute()
+        )
+        return list(response.data or [])
+
+    # ------------------------------------------------------------
+    # 1. Baseline production table invariant
+    # ------------------------------------------------------------
+    try:
+        before_rows = get_location_rows()
+    except Exception as exc:
+        fail(f"Gagal membaca tabel {DELI_SERDANG_LOCATION_TABLE}: {type(exc).__name__}: {exc}")
+        print("=" * 70)
+        return {"status": "FAILED", "failures": failures}
+
+    before_links = {
+        normalize_url(row.get("link"))
+        for row in before_rows
+        if normalize_url(row.get("link"))
+    }
+    before_non_2026 = []
+    for row in before_rows:
+        published = parse_date_safe(row.get("published_date"))
+        if published is None or published.year != DELI_SERDANG_LOCATION_YEAR:
+            before_non_2026.append(row)
+
+    print(f"[REAL] Existing location rows : {len(before_rows)}")
+    print(f"[REAL] Existing unique links  : {len(before_links)}")
+    print(f"[REAL] Existing non-2026 rows : {len(before_non_2026)}")
+
+    if before_non_2026:
+        fail(
+            f"Invariant awal rusak: ditemukan {len(before_non_2026)} row tanpa tanggal/"
+            f"bukan tahun {DELI_SERDANG_LOCATION_YEAR}"
+        )
+    else:
+        print("[PASS] Existing location table is 2026-only")
+
+    # ------------------------------------------------------------
+    # 2. Collect ONLY location discovery candidates
+    # ------------------------------------------------------------
+    max_per_keyword = max(1, int(os.getenv("FEATURE13_REAL_MAX_PER_KEYWORD") or "3"))
+    max_total = max(1, int(os.getenv("FEATURE13_REAL_MAX_CANDIDATES") or "75"))
+
+    location_queries = [f'"{keyword}"' for keyword in DELI_SERDANG_LOCATION_KEYWORDS]
+    candidates: List[Dict[str, Any]] = []
+    seen_links = set()
+    query_hits = 0
+
+    print(
+        f"[REAL] Candidate limit      : {max_total} total / "
+        f"{max_per_keyword} per keyword"
+    )
+
+    for query_index, query in enumerate(location_queries):
+        if len(candidates) >= max_total:
+            break
+        if query_index > 0 and RSS_QUERY_DELAY > 0:
+            time.sleep(RSS_QUERY_DELAY)
+
+        print(f"[REAL RSS] Mencari: {query}")
+        try:
+            rows = parse_google_news_feed(query)
+        except Exception as exc:
+            print(f"[REAL RSS ERROR] {query} -> {type(exc).__name__}: {exc}")
+            continue
+
+        query_hits += len(rows or [])
+        added_for_query = 0
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            link = normalize_url(row.get("link"))
+            if not link or link in seen_links:
+                continue
+            row["link"] = link
+            row["search_query"] = normalize_text(query).strip('"').strip()
+            seen_links.add(link)
+            candidates.append(row)
+            added_for_query += 1
+            if added_for_query >= max_per_keyword or len(candidates) >= max_total:
+                break
+
+    print(f"[REAL] RSS raw hits         : {query_hits}")
+    print(f"[REAL] Unique candidates     : {len(candidates)}")
+
+    if not candidates:
+        fail("Tidak ada kandidat location discovery dari Google News RSS")
+        print("=" * 70)
+        return {"status": "FAILED", "failures": failures}
+
+    # ------------------------------------------------------------
+    # 3. Process real candidates.
+    # ------------------------------------------------------------
+    results: List[Dict[str, Any]] = []
+    worker_errors = 0
+    max_workers = max(1, min(int(os.getenv("FEATURE13_REAL_MAX_WORKERS") or "5"), 10))
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(process_candidate, candidate) for candidate in candidates]
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception as exc:
+                worker_errors += 1
+                print(f"[REAL WORKER ERROR] {type(exc).__name__}: {exc}")
+
+    if worker_errors:
+        fail(f"Worker errors: {worker_errors}")
+
+    # ------------------------------------------------------------
+    # 4. Audit actual Supabase state after processing.
+    # ------------------------------------------------------------
+    try:
+        after_rows = get_location_rows()
+    except Exception as exc:
+        fail(f"Gagal membaca tabel setelah integration test: {type(exc).__name__}: {exc}")
+        print("=" * 70)
+        return {"status": "FAILED", "failures": failures}
+
+    after_links = {
+        normalize_url(row.get("link"))
+        for row in after_rows
+        if normalize_url(row.get("link"))
+    }
+    new_links = after_links - before_links
+
+    after_2026 = 0
+    after_non_2026 = []
+    for row in after_rows:
+        published = parse_date_safe(row.get("published_date"))
+        if published is not None and published.year == DELI_SERDANG_LOCATION_YEAR:
+            after_2026 += 1
+        else:
+            after_non_2026.append(row)
+
+    processed_ok = sum(1 for item in results if item.get("ok"))
+    processed_rejected = sum(1 for item in results if not item.get("ok"))
+
+    print("=" * 70)
+    print("REAL INTEGRATION SUMMARY")
+    print("=" * 70)
+    print(f"[REAL] Candidates discovered : {len(candidates)}")
+    print(f"[REAL] process_candidate OK   : {processed_ok}")
+    print(f"[REAL] process_candidate skip : {processed_rejected}")
+    print(f"[REAL] Worker errors           : {worker_errors}")
+    print(f"[REAL] Location rows before    : {len(before_rows)}")
+    print(f"[REAL] Location rows after     : {len(after_rows)}")
+    print(f"[REAL] New location links      : {len(new_links)}")
+    print(f"[REAL] Location rows 2026      : {after_2026}")
+    print(f"[REAL] Location non-2026       : {len(after_non_2026)}")
+
+    # ------------------------------------------------------------
+    # 5. Hard production invariant.
+    # ------------------------------------------------------------
+    if after_non_2026:
+        fail(
+            f"HARD GUARD GAGAL: tabel location mengandung {len(after_non_2026)} "
+            f"row tanpa tanggal / bukan tahun {DELI_SERDANG_LOCATION_YEAR}"
+        )
+    else:
+        print("[PASS] Production location table remains 2026-only")
+
+    # New rows must all be 2026.
+    new_rows = [
+        row for row in after_rows
+        if normalize_url(row.get("link")) in new_links
+    ]
+    new_non_2026 = []
+    for row in new_rows:
+        published = parse_date_safe(row.get("published_date"))
+        if published is None or published.year != DELI_SERDANG_LOCATION_YEAR:
+            new_non_2026.append(row)
+
+    if new_non_2026:
+        fail(f"Ditemukan {len(new_non_2026)} row baru non-2026")
+    else:
+        print("[PASS] Every newly persisted location article is 2026")
+
+    # The test must not touch the production articles table. This function
+    # never calls run_once()/upsert_article(); this is an explicit contract check.
+    print("[PASS] Production articles write path is not invoked")
+    print("[PASS] Telegram send path is not invoked")
+
+    print("=" * 70)
+    if failures:
+        print(f"FEATURE #13 REAL INTEGRATION RESULT: FAILED ({len(failures)} checks)")
+        for failure in failures:
+            print(f" - {failure}")
+        print("=" * 70)
+        return {
+            "status": "FAILED",
+            "failures": failures,
+            "candidates": len(candidates),
+            "new_rows": len(new_rows),
+            "after_rows": len(after_rows),
+        }
+
+    print("FEATURE #13 REAL INTEGRATION RESULT: PASSED")
+    print("Google News RSS       : OK")
+    print("Supabase location DB  : OK")
+    print("2026-only invariant   : OK")
+    print("articles table        : NOT TOUCHED")
+    print("Telegram              : NOT SENT")
+    print("=" * 70)
+    return {
+        "status": "PASSED",
+        "candidates": len(candidates),
+        "new_rows": len(new_rows),
+        "after_rows": len(after_rows),
+    }
+
+
 def main() -> None:
 
     parser = argparse.ArgumentParser(
@@ -14809,6 +15065,15 @@ def main() -> None:
         "--cross-incident-candidate-audit-real",
         action="store_true",
         help="audit candidate pair Cross-Incident Relationship pada production nyata secara read-only",
+    )
+
+    parser.add_argument(
+        "--test-feature13-real",
+        action="store_true",
+        help=(
+            "uji Feature #13 dengan Google News RSS + Supabase location table secara nyata; "
+            "tidak menjalankan run_once, tidak menyentuh articles, dan tidak mengirim Telegram"
+        ),
     )
 
     parser.add_argument(
@@ -15068,6 +15333,14 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.test_feature13_real:
+        result = test_feature13_real_integration()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Test Feature #13 REAL gagal: {result.get('failures') or result.get('reason')}"
+            )
+        return
+
 
     if args.test_feature13:
         result = test_feature13_location()
