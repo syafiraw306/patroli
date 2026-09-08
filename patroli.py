@@ -139,17 +139,14 @@ TARGET_KEJARI_KEYWORDS = [
 # ============================================================
 # WILAYAH HUKUM / LOCATION DISCOVERY
 #
-# Keyword di bawah digunakan untuk MEMPERLUAS DISCOVERY berita
-# di wilayah hukum Kejari Deli Serdang.
+# Dipisahkan dari TARGET_KEJARI_KEYWORDS agar penambahan
+# kecamatan tidak mengubah logika relevansi satker lama.
+# Keyword ini digunakan untuk memperluas discovery artikel
+# dan memperkaya Feature #13 (Geospatial / Heatmap).
 #
-# PENTING:
-# - Tidak dicampur ke TARGET_KEJARI_KEYWORDS agar nama kecamatan
-#   tidak otomatis dianggap sebagai penyebutan satker.
-# - Keyword lokasi hanya menjadi sinyal discovery.
-# - Relevansi akhir tetap divalidasi dengan konteks artikel.
-# - "Sunggal" dapat muncul dalam konteks Medan maupun Deli Serdang,
-#   sehingga artikel tidak boleh dianggap Deli Serdang hanya karena
-#   menemukan kata "sunggal".
+# Nama seperti "Sunggal", "Galang", dan "Namorambe" tidak
+# otomatis dianggap sebagai lokasi Deli Serdang. Penetapan
+# lokasi harus divalidasi dari konteks administratif artikel.
 # ============================================================
 
 DELI_SERDANG_LOCATION_KEYWORDS = [
@@ -157,7 +154,6 @@ DELI_SERDANG_LOCATION_KEYWORDS = [
     "deli serdang",
     "kabupaten deliserdang",
     "deliserdang",
-
     "bangun purba",
     "batang kuis",
     "sibiru-biru",
@@ -192,12 +188,10 @@ SEARCH_TARGETS = [
     '"Cabjari Labuhan Deli"',
 ]
 
-
-# Discovery tambahan berdasarkan wilayah hukum Kejari Deli Serdang.
-# Query dibuat sebagai quoted phrase agar pencarian RSS lebih terarah.
+# Discovery wilayah hukum. Query ini hanya memperluas sumber
+# kandidat; keyword lokasi TIDAK dimasukkan ke TARGET_KEJARI_KEYWORDS.
 SEARCH_TARGETS.extend(
-    f'"{keyword}"'
-    for keyword in DELI_SERDANG_LOCATION_KEYWORDS
+    [f'"{keyword}"' for keyword in DELI_SERDANG_LOCATION_KEYWORDS]
 )
 
 
@@ -1918,192 +1912,128 @@ def find_satker_match_location(
     return ""
 
 
-def find_location_matches(
-    title: str,
-    content: str,
-) -> List[str]:
-    """
-    Mencari keyword wilayah hukum Kejari Deli Serdang.
-
-    Fungsi ini hanya untuk discovery lokasi dan TIDAK menggantikan
-    kecocokan satker. Nama kecamatan yang ambigu tetap dicatat sebagai
-    sinyal lokasi, bukan bukti otomatis bahwa artikel berasal dari
-    Kabupaten Deli Serdang.
-    """
-
-    text = normalize_text(
-        f"{title}. {content}"
-    ).lower()
-
-    matches = []
-
-    for keyword in DELI_SERDANG_LOCATION_KEYWORDS:
-        keyword_clean = normalize_text(
-            keyword
-        ).lower()
-
-        if not keyword_clean:
-            continue
-
-        pattern = (
-            r"(?<!\w)"
-            + re.escape(keyword_clean)
-            + r"(?!\w)"
-        )
-
-        if re.search(
-            pattern,
-            text,
-            flags=re.IGNORECASE,
-        ):
-            matches.append(
-                keyword
-            )
-
-    return list(
-        dict.fromkeys(
-            matches
-        )
-    )
-
-
-def _has_deli_serdang_location_context(
-    title: str,
-    content: str,
-    location_matches: Optional[List[str]] = None,
-) -> bool:
-    """
-    Memastikan keyword lokasi memiliki konteks yang cukup kuat.
-
-    Untuk keyword kecamatan, penyebutan nama saja tidak cukup.
-    Konteks Kabupaten Deli Serdang atau pola administratif seperti
-    "Kecamatan X" diperlukan agar tidak salah mengaitkan lokasi lain.
-    """
-
-    text = normalize_text(
-        f"{title}. {content}"
-    ).lower()
-
-    if not text:
-        return False
-
-    matches = location_matches or find_location_matches(
-        title,
-        content,
-    )
-
-    if not matches:
-        return False
-
-    # Penyebutan eksplisit Deli Serdang adalah bukti lokasi terkuat.
-    if re.search(
-        r"(?<!\w)(?:kabupaten\s+)?deli\s*serdang(?!\w)",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        return True
-
-    # Nama kecamatan + penanda administratif.
-    for location in matches:
-        if location in {
-            "kabupaten deli serdang",
-            "deli serdang",
-            "kabupaten deliserdang",
-            "deliserdang",
-        }:
-            return True
-
-        location_pattern = re.escape(
-            normalize_text(location).lower()
-        )
-
-        if re.search(
-            rf"(?i)\bkecamatan\s+{location_pattern}\b",
-            text,
-        ):
-            return True
-
-        if re.search(
-            rf"(?i)\b{location_pattern}\s*,\s*(?:kabupaten\s+)?deli\s*serdang\b",
-            text,
-        ):
-            return True
-
-        if re.search(
-            rf"(?i)\b{location_pattern}\s+(?:kabupaten|pemkab)\s+deli\s*serdang\b",
-            text,
-        ):
-            return True
-
-    return False
-
-
 def check_satker_relevance(
     title: str,
     content: str,
 ) -> bool:
-    """
-    Relevansi artikel menggunakan dua jalur:
 
-    1. SATKER:
-       Artikel secara eksplisit menyebut Kejari/Kejaksaan/Cabjari target.
-
-    2. LOCATION DISCOVERY:
-       Artikel menyebut wilayah hukum Deli Serdang dengan konteks lokasi
-       yang cukup kuat DAN memiliki konteks substantif yang relevan.
-
-    Jalur kedua dibuat konservatif agar keyword seperti "sunggal",
-    "galang", atau nama kecamatan lain tidak otomatis menjadi artikel
-    satker hanya karena kebetulan muncul.
-    """
-
-    # Jalur utama: penyebutan satker eksplisit.
-    if find_satker_matches(
-        title,
-        content,
-    ):
-        return True
-
-    # Jalur discovery: lokasi + konteks Deli Serdang.
-    location_matches = find_location_matches(
-        title,
-        content,
+    return bool(
+        find_satker_matches(
+            title,
+            content,
+        )
     )
 
-    if not _has_deli_serdang_location_context(
-        title,
-        content,
-        location_matches,
-    ):
+
+# ============================================================
+# DELI SERDANG LOCATION DATABASE
+# ============================================================
+# Artikel hasil discovery wilayah disimpan ke tabel terpisah agar
+# tidak mengotori tabel articles dan tidak mengubah pipeline satker.
+# database.py TIDAK DIUBAH. Penulisan memakai get_supabase() yang
+# sudah tersedia dari database.py.
+# ============================================================
+
+DELI_SERDANG_LOCATION_TABLE = "deli_serdang_location_articles"
+
+
+def _is_deli_serdang_location_search(candidate: Dict[str, Any]) -> bool:
+    query = normalize_text(candidate.get("search_query"))
+    if not query:
+        return False
+    query = query.strip('"').strip()
+    return any(query == normalize_text(keyword) for keyword in DELI_SERDANG_LOCATION_KEYWORDS)
+
+
+def find_location_matches(title: str, content: str) -> List[str]:
+    text = normalize_text(f"{title or ''} ; {content or ''}")
+    matches: List[str] = []
+    for keyword in DELI_SERDANG_LOCATION_KEYWORDS:
+        pattern = r"(?<!\w)" + re.escape(keyword) + r"(?!\w)"
+        if re.search(pattern, text, flags=re.IGNORECASE):
+            matches.append(keyword)
+    return sorted(set(matches))
+
+
+def _has_deli_serdang_location_context(title: str, content: str, location_matches: Optional[List[str]] = None) -> bool:
+    text = normalize_text(f"{title or ''} ; {content or ''}")
+    if re.search(r"\b(?:deli serdang|deliserdang)\b", text, flags=re.IGNORECASE):
+        return True
+    for location in (location_matches or find_location_matches(title, content)):
+        loc = re.escape(location)
+        if re.search(rf"\bkecamatan\s+{loc}\b", text, flags=re.IGNORECASE):
+            return True
+        if re.search(rf"\b{loc}\s*,\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b", text, flags=re.IGNORECASE):
+            return True
+        if re.search(rf"\b{loc}\s+(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b", text, flags=re.IGNORECASE):
+            return True
+    return False
+
+
+def _feature13_location_record(
+    candidate: Dict[str, Any],
+    title: str,
+    content: str,
+) -> Optional[Dict[str, Any]]:
+    """Membentuk payload artikel discovery lokasi untuk tabel terpisah."""
+    matches = find_location_matches(title, content)
+    if not matches:
+        return None
+
+    return {
+        "title": title,
+        "link": normalize_url(candidate.get("link")),
+        "content": content[:30000],
+        "published_date": (
+            parse_date_safe(candidate.get("published_date")).isoformat()
+            if parse_date_safe(candidate.get("published_date"))
+            else None
+        ),
+        "source": normalize_text(candidate.get("source")) or "Google News",
+        "publisher": get_publisher_from_title(title),
+        "matched_location_keywords": sorted(set(matches)),
+        "search_query": normalize_text(candidate.get("search_query")),
+        "discovery_type": "DELI_SERDANG_LOCATION_KEYWORD",
+        "location_context_valid": _has_deli_serdang_location_context(
+            title, content, matches
+        ),
+    }
+
+
+def save_deli_serdang_location_article(
+    candidate: Dict[str, Any],
+    title: str,
+    content: str,
+) -> bool:
+    """Simpan discovery lokasi ke tabel khusus, tanpa menyentuh articles."""
+    payload = _feature13_location_record(candidate, title, content)
+    if not payload or not payload.get("link"):
         return False
 
-    text = normalize_text(
-        f"{title}. {content}"
-    ).lower()
-
-    # Harus ada konteks substantif/legal atau aktivitas kedinasan.
-    # Ini mencegah berita lokal yang sama sekali tidak berkaitan
-    # dengan monitoring patroli ikut masuk hanya karena lokasi.
-    has_legal_context = bool(
-        re.search(
-            r"(?i)(?<!\w)(?:"
-            + "|".join(
-                re.escape(term)
-                for term in sorted(LEGAL_EVENT_TERMS, key=len, reverse=True)
+    try:
+        supabase = get_supabase()
+        response = (
+            supabase
+            .table(DELI_SERDANG_LOCATION_TABLE)
+            .upsert(payload, on_conflict="link")
+            .execute()
+        )
+        if response is not None:
+            print(
+                "[LOCATION DB] SAVED/UPSERTED | "
+                f"{payload['title'][:100]} | "
+                f"keywords={payload['matched_location_keywords']}"
             )
-            + r")(?!\w)",
-            text,
+            return True
+    except Exception as exc:
+        # Gagal menyimpan tabel discovery TIDAK boleh menggagalkan
+        # pipeline production articles.
+        print(
+            "[LOCATION DB WARNING] "
+            f"{type(exc).__name__}: {exc}"
         )
-    )
 
-    has_official_activity = bool(
-        regex_hits(
-            text,
-            OFFICIAL_ACTIVITY_PATTERNS,
-        )
-    )
-
-    return has_legal_context or has_official_activity
+    return False
 
 
 # ============================================================
@@ -3855,6 +3785,11 @@ def collect_candidates() -> List[Dict[str, Any]]:
             # Simpan URL yang sudah dinormalisasi.
             row["link"] = link
 
+            # Query yang menghasilkan kandidat disimpan sebagai metadata
+            # untuk audit discovery lokasi. Field ini internal dan tidak
+            # pernah diteruskan ke tabel `articles`.
+            row["search_query"] = query
+
             # ------------------------------------------------
             # NORMALISASI DATA DASAR
             # ------------------------------------------------
@@ -4191,6 +4126,20 @@ candidate: Dict[str, Any],
     
             content = rss_description
     
+    # ========================================================
+    # DELI SERDANG LOCATION DISCOVERY
+    #
+    # Kandidat dari query location disimpan ke tabel khusus jika
+    # keyword benar-benar terlihat pada title/content/RSS description.
+    # Jalur ini tidak melewati gate satker dan tidak menulis `articles`.
+    # ========================================================
+    if _is_deli_serdang_location_search(candidate):
+        discovery_content = content if content else rss_description
+        if title or discovery_content:
+            save_deli_serdang_location_article(
+                candidate, title, discovery_content
+            )
+
     # ========================================================
     # KONTEN TERLALU PENDEK
     # ========================================================
