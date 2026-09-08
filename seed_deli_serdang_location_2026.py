@@ -82,6 +82,8 @@ ALTERNATE_SOURCE_URLS: Dict[str, List[str]] = {
         "https://analisadaily.com/berita/baca/2026/01/14/1070532/selesai-renovasi-tpi-pantai-labu-lebih-modern-dan-instagramable/",
     ],
     "https://mistar.id/news/hukum-peristiwa/kaca-depan-dump-truk-dilempar-otk-pemilik-lapor-ke-polsek-talun-kenas": [
+        "https://formappel.com/2026/08/11/niat-cari-nafkah-sopir-truk-di-stm-hilir-nyaris-kehilangan-nyawa/",
+        "https://topkota.co/diduga-dibuntuti-lalu-dilempar-batu-sopir-truk-lapor-polisi/",
         "https://www.realitasonline.id/sumut/102417496669/kaca-depan-dump-truk-dilempar-otk-pemiliklapor-ke-polsek-talun-kenas-realitasonlineid-stm-hilir-dump-truk-isuzu-warna-putih-bk-8167-gm-menjadi-ko",
     ],
     "https://rri.co.id/medan/berita-lain/2632822/pemkab-pertemukan-pt-indofarm-dan-petani-ikan-sengketa-berakhir-damai": [
