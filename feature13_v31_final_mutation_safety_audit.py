@@ -7,10 +7,10 @@ TABLE = 'deli_serdang_location_articles'
 TARGET_YEAR = 2026
 EXPECTED_CURRENT_ROWS = 793
 EXPECTED_UPDATE_IDS = 56
-EXPECTED_DELETE_IDS = 24
-EXPECTED_REVIEW_IDS = 4
-EXPECTED_ROWS_AFTER_DELETE = 769
-WL = Path('feature13_v31_final_approval_whitelist.json')
+EXPECTED_DELETE_IDS = 23
+EXPECTED_REVIEW_IDS = 5
+EXPECTED_ROWS_AFTER_DELETE = 770
+WL = Path('feature13_v31_final_approval_whitelist_CORRECTED.json')
 OUT_JSON = Path('feature13_v31_final_mutation_safety_audit.json')
 OUT_CSV = Path('feature13_v31_final_mutation_safety_audit.csv')
 
@@ -24,8 +24,8 @@ def main():
     failures = []
     checks = {}
     checks['whitelist_update_count_56'] = len(update_ids) == EXPECTED_UPDATE_IDS
-    checks['whitelist_delete_count_24'] = len(delete_ids) == EXPECTED_DELETE_IDS
-    checks['review_count_4'] = len(review_ids) == EXPECTED_REVIEW_IDS
+    checks['whitelist_delete_count_23'] = len(delete_ids) == EXPECTED_DELETE_IDS
+    checks['review_count_5'] = len(review_ids) == EXPECTED_REVIEW_IDS
     checks['no_update_delete_overlap'] = not (update_ids & delete_ids)
     checks['no_review_mutation_overlap'] = not ((update_ids | delete_ids) & review_ids)
     if not all(checks.values()):
@@ -92,7 +92,7 @@ def main():
         failures.append(f'review rows missing unexpectedly: {missing_review}')
 
     # Expected post-mutation row count is current rows minus approved deletes.
-    checks['expected_post_delete_count_769'] = len(rows) - len(delete_ids) == EXPECTED_ROWS_AFTER_DELETE
+    checks['expected_post_delete_count_770'] = len(rows) - len(delete_ids) == EXPECTED_ROWS_AFTER_DELETE
 
     actions = []
     for r in update_records:
