@@ -2009,7 +2009,8 @@ def _has_deli_serdang_location_context(
 
     Keyword ambigu (Bangun Purba, Galang, Gunung Meriah, Deli Tua) tidak
     dianggap valid hanya karena artikel menyebut ``Deli Serdang`` di tempat
-    lain. Harus ada ikatan langsung antara keyword lokasi dan Deli Serdang,
+    lain. Harus ada ikatan langsung pada judul/satu kalimat atau pola
+    administratif yang mengikat keyword lokasi dengan Deli Serdang,
     misalnya ``Bangun Purba, Kabupaten Deli Serdang`` atau ``Bangun Purba di
     Kabupaten Deli Serdang``.
 
@@ -2055,6 +2056,26 @@ def _has_deli_serdang_location_context(
     # Jika tidak ada keyword ambigu, penyebutan Deli Serdang sendiri cukup.
     if not has_ambiguous and normalized_matches & explicit_deli_serdang_keywords:
         return True
+
+    # V2: binding yang kuat pada JUDUL atau SATU KALIMAT diperbolehkan.
+    # Ini menangkap variasi nyata seperti "Pemkab Deli Serdang ... Deli Tua"
+    # tanpa menghidupkan kembali false-positive ketika Deli Serdang hanya
+    # disebut di kalimat lain.
+    for location in normalized_matches:
+        if location not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS:
+            continue
+        loc = re.escape(location)
+        local_patterns = (
+            rf"\b{loc}\b[^.!?\n]{{0,160}}\b(?:kabupaten\s+)?deli\s+serdang\b",
+            rf"\b(?:kabupaten\s+)?deli\s+serdang\b[^.!?\n]{{0,160}}\b{loc}\b",
+        )
+        if any(re.search(pattern, title_text, flags=re.IGNORECASE) for pattern in local_patterns):
+            return True
+        # Body: evaluasi per kalimat agar konteks administratif yang dekat
+        # diterima, tetapi penyebutan Deli Serdang yang jauh tidak cukup.
+        for sentence in re.split(r"(?<=[.!?])\s+|[;]", content_text):
+            if re.search(rf"\b{loc}\b", sentence, flags=re.IGNORECASE) and re.search(r"\b(?:kabupaten\s+)?deli\s+serdang\b|\bdeliserdang\b", sentence, flags=re.IGNORECASE):
+                return True
 
     # Keyword ambigu harus memiliki DIRECT binding dengan Deli Serdang.
     # Penyebutan "Deli Serdang" yang jauh/di kalimat lain TIDAK cukup.
@@ -15220,8 +15241,8 @@ def audit_feature13_location() -> Dict[str, Any]:
 
 
 
-FEATURE13_CLEANUP_DRYRUN_JSON = "feature13_location_cleanup_dry_run.json"
-FEATURE13_CLEANUP_DRYRUN_CSV = "feature13_location_cleanup_dry_run.csv"
+FEATURE13_CLEANUP_DRYRUN_JSON = "feature13_location_cleanup_v2_dry_run.json"
+FEATURE13_CLEANUP_DRYRUN_CSV = "feature13_location_cleanup_v2_dry_run.csv"
 
 
 def _feature13_cleanup_content_is_wrapper(row: Dict[str, Any]) -> bool:
@@ -15248,61 +15269,32 @@ def _feature13_cleanup_content_is_wrapper(row: Dict[str, Any]) -> bool:
     return len(content) < 200
 
 
-def _feature13_cleanup_competing_region_reason(
-    row: Dict[str, Any],
-) -> Optional[str]:
-    """Deteksi sinyal kuat bahwa keyword lokasi merujuk wilayah lain.
-
-    Fungsi ini sengaja konservatif: hanya mengembalikan alasan DELETE-CANDIDATE
-    bila ada bukti wilayah pembanding yang cukup kuat. Kasus yang tidak jelas
-    dikembalikan None dan masuk INDETERMINATE.
-    """
-    title = normalize_text(row.get("title"))
-    content = normalize_text(row.get("content"))
+def _feature13_cleanup_competing_region_reason(row: Dict[str, Any]) -> Optional[str]:
+    """Deteksi sinyal kuat bahwa keyword ambigu merujuk wilayah lain (V2)."""
+    title = normalize_text(row.get("title")); content = normalize_text(row.get("content"))
     keywords = [normalize_text(x).lower() for x in (row.get("matched_location_keywords") or [])]
-    text = f"{title} {content}".lower()
-
-    # Wilayah lain yang sudah terbukti muncul pada false-positive Feature #13.
-    competing_regions = (
-        "rokan hulu",
-        "aceh singkil",
-        "kabupaten asahan",
-        "asahan",
-        "sulawesi barat",
-        "sulbar",
-        "kepri",
-        "kepulauan riau",
-        "bintan",
-        "bitung",
-        "banjarmasin",
-        "sulteng",
-        "sulawesi tengah",
-        "ntt",
-        "nusa tenggara timur",
-        "siak",
-        "jayapura",
-        "bandung",
-        "dairi",
-    )
-
-    ambiguous = set(DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS)
-    ambiguous_hits = [kw for kw in keywords if kw in ambiguous]
-
-    if ambiguous_hits:
+    title_l = title.lower(); text = f"{title} {content}".lower()
+    competing_regions = ("rokan hulu","aceh singkil","kabupaten asahan","asahan","sulawesi barat","sulbar","kepri","kepulauan riau","bintan","bitung","banjarmasin","sulteng","sulawesi tengah","ntt","nusa tenggara timur","siak","jayapura","bandung","dairi")
+    if any(kw in set(DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS) for kw in keywords):
         for region in competing_regions:
-            if re.search(rf"\b{re.escape(region)}\b", text):
-                return f"keyword ambigu bertemu wilayah lain: {region}"
-
-    # "galang" sebagai kata kerja: ini sangat kuat sebagai false-positive
-    # bila tidak ada konteks geografis Galang/Deli Serdang.
+            if re.search(rf"\b{re.escape(region)}\b", title_l): return f"keyword ambigu bertemu wilayah lain pada judul: {region}"
+            if re.search(rf"\b{re.escape(region)}\b", text): return f"keyword ambigu bertemu wilayah lain: {region}"
     if "galang" in keywords:
-        verb_patterns = (
-            r"\bgalang\s+(?:dana|donasi|bantuan|solidaritas|dukungan|aksi)\b",
-            r"\b(?:menggalang|galang)\s+(?:dana|donasi|bantuan|solidaritas|dukungan)\b",
-        )
-        if any(re.search(pattern, text) for pattern in verb_patterns):
-            return "keyword 'galang' digunakan sebagai kata kerja, bukan lokasi"
+        patterns=(r"\bgalang\s+(?:dana|donasi|bantuan|solidaritas|dukungan|aksi|sumbangan)\b",r"\b(?:menggalang|galang)\s+(?:dana|donasi|bantuan|solidaritas|dukungan|sumbangan)\b")
+        if any(re.search(p,title_l) for p in patterns): return "keyword 'galang' digunakan sebagai kata kerja pada judul, bukan lokasi"
+        if any(re.search(p,text) for p in patterns): return "keyword 'galang' digunakan sebagai kata kerja, bukan lokasi"
+    return None
 
+
+def _feature13_cleanup_strong_positive_title_reason(row: Dict[str, Any]) -> Optional[str]:
+    """Konteks positif berkeyakinan tinggi dari judul untuk keyword ambigu."""
+    title=normalize_text(row.get("title")).lower(); keywords={normalize_text(x).lower() for x in (row.get("matched_location_keywords") or [])}
+    ambiguous=keywords & set(DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS)
+    if not ambiguous or not re.search(r"\b(?:kabupaten\s+)?deli\s+serdang\b|\bdeliserdang\b",title): return None
+    for location in ambiguous:
+        loc=re.escape(location)
+        patterns=(rf"\b{loc}\b[^.!?\n]{{0,120}}\b(?:kabupaten\s+)?deli\s+serdang\b",rf"\b(?:kabupaten\s+)?deli\s+serdang\b[^.!?\n]{{0,120}}\b{loc}\b")
+        if any(re.search(p,title) for p in patterns): return f"judul mengikat {location} secara eksplisit dengan Deli Serdang"
     return None
 
 
@@ -15436,15 +15428,20 @@ def cleanup_feature13_location_dry_run() -> Dict[str, Any]:
                 reason = "validator terbaru valid tetapi flag DB masih false"
         else:
             competing_reason = _feature13_cleanup_competing_region_reason(row)
-            if competing_reason and not _feature13_cleanup_content_is_wrapper(row):
+            if competing_reason:
                 action = "DELETE-CANDIDATE"
                 reason = competing_reason
-            elif _feature13_cleanup_content_is_wrapper(row):
-                action = "INDETERMINATE"
-                reason = "publisher content belum cukup untuk memverifikasi konteks"
             else:
-                action = "INDETERMINATE"
-                reason = "validator false tetapi belum ada bukti kuat untuk delete otomatis"
+                strong_positive = _feature13_cleanup_strong_positive_title_reason(row)
+                if strong_positive:
+                    action = "UPDATE-CANDIDATE" if not stored_valid else "KEEP"
+                    reason = strong_positive + ("; flag DB masih false" if not stored_valid else "; flag DB sudah valid")
+                elif _feature13_cleanup_content_is_wrapper(row):
+                    action = "INDETERMINATE"
+                    reason = "publisher content belum cukup untuk memverifikasi konteks"
+                else:
+                    action = "INDETERMINATE"
+                    reason = "validator false tetapi belum ada bukti kuat untuk delete otomatis"
 
         counts[action] += 1
         report_rows.append({
@@ -15488,6 +15485,155 @@ def cleanup_feature13_location_dry_run() -> Dict[str, Any]:
         "json_report": FEATURE13_CLEANUP_DRYRUN_JSON,
         "csv_report": FEATURE13_CLEANUP_DRYRUN_CSV,
     }
+
+
+def sync_feature13_location_context_only() -> Dict[str, Any]:
+    """Feature #13 SAFE WRITE: sync only location_context_valid=True.
+
+    Scope is deliberately narrow:
+      - reads the current production location table;
+      - recomputes context with the current validator;
+      - updates ONLY rows where recomputed_context=True and stored flag is False;
+      - never INSERTs, never DELETEs, never changes title/content/link/date/keywords;
+      - target-year guard: only 2026 rows are eligible.
+    """
+    print("=" * 70)
+    print("FEATURE #13 — LOCATION CONTEXT SYNC ONLY")
+    print("=" * 70)
+    print(f"Target year        : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location table     : {DELI_SERDANG_LOCATION_TABLE}")
+    print("Supabase write     : ENABLED (UPDATE ONLY)")
+    print("INSERT             : DISABLED")
+    print("DELETE             : DISABLED")
+    print("Telegram           : NOT SENT")
+    print("Scope              : location_context_valid only")
+    print("=" * 70)
+
+    try:
+        supabase = get_supabase()
+    except Exception as exc:
+        print(f"[SYNC ERROR] Supabase client gagal dibuat: {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "reason": str(exc)}
+
+    rows: List[Dict[str, Any]] = []
+    batch_size = 500
+    offset = 0
+    try:
+        while True:
+            response = (
+                supabase.table(DELI_SERDANG_LOCATION_TABLE)
+                .select(
+                    "id,title,link,content,published_date,"
+                    "matched_location_keywords,location_context_valid"
+                )
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            batch = list(response.data or [])
+            rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+    except Exception as exc:
+        print(f"[SYNC ERROR] Gagal membaca location table: {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "reason": str(exc)}
+
+    eligible: List[Dict[str, Any]] = []
+    skipped_non2026 = 0
+    skipped_already_true = 0
+    skipped_invalid = 0
+
+    for row in rows:
+        pub = row.get("published_date")
+        try:
+            year = date_parser.parse(str(pub)).year if pub else None
+        except Exception:
+            year = None
+        if year != DELI_SERDANG_LOCATION_YEAR:
+            skipped_non2026 += 1
+            continue
+
+        stored_valid = row.get("location_context_valid") is True
+        if stored_valid:
+            skipped_already_true += 1
+            continue
+
+        title = normalize_text(row.get("title"))
+        content = normalize_text(row.get("content"))
+        keywords = row.get("matched_location_keywords") or []
+        recomputed = _has_deli_serdang_location_context(title, content, keywords)
+        if recomputed:
+            eligible.append(row)
+        else:
+            skipped_invalid += 1
+
+    print(f"[SYNC] Rows read                 : {len(rows)}")
+    print(f"[SYNC] Eligible UPDATE rows      : {len(eligible)}")
+    print(f"[SYNC] Already valid              : {skipped_already_true}")
+    print(f"[SYNC] Non-{DELI_SERDANG_LOCATION_YEAR} skipped : {skipped_non2026}")
+    print(f"[SYNC] Recomputed invalid skipped : {skipped_invalid}")
+
+    updated = 0
+    failed = []
+    for row in eligible:
+        article_id = row.get("id")
+        if article_id is None:
+            failed.append({"id": None, "reason": "missing id"})
+            continue
+        try:
+            # IMPORTANT: update only this single column. No upsert and no delete.
+            supabase.table(DELI_SERDANG_LOCATION_TABLE).update(
+                {"location_context_valid": True}
+            ).eq("id", article_id).execute()
+            updated += 1
+        except Exception as exc:
+            failed.append({"id": article_id, "reason": f"{type(exc).__name__}: {exc}"})
+            print(f"[SYNC ERROR] id={article_id}: {type(exc).__name__}: {exc}")
+
+    print("=" * 70)
+    print(f"[SYNC] UPDATE berhasil           : {updated}")
+    print(f"[SYNC] UPDATE gagal               : {len(failed)}")
+    print("[SYNC] INSERT                     : 0")
+    print("[SYNC] DELETE                     : 0")
+    print("[SYNC] Kolom yang diubah          : location_context_valid SAJA")
+    print("[SYNC] Telegram                   : 0")
+    print("=" * 70)
+
+    return {
+        "status": "PASSED" if not failed else "FAILED",
+        "rows_read": len(rows),
+        "eligible": len(eligible),
+        "updated": updated,
+        "failed": failed,
+        "skipped_already_true": skipped_already_true,
+        "skipped_non2026": skipped_non2026,
+        "skipped_invalid": skipped_invalid,
+        "inserted": 0,
+        "deleted": 0,
+        "updated_columns": ["location_context_valid"],
+    }
+
+def test_feature13_cleanup_v2_regression() -> Dict[str, Any]:
+    print("=" * 70); print("FEATURE #13 — CLEANUP V2 REGRESSION TEST"); print("=" * 70)
+    cases=[
+      ({"title":"Operasi Pasar Bangun Purba","content":"Pemerintah Kabupaten Rokan Hulu melaksanakan operasi pasar di Kecamatan Bangun Purba, Kabupaten Rokan Hulu. Dalam artikel juga disebut kerja sama dengan daerah lain termasuk Deli Serdang.","matched_location_keywords":["bangun purba","deli serdang"]},"DELETE","Bangun Purba Rokan Hulu + distant Deli Serdang"),
+      ({"title":"Video: Atlet Tuna Rungu Galang Dana","content":"","matched_location_keywords":["galang"]},"DELETE","Galang Dana"),
+      ({"title":"ASN Pemkot Jayapura Galang Dana Korban Kebakaran","content":"","matched_location_keywords":["galang"]},"DELETE","Galang Dana Jayapura"),
+      ({"title":"80 Persen Nakes Asahan Alumni IKDH Deli Tua","content":"","matched_location_keywords":["deli tua"]},"DELETE","Deli Tua Asahan"),
+      ({"title":"Pemkab Deli Serdang dan PT KAI Sepakati Penataan Eks Stasiun Deli Tua","content":"","matched_location_keywords":["deli serdang","deli tua"]},"UPDATE","Deli Tua + Deli Serdang"),
+      ({"title":"Deli Tua Bakal Transformasi, Pemkab Deli Serdang Gandeng PT KAI Tata Kawasan","content":"","matched_location_keywords":["deli tua","deli serdang"]},"UPDATE","Deli Tua positive title"),
+      ({"title":"Operasi Caesar Perdana di RSUD Bangun Purba Berhasil, Layanan Kesehatan Deli Serdang Makin Maju","content":"","matched_location_keywords":["bangun purba","deli serdang"]},"UPDATE","Bangun Purba positive title"),
+      ({"title":"Pemkab Deli Serdang siapkan SMP Negeri 2 Galang jadi sekolah unggulan","content":"","matched_location_keywords":["galang","deli serdang"]},"UPDATE","Galang positive title"),
+    ]
+    failed=[]
+    for row,expected,label in cases:
+        neg=_feature13_cleanup_competing_region_reason(row); strong=_feature13_cleanup_strong_positive_title_reason(row); valid=_has_deli_serdang_location_context(row["title"],row["content"],row["matched_location_keywords"])
+        actual="DELETE" if neg else ("UPDATE" if (valid or strong) else "INDETERMINATE")
+        if actual==expected: print(f"[PASS] {label}")
+        else: failed.append((label,expected,actual)); print(f"[FAIL] {label}: expected={expected}, actual={actual}")
+    print(f"[RESULT] {'PASSED' if not failed else 'FAILED'}: {len(cases)-len(failed)}/{len(cases)}"); print("[ACTION] READ-ONLY: database tidak disentuh")
+    return {"status":"PASSED" if not failed else "FAILED","cases":len(cases),"failed":failed}
+
 
 def test_feature13_real_integration() -> Dict[str, Any]:
     """
@@ -15860,15 +16006,30 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--cleanup-feature13-location-dry-run",
+        "--sync-feature13-location-context-only",
         action="store_true",
         help=(
-            "klasifikasikan existing data Feature #13 menjadi KEEP / "
+            "sinkronisasi aman Feature #13: UPDATE location_context_valid=True "
+            "hanya untuk row 2026 yang lolos validator; tanpa INSERT/DELETE"
+        ),
+    )
+
+    parser.add_argument(
+        "--cleanup-feature13-location-dry-run-v2",
+        action="store_true",
+        help=(
+            "klasifikasikan existing data Feature #13 dengan Cleanup V2 menjadi KEEP / "
             "DELETE-CANDIDATE / UPDATE-CANDIDATE / INDETERMINATE "
             "tanpa mengubah database"
         ),
     )
 
+
+    parser.add_argument(
+        "--test-feature13-cleanup-v2",
+        action="store_true",
+        help="Run Feature #13 cleanup V2 regression tests (read-only).",
+    )
 
     parser.add_argument(
         "--test-feature13-real",
@@ -16136,7 +16297,20 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    if args.cleanup_feature13_location_dry_run:
+    if args.test_feature13_cleanup_v2:
+        result = test_feature13_cleanup_v2_regression()
+        if result.get("status") != "PASSED":
+            raise RuntimeError("Cleanup V2 regression test failed")
+        return
+    if args.sync_feature13_location_context_only:
+        result = sync_feature13_location_context_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Sync Feature #13 gagal: {result.get('failed') or result.get('reason')}"
+            )
+        return
+
+    if args.cleanup_feature13_location_dry_run_v2:
         result = cleanup_feature13_location_dry_run()
         if result.get("status") == "FAILED":
             raise RuntimeError(
