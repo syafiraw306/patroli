@@ -16275,6 +16275,8 @@ def test_feature13_real_integration() -> Dict[str, Any]:
 # FEATURE #13 — LOCATION ENTITY VERIFICATION V3 (READ-ONLY)
 # ============================================================================
 FEATURE13_ENTITY_VERIFY_V3_JSON = "feature13_location_entity_verification_v3_dry_run.json"
+FEATURE13_ENTITY_VERIFY_V31_JSON = "feature13_location_entity_verification_v31_dry_run.json"
+FEATURE13_ENTITY_VERIFY_V31_CSV = "feature13_location_entity_verification_v31_dry_run.csv"
 FEATURE13_ENTITY_VERIFY_V3_CSV = "feature13_location_entity_verification_v3_dry_run.csv"
 
 
@@ -16290,13 +16292,12 @@ def _feature13_v3_domain(row: Dict[str, Any]) -> str:
         return ""
 
 
-def _feature13_v3_classify(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Resolve ambiguous Feature #13 entities conservatively.
+def _feature13_v31_classify(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Evidence-first resolver for the four ambiguous Feature #13 names.
 
-    This function is intentionally read-only and uses article-local evidence.
-    INVALID means the title/content identifies a competing geography or a
-    non-location use of the keyword. VALID requires a strong Deli Serdang
-    institutional/geographic binding. REVIEW is the safe fallback.
+    READ-ONLY.  Strong competing geography wins over weak positive mentions;
+    explicit Deli Serdang/institutional bindings promote a candidate to VALID.
+    Otherwise the safe fallback is REVIEW.
     """
     title = normalize_text(row.get("title") or "").lower()
     text = _feature13_v3_text(row)
@@ -16305,111 +16306,187 @@ def _feature13_v3_classify(row: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(raw_kws, str):
         raw_kws = [x.strip() for x in raw_kws.split(",") if x.strip()]
     kws = {normalize_text(x).lower() for x in raw_kws}
-    reasons: List[str] = []
-    evidence: List[str] = []
-    action = "REVIEW"
 
-    # Non-location use: Galang as Indonesian verb/name, not Kecamatan Galang.
+    def result(action: str, entity: str, reason: str, evidence: List[str]) -> Dict[str, Any]:
+        return {"action": action, "entity": entity, "reason": reason, "evidence": evidence}
+
+    # Non-ambiguous Deli Serdang district keywords are themselves strong
+    # geographic evidence when they co-occur with an ambiguous keyword.
+    direct_ds = tuple(x for x in (
+        "kabupaten deli serdang", "kabupaten deliserdang", "deli serdang", "deliserdang"
+    ) if x in text)
+    non_ambiguous_ds_kw = kws - DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS
+    non_ambiguous_present = bool(non_ambiguous_ds_kw)
+
     if "galang" in kws:
-        location_signals = (
-            "kecamatan galang", "desa galang", "kabupaten deli serdang",
-            "deli serdang", "deliserdang", "galang deli serdang"
+        # First eliminate obvious verb/name usage.
+        verb_patterns = (
+            "galang dana", "galang donasi", "galang bantuan", "galang solidaritas",
+            "galang dukungan", "galang aksi", "galang sumbangan", "gagal galang",
         )
-        if not any(x in text for x in location_signals):
-            return {
-                "action": "INVALID", "entity": "galang",
-                "reason": "keyword 'galang' digunakan sebagai verba/nama, bukan lokasi Deli Serdang",
-                "evidence": ["tidak ditemukan binding Kecamatan/Desa Galang atau Deli Serdang"],
-            }
+        if any(x in text for x in verb_patterns):
+            # A real Deli Serdang geographic co-occurrence can override only if
+            # the title explicitly binds Galang to the district/location.
+            if not any(x in title for x in ("galang deli serdang", "kecamatan galang", "desa galang")):
+                return result("INVALID", "galang", "keyword 'galang' digunakan sebagai verba/nama, bukan lokasi Deli Serdang", [x for x in verb_patterns if x in text])
+        if any(x in title for x in ("kecamatan galang", "desa galang", "galang deli serdang")) or direct_ds or non_ambiguous_present:
+            return result("VALID", "galang", "Galang terikat ke wilayah/entitas Deli Serdang", [
+                *(["Kecamatan/Desa Galang"] if any(x in title for x in ("kecamatan galang", "desa galang")) else []),
+                *direct_ds,
+                *sorted(non_ambiguous_ds_kw),
+            ])
+        return result("REVIEW", "galang", "Galang disebut tetapi binding geografis Deli Serdang belum cukup kuat", [domain] if domain else [])
 
     if "bangun purba" in kws:
-        if any(x in text for x in ("rokan hulu", "rohul", "kunto darussalam")):
-            return {
-                "action": "INVALID", "entity": "bangun purba",
-                "reason": "Bangun Purba terikat ke Rokan Hulu/Rohul/Kunto Darussalam",
-                "evidence": [x for x in ("rokan hulu", "rohul", "kunto darussalam") if x in text],
-            }
-        strong_valid = (
-            "rsud bangun purba" in text,
-            "kodim 0204/ds" in text,
-            "kodim 0204/deli serdang" in text,
-            "koramil 19/bangun purba" in text,
-            "koramil bangun purba" in text,
-            "kabupaten deli serdang" in text,
-            "kabupaten deliserdang" in text,
-            "deliserdang" in text and "bangun purba" in text,
+        negatives = ("rokan hulu", "rohul", "kunto darussalam")
+        neg = [x for x in negatives if x in text]
+        if neg:
+            return result("INVALID", "bangun purba", "Bangun Purba terikat ke Rokan Hulu/Rohul/Kunto Darussalam", neg)
+        positive_labels = []
+        positive_checks = (
+            ("rsud bangun purba", "RSUD Bangun Purba"),
+            ("kodim 0204/ds", "Kodim 0204/DS"),
+            ("kodim 0204/deli serdang", "Kodim 0204/Deli Serdang"),
+            ("koramil 19/bangun purba", "Koramil 19/Bangun Purba"),
+            ("koramil bangun purba", "Koramil Bangun Purba"),
+            ("polsek bangun purba", "Polsek Bangun Purba"),
+            ("kapolsek bangun purba", "Kapolsek Bangun Purba"),
+            ("kabupaten deli serdang", "Kabupaten Deli Serdang"),
+            ("kabupaten deliserdang", "Kabupaten Deliserdang"),
+            ("deli serdang", "Deli Serdang"),
+            ("deliserdang", "Deliserdang"),
+            ("dprd deliserdang", "DPRD Deliserdang"),
         )
-        labels = (
-            "RSUD Bangun Purba", "Kodim 0204/DS", "Kodim 0204/Deli Serdang",
-            "Koramil 19/Bangun Purba", "Koramil Bangun Purba",
-            "Kabupaten Deli Serdang", "Kabupaten Deliserdang",
-        )
-        for ok, label in zip(strong_valid, labels):
-            if ok:
-                action = "VALID"
-                evidence.append(label)
-        if action == "VALID":
-            return {"action": action, "entity": "bangun purba",
-                    "reason": "entity/institution binding kuat ke Bangun Purba Deli Serdang",
-                    "evidence": evidence}
-        return {"action": "REVIEW", "entity": "bangun purba",
-                "reason": "Bangun Purba disebut tetapi belum ada binding Deli Serdang yang cukup kuat",
-                "evidence": [domain] if domain else []}
+        for needle, label in positive_checks:
+            if needle in text:
+                positive_labels.append(label)
+        if positive_labels:
+            return result("VALID", "bangun purba", "Bangun Purba terikat kuat ke Deli Serdang/institusi lokal", positive_labels)
+        return result("REVIEW", "bangun purba", "Bangun Purba disebut tetapi binding Deli Serdang belum cukup kuat", [domain] if domain else [])
 
     if "deli tua" in kws:
-        # These are strong competing-location signals: the article event is in
-        # Medan Johor even though Polsek Deli Tua is mentioned.
         competing = ("medan johor", "kwala bekala", "j-city", "j city", "flyover jamin ginting")
-        if any(x in text for x in competing):
-            return {
-                "action": "INVALID", "entity": "deli tua",
-                "reason": "artikel mengikat peristiwa ke Medan Johor/Kwala Bekala/J-City/Jamin Ginting",
-                "evidence": [x for x in competing if x in text],
-            }
-        strong_valid = (
-            "eks stasiun deli tua" in title or "stasiun deli tua" in title,
-            "deli old town" in text,
-            "pln deli tua" in text,
-            "tanah deli tua" in text,
-            "18 lokasi di deli tua" in text,
-            "bayangkari deli tua" in text,
-            "polsek deli tua" in title and not any(x in text for x in competing),
+        neg = [x for x in competing if x in text]
+        if neg:
+            return result("INVALID", "deli tua", "artikel mengikat peristiwa ke geografi Medan yang bersaing dengan Deli Tua", neg)
+        positive_checks = (
+            ("eks stasiun deli tua", "Stasiun/Eks Stasiun Deli Tua"),
+            ("stasiun deli tua", "Stasiun Deli Tua"),
+            ("deli old town", "Deli Old Town"),
+            ("pln deli tua", "PLN Deli Tua"),
+            ("tanah deli tua", "Tanah Deli Tua"),
+            ("bayangkari deli tua", "Bhayangkari Deli Tua"),
+            ("bhayangkari deli tua", "Bhayangkari Deli Tua"),
+            ("polsek deli tua", "Polsek Deli Tua"),
+            ("jalan besar deli tua", "Jalan Besar Deli Tua"),
+            ("kabupaten deli serdang", "Kabupaten Deli Serdang"),
+            ("deli serdang", "Deli Serdang"),
+            ("deliserdang", "Deliserdang"),
         )
-        labels = ("Stasiun/Eks Stasiun Deli Tua", "Deli Old Town", "PLN Deli Tua",
-                  "Tanah Deli Tua", "18 lokasi Deli Tua", "Bhayangkari Deli Tua",
-                  "Polsek Deli Tua tanpa competing geography")
-        for ok, label in zip(strong_valid, labels):
-            if ok:
-                evidence.append(label)
-        if evidence:
-            return {"action": "VALID", "entity": "deli tua",
-                    "reason": "entity/geographic binding kuat ke Deli Tua",
-                    "evidence": evidence}
-        return {"action": "REVIEW", "entity": "deli tua",
-                "reason": "Deli Tua disebut tetapi entity/location context belum cukup kuat",
-                "evidence": [domain] if domain else []}
+        positive_labels = [label for needle, label in positive_checks if needle in text]
+        # A plain Polsek Deli Tua title is strong enough because it is the
+        # local police entity; competing Medan geography was handled above.
+        if positive_labels:
+            return result("VALID", "deli tua", "Deli Tua terikat kuat melalui entitas/geografi lokal", positive_labels)
+        return result("REVIEW", "deli tua", "Deli Tua disebut tetapi entity/location context belum cukup kuat", [domain] if domain else [])
 
     if "gunung meriah" in kws:
-        competing = ("aceh singkil", "singkil", "rimo", "lae butar", "smkn 1 gunung meriah",
+        negatives = ("aceh singkil", "singkil", "rimo", "lae butar", "smkn 1 gunung meriah",
                      "smpn 1 gunung meriah", "sma negeri 2 gunung meriah", "puskesmas gunung meriah")
-        if any(x in text for x in competing):
-            return {
-                "action": "INVALID", "entity": "gunung meriah",
-                "reason": "Gunung Meriah terikat ke Kabupaten Aceh Singkil/entitas Gunung Meriah Aceh",
-                "evidence": [x for x in competing if x in text],
-            }
-        if any(x in text for x in ("deli serdang", "deliserdang")):
-            return {"action": "VALID", "entity": "gunung meriah",
-                    "reason": "Gunung Meriah terikat langsung ke Deli Serdang",
-                    "evidence": ["Deli Serdang"]}
-        return {"action": "REVIEW", "entity": "gunung meriah",
-                "reason": "Gunung Meriah disebut tanpa competing-region atau Deli Serdang binding yang cukup",
-                "evidence": [domain] if domain else []}
+        neg = [x for x in negatives if x in text]
+        if neg:
+            return result("INVALID", "gunung meriah", "Gunung Meriah terikat ke Kabupaten Aceh Singkil/entitas Gunung Meriah Aceh", neg)
+        if direct_ds:
+            return result("VALID", "gunung meriah", "Gunung Meriah terikat langsung ke Deli Serdang", list(direct_ds))
+        return result("REVIEW", "gunung meriah", "Gunung Meriah disebut tanpa competing-region atau Deli Serdang binding yang cukup", [domain] if domain else [])
 
-    return {"action": "REVIEW", "entity": ", ".join(sorted(kws)) or "unknown",
-            "reason": "tidak termasuk entity ambigu yang didukung V3",
-            "evidence": []}
+    return result("REVIEW", ", ".join(sorted(kws)) or "unknown", "tidak termasuk entity ambigu yang didukung V3.1", [])
 
+
+def feature13_entity_verification_v31() -> Dict[str, Any]:
+    print("=" * 70)
+    print("FEATURE #13 — LOCATION ENTITY VERIFICATION V3.1")
+    print("=" * 70)
+    print(f"Target year   : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Table         : {DELI_SERDANG_LOCATION_TABLE}")
+    print("Mode          : READ-ONLY")
+    print("INSERT/UPDATE/DELETE : DISABLED")
+    print("Production articles  : NOT TOUCHED")
+    print("Telegram              : NOT SENT")
+    try:
+        supabase = get_supabase()
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        batch_size = 500
+        while True:
+            response = (supabase.table(DELI_SERDANG_LOCATION_TABLE)
+                        .select("id,title,link,content,published_date,matched_location_keywords,location_context_valid")
+                        .range(offset, offset + batch_size - 1).execute())
+            batch = list(response.data or [])
+            rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+    except Exception as exc:
+        print(f"[FAILED] Gagal membaca location table: {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "reason": str(exc)}
+
+    candidates = []
+    for row in rows:
+        raw_kws = row.get("matched_location_keywords") or []
+        if isinstance(raw_kws, str):
+            raw_kws = [x.strip() for x in raw_kws.split(",") if x.strip()]
+        kws = {normalize_text(x).lower() for x in raw_kws}
+        if kws & DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS:
+            candidates.append(row)
+
+    report_rows: List[Dict[str, Any]] = []
+    for row in candidates:
+        result = _feature13_v31_classify(row)
+        report_rows.append({
+            "id": row.get("id"), "action": result["action"],
+            "entity": result.get("entity"), "reason": result.get("reason"),
+            "evidence": result.get("evidence", []),
+            "title": row.get("title"), "link": row.get("link"),
+            "published_date": row.get("published_date"),
+            "domain": _feature13_v3_domain(row),
+            "keywords": ", ".join(row.get("matched_location_keywords") or []),
+            "stored_context": bool(row.get("location_context_valid")),
+            "content_length": len(str(row.get("content") or "")),
+        })
+    from collections import Counter
+    counts = Counter(r["action"] for r in report_rows)
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "target_year": DELI_SERDANG_LOCATION_YEAR,
+        "table": DELI_SERDANG_LOCATION_TABLE,
+        "mode": "ENTITY-VERIFICATION-V3.1-READ-ONLY",
+        "database_mutated": False,
+        "production_articles_touched": False,
+        "telegram_sent": False,
+        "input_rows": len(rows),
+        "candidates_reviewed": len(report_rows),
+        "counts": {"VALID": counts.get("VALID", 0), "INVALID": counts.get("INVALID", 0), "REVIEW": counts.get("REVIEW", 0)},
+        "rows": report_rows,
+    }
+    with open(FEATURE13_ENTITY_VERIFY_V31_JSON, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+    fieldnames = ["id", "action", "entity", "reason", "evidence", "title", "link", "published_date", "domain", "keywords", "stored_context", "content_length"]
+    with open(FEATURE13_ENTITY_VERIFY_V31_CSV, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in report_rows:
+            out = dict(r); out["evidence"] = " | ".join(r.get("evidence") or [])
+            writer.writerow(out)
+    print(f"Rows read          : {len(rows)}")
+    print(f"Candidates reviewed: {len(report_rows)}")
+    print(f"VALID              : {counts.get('VALID', 0)}")
+    print(f"INVALID            : {counts.get('INVALID', 0)}")
+    print(f"REVIEW             : {counts.get('REVIEW', 0)}")
+    print(f"JSON report        : {FEATURE13_ENTITY_VERIFY_V31_JSON}")
+    print(f"CSV report         : {FEATURE13_ENTITY_VERIFY_V31_CSV}")
+    print("[ACTION] READ-ONLY: DATABASE TIDAK DIUBAH")
+    return {"status": "PASSED", "payload": payload}
 
 def feature13_entity_verification_v3() -> Dict[str, Any]:
     print("=" * 70)
@@ -16623,6 +16700,12 @@ def main() -> None:
         "--feature13-entity-verification-v3",
         action="store_true",
         help="Verify ambiguous Feature #13 location entities using V3 evidence rules (read-only).",
+    )
+
+    parser.add_argument(
+        "--feature13-entity-verification-v31",
+        action="store_true",
+        help="Verify ambiguous Feature #13 location entities using V3.1 evidence rules (read-only).",
     )
 
     parser.add_argument(
@@ -16891,6 +16974,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.feature13_entity_verification_v31:
+        result = feature13_entity_verification_v31()
+        if result.get("status") != "PASSED":
+            raise RuntimeError(f"Entity Verification V3.1 gagal: {result.get('reason')}")
+        return
+
     if args.feature13_entity_verification_v3:
         result = feature13_entity_verification_v3()
         if result.get("status") != "PASSED":
