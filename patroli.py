@@ -16495,7 +16495,12 @@ def main() -> None:
         return
 
     if args.sync_feature13_location_context_invalid_only:
-        sync_feature13_location_context_invalid_only()
+        result = sync_feature13_location_context_invalid_only()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Sync Feature #13 invalid-only gagal: {result.get('failed') or result.get('reason')}"
+            )
+        return
 
     if args.cleanup_feature13_location_dry_run_v2:
         result = cleanup_feature13_location_dry_run()
