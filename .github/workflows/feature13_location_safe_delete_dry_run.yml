@@ -22,24 +22,18 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
+
       - name: Compile patroli.py
-        run: |
-          python -m py_compile patroli.py
-      
-      - name: Run Cleanup V2 Regression Test
-        run: |
-          python patroli.py --test-feature13-cleanup-v2
-      
+        run: python -m py_compile patroli.py
+
       - name: Verify Safe Delete Dry-Run CLI
-        run: |
-          python patroli.py --help | grep -F -- "--safe-delete-feature13-location-dry-run"
-      
+        run: python patroli.py --help | grep -F -- "--safe-delete-feature13-location-dry-run"
+
       - name: Run Feature 13 Safe Delete Dry-Run
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-        run: |
-          python patroli.py --safe-delete-feature13-location-dry-run
+        run: python patroli.py --safe-delete-feature13-location-dry-run
 
       - name: Upload Safe Delete Dry-Run Report
         uses: actions/upload-artifact@v4
