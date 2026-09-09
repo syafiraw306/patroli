@@ -1,0 +1,50 @@
+name: Feature #13 - Final Data Audit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit-feature13-final:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TAHUN_TARGET: '2026'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Verify audit script
+        run: |
+          test -f patroli.py
+          test -f database.py
+          test -f feature13_final_data_audit.py
+
+      - name: Compile audit script
+        run: |
+          python -m py_compile feature13_final_data_audit.py
+
+      - name: Run Feature #13 final data audit
+        run: |
+          python feature13_final_data_audit.py
+
+      - name: Upload audit reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature13-final-data-audit
+          path: |
+            feature13_final_data_audit.json
+            feature13_final_data_audit.csv
