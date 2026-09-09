@@ -16193,6 +16193,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--sync-feature13-location-context-invalid-only",
+        action="store_true",
+        help="Sync only rows whose stored location_context_valid=True but V2 validator recomputes them as invalid.",
+    )
+
+    parser.add_argument(
         "--cleanup-feature13-location-dry-run-v2",
         action="store_true",
         help=(
@@ -16487,6 +16493,9 @@ def main() -> None:
                 f"Sync Feature #13 gagal: {result.get('failed') or result.get('reason')}"
             )
         return
+
+    if args.sync_feature13_location_context_invalid_only:
+        sync_feature13_location_context_invalid_only()
 
     if args.cleanup_feature13_location_dry_run_v2:
         result = cleanup_feature13_location_dry_run()
