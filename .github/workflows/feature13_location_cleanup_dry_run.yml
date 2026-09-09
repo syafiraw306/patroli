@@ -1,4 +1,4 @@
-name: Feature #13 - Deli Serdang Location Cleanup V2 Dry Run
+name: Feature 13 - Deli Serdang Location Cleanup V2 Dry Run
 
 on:
   workflow_dispatch:
