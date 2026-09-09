@@ -15613,6 +15613,184 @@ def sync_feature13_location_context_only() -> Dict[str, Any]:
         "updated_columns": ["location_context_valid"],
     }
 
+def sync_feature13_location_context_invalid_only() -> Dict[str, Any]:
+    """Feature #13 SAFE WRITE: sync only stored=True -> recomputed=False.
+
+    This is a narrow corrective UPDATE pass after the positive sync. It:
+      - reads the current production location table in batches;
+      - considers only 2026 rows whose stored flag is True;
+      - recomputes the current V2 location-context validator;
+      - updates ONLY rows where recomputed_context is False;
+      - never INSERTs, never DELETEs, never changes article fields other than
+        location_context_valid;
+      - verifies that the table row count is unchanged after the write.
+    """
+    print("=" * 70)
+    print("FEATURE #13 — LOCATION CONTEXT INVALID SYNC ONLY")
+    print("=" * 70)
+    print(f"Target year        : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location table     : {DELI_SERDANG_LOCATION_TABLE}")
+    print("Supabase write     : ENABLED (UPDATE ONLY)")
+    print("INSERT             : DISABLED")
+    print("DELETE             : DISABLED")
+    print("Telegram           : NOT SENT")
+    print("Scope              : location_context_valid only (True -> False)")
+    print("=" * 70)
+
+    try:
+        supabase = get_supabase()
+    except Exception as exc:
+        print(f"[SYNC ERROR] Supabase client gagal dibuat: {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "reason": str(exc)}
+
+    def read_rows() -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        batch_size = 500
+        offset = 0
+        while True:
+            response = (
+                supabase.table(DELI_SERDANG_LOCATION_TABLE)
+                .select(
+                    "id,title,link,content,published_date,"
+                    "matched_location_keywords,location_context_valid"
+                )
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            batch = list(response.data or [])
+            rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+        return rows
+
+    try:
+        rows_before = read_rows()
+    except Exception as exc:
+        print(f"[SYNC ERROR] Gagal membaca location table: {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "reason": str(exc)}
+
+    eligible: List[Dict[str, Any]] = []
+    skipped_non2026 = 0
+    skipped_stored_false = 0
+    skipped_recomputed_valid = 0
+
+    for row in rows_before:
+        pub = row.get("published_date")
+        try:
+            year = date_parser.parse(str(pub)).year if pub else None
+        except Exception:
+            year = None
+        if year != DELI_SERDANG_LOCATION_YEAR:
+            skipped_non2026 += 1
+            continue
+
+        if row.get("location_context_valid") is not True:
+            skipped_stored_false += 1
+            continue
+
+        title = normalize_text(row.get("title"))
+        content = normalize_text(row.get("content"))
+        keywords = row.get("matched_location_keywords") or []
+        recomputed = _has_deli_serdang_location_context(title, content, keywords)
+        if recomputed is False:
+            eligible.append(row)
+        else:
+            skipped_recomputed_valid += 1
+
+    print(f"[SYNC] Rows read                 : {len(rows_before)}")
+    print(f"[SYNC] Eligible UPDATE rows      : {len(eligible)}")
+    print(f"[SYNC] Stored false skipped      : {skipped_stored_false}")
+    print(f"[SYNC] Non-{DELI_SERDANG_LOCATION_YEAR} skipped : {skipped_non2026}")
+    print(f"[SYNC] Recomputed valid skipped  : {skipped_recomputed_valid}")
+
+    # Explicit safety guard: this pass is expected to correct only the current
+    # stored=True/recomputed=False mismatch set. It never acts on stored=False.
+    updated_ids: List[Any] = []
+    failed: List[Dict[str, Any]] = []
+    for row in eligible:
+        article_id = row.get("id")
+        if article_id is None:
+            failed.append({"id": None, "reason": "missing id"})
+            continue
+        try:
+            # IMPORTANT: update exactly one column; no upsert/delete.
+            supabase.table(DELI_SERDANG_LOCATION_TABLE).update(
+                {"location_context_valid": False}
+            ).eq("id", article_id).eq("location_context_valid", True).execute()
+            updated_ids.append(article_id)
+        except Exception as exc:
+            failed.append({"id": article_id, "reason": f"{type(exc).__name__}: {exc}"})
+            print(f"[SYNC ERROR] id={article_id}: {type(exc).__name__}: {exc}")
+
+    # Post-write invariant: same number of rows; and every intended ID now has
+    # location_context_valid=False. A failed verification makes the command fail.
+    try:
+        rows_after = read_rows()
+    except Exception as exc:
+        print(f"[SYNC ERROR] Gagal verifikasi pasca-write: {type(exc).__name__}: {exc}")
+        return {
+            "status": "FAILED",
+            "reason": f"post-write read failed: {type(exc).__name__}: {exc}",
+            "rows_read": len(rows_before),
+            "eligible": len(eligible),
+            "updated": len(updated_ids),
+            "failed": failed,
+        }
+
+    before_ids = {row.get("id") for row in rows_before}
+    after_ids = {row.get("id") for row in rows_after}
+    row_count_unchanged = len(rows_before) == len(rows_after)
+    id_set_unchanged = before_ids == after_ids
+
+    after_by_id = {row.get("id"): row for row in rows_after}
+    verification_failures = []
+    for article_id in updated_ids:
+        row = after_by_id.get(article_id)
+        if not row or row.get("location_context_valid") is not False:
+            verification_failures.append(article_id)
+
+    print("=" * 70)
+    print(f"[SYNC] UPDATE berhasil           : {len(updated_ids)}")
+    print(f"[SYNC] UPDATE gagal               : {len(failed)}")
+    print("[SYNC] INSERT                     : 0")
+    print("[SYNC] DELETE                     : 0")
+    print("[SYNC] Kolom yang diubah          : location_context_valid SAJA")
+    print("[SYNC] Telegram                   : 0")
+    print(f"[VERIFY] Row count unchanged     : {row_count_unchanged}")
+    print(f"[VERIFY] ID set unchanged        : {id_set_unchanged}")
+    print(f"[VERIFY] Updated flags verified  : {len(verification_failures) == 0}")
+    print("=" * 70)
+
+    failures = list(failed)
+    if not row_count_unchanged:
+        failures.append({"reason": "row count changed", "before": len(rows_before), "after": len(rows_after)})
+    if not id_set_unchanged:
+        failures.append({"reason": "ID set changed"})
+    if verification_failures:
+        failures.append({"reason": "post-write flag verification failed", "ids": verification_failures})
+
+    return {
+        "status": "PASSED" if not failures else "FAILED",
+        "rows_read": len(rows_before),
+        "eligible": len(eligible),
+        "updated": len(updated_ids),
+        "updated_ids": updated_ids,
+        "failed": failures,
+        "skipped_stored_false": skipped_stored_false,
+        "skipped_non2026": skipped_non2026,
+        "skipped_recomputed_valid": skipped_recomputed_valid,
+        "inserted": 0,
+        "deleted": 0,
+        "updated_columns": ["location_context_valid"],
+        "row_count_before": len(rows_before),
+        "row_count_after": len(rows_after),
+        "row_count_unchanged": row_count_unchanged,
+        "id_set_unchanged": id_set_unchanged,
+        "post_write_verified": not verification_failures,
+    }
+
+
 def test_feature13_cleanup_v2_regression() -> Dict[str, Any]:
     print("=" * 70); print("FEATURE #13 — CLEANUP V2 REGRESSION TEST"); print("=" * 70)
     cases=[
