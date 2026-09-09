@@ -15487,6 +15487,221 @@ def cleanup_feature13_location_dry_run() -> Dict[str, Any]:
     }
 
 
+FEATURE13_SAFE_DELETE_DRYRUN_JSON = "feature13_location_safe_delete_dry_run.json"
+FEATURE13_SAFE_DELETE_DRYRUN_CSV = "feature13_location_safe_delete_dry_run.csv"
+
+
+def safe_delete_feature13_location_dry_run() -> Dict[str, Any]:
+    """Feature #13 SAFE DELETE DRY-RUN -- READ ONLY.
+
+    Mengambil ulang data langsung dari Supabase, menjalankan classifier Cleanup V2,
+    lalu hanya mengekspor row DELETE-CANDIDATE. Tidak melakukan DELETE/UPDATE/INSERT.
+
+    Guardrails:
+      - hanya target year 2026
+      - hanya row yang saat ini diklasifikasikan DELETE-CANDIDATE oleh validator V2
+      - collision hanya boleh menghapus non-keeper
+      - INDETERMINATE dan KEEP tidak pernah masuk candidate list
+      - production table `articles` tidak disentuh
+      - Telegram tidak dipanggil
+    """
+    print("=" * 70)
+    print("FEATURE #13 — SAFE DELETE DRY-RUN")
+    print("=" * 70)
+    print(f"Target year         : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location table      : {DELI_SERDANG_LOCATION_TABLE}")
+    print("Supabase write      : DISABLED")
+    print("INSERT/UPDATE/DELETE: DISABLED")
+    print("Production articles : NOT TOUCHED")
+    print("Telegram            : NOT SENT")
+    print("=" * 70)
+
+    try:
+        supabase = get_supabase()
+        rows: List[Dict[str, Any]] = []
+        batch_size = 500
+        offset = 0
+        while True:
+            response = (
+                supabase.table(DELI_SERDANG_LOCATION_TABLE)
+                .select(
+                    "id,title,link,content,published_date,"
+                    "matched_location_keywords,location_context_valid"
+                )
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            batch = list(response.data or [])
+            rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+    except Exception as exc:
+        print(f"[SAFE DELETE DRY-RUN ERROR] {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "reason": str(exc)}
+
+    # Rebuild normalized-link collision ownership from CURRENT database state.
+    normalized_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        norm = normalize_url(row.get("link"))
+        if norm:
+            normalized_groups.setdefault(norm, []).append(row)
+
+    collision_owner: Dict[Any, Any] = {}
+    for norm, group in normalized_groups.items():
+        if len(group) <= 1:
+            continue
+        keeper = max(group, key=_feature13_cleanup_keeper_score)
+        keeper_id = keeper.get("id")
+        for row in group:
+            if row.get("id") != keeper_id:
+                collision_owner[row.get("id")] = keeper_id
+
+    candidates: List[Dict[str, Any]] = []
+    excluded_non_2026 = 0
+    excluded_keep_or_indeterminate = 0
+    recomputed_invalid = 0
+
+    for row in rows:
+        article_id = row.get("id")
+        published = row.get("published_date")
+        try:
+            year = int(str(published)[:4]) if published else None
+        except Exception:
+            year = None
+
+        if year != DELI_SERDANG_LOCATION_YEAR:
+            excluded_non_2026 += 1
+            continue
+
+        norm = normalize_url(row.get("link"))
+        title = normalize_text(row.get("title"))
+        content = normalize_text(row.get("content"))
+        keywords = row.get("matched_location_keywords") or []
+        stored_valid = row.get("location_context_valid") is True
+        recomputed_valid = _has_deli_serdang_location_context(title, content, keywords)
+
+        if not recomputed_valid:
+            recomputed_invalid += 1
+
+        action = "INDETERMINATE"
+        reason = "bukti belum cukup untuk tindakan otomatis"
+
+        if article_id in collision_owner:
+            action = "DELETE-CANDIDATE"
+            reason = f"normalized-link duplicate; keeper={collision_owner[article_id]}"
+        elif recomputed_valid:
+            action = "KEEP" if stored_valid else "UPDATE-CANDIDATE"
+        else:
+            competing_reason = _feature13_cleanup_competing_region_reason(row)
+            if competing_reason:
+                action = "DELETE-CANDIDATE"
+                reason = competing_reason
+            else:
+                positive_title_reason = _feature13_cleanup_strong_positive_title_reason(row)
+                if positive_title_reason:
+                    action = "KEEP"
+                    reason = positive_title_reason
+                elif _feature13_cleanup_content_is_wrapper(row):
+                    action = "INDETERMINATE"
+                    reason = "publisher content belum cukup untuk memverifikasi konteks"
+                else:
+                    action = "INDETERMINATE"
+
+        if action == "DELETE-CANDIDATE":
+            candidates.append({
+                "id": article_id,
+                "action": action,
+                "reason": reason,
+                "title": title,
+                "link": row.get("link") or "",
+                "normalized_link": norm,
+                "published_date": published or "",
+                "domain": urlparse(str(row.get("link") or "")).netloc.lower(),
+                "keywords": ", ".join(str(x) for x in keywords),
+                "stored_context": stored_valid,
+                "recomputed_context": recomputed_valid,
+                "content_length": len(content),
+                "collision_keeper_id": collision_owner.get(article_id, ""),
+            })
+        else:
+            excluded_keep_or_indeterminate += 1
+
+    # Safety invariant: every exported candidate must be target-year and have a
+    # deterministic delete reason; no UPDATE-CANDIDATE/INDETERMINATE can leak in.
+    unsafe_candidates = [
+        row for row in candidates
+        if row.get("action") != "DELETE-CANDIDATE"
+        or str(row.get("published_date") or "")[:4] != str(DELI_SERDANG_LOCATION_YEAR)
+        or not row.get("reason")
+    ]
+    if unsafe_candidates:
+        print(f"[SAFE DELETE DRY-RUN] SAFETY CHECK FAILED: {len(unsafe_candidates)} candidate(s)")
+        return {"status": "FAILED", "reason": "unsafe candidate detected"}
+
+    candidates.sort(key=lambda x: (x.get("domain", ""), x.get("id", 0)))
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "target_year": DELI_SERDANG_LOCATION_YEAR,
+        "table": DELI_SERDANG_LOCATION_TABLE,
+        "mode": "SAFE-DELETE-DRY-RUN",
+        "database_mutated": False,
+        "telegram_sent": False,
+        "production_articles_touched": False,
+        "source_classifier": "Cleanup V2 classifier rerun against current DB state",
+        "counts": {
+            "TOTAL_ROWS_READ": len(rows),
+            "DELETE_CANDIDATE": len(candidates),
+            "NON_2026_EXCLUDED": excluded_non_2026,
+            "KEEP_OR_OTHER_EXCLUDED": excluded_keep_or_indeterminate,
+            "RECOMPUTED_INVALID": recomputed_invalid,
+        },
+        "safety_checks": {
+            "only_target_year_2026": all(str(r.get("published_date") or "")[:4] == str(DELI_SERDANG_LOCATION_YEAR) for r in candidates),
+            "only_delete_candidates": all(r.get("action") == "DELETE-CANDIDATE" for r in candidates),
+            "no_database_mutation": True,
+            "no_production_articles_write": True,
+            "no_telegram": True,
+        },
+        "candidates": candidates,
+    }
+
+    with open(FEATURE13_SAFE_DELETE_DRYRUN_JSON, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+
+    fields = [
+        "id", "action", "reason", "title", "link", "normalized_link",
+        "published_date", "domain", "keywords", "stored_context",
+        "recomputed_context", "content_length", "collision_keeper_id",
+    ]
+    with open(FEATURE13_SAFE_DELETE_DRYRUN_CSV, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for row in candidates:
+            writer.writerow({key: row.get(key, "") for key in fields})
+
+    print(f"[SAFE DELETE] Total rows read       : {len(rows)}")
+    print(f"[SAFE DELETE] DELETE-CANDIDATE      : {len(candidates)}")
+    print(f"[SAFE DELETE] Non-2026 excluded     : {excluded_non_2026}")
+    print(f"[SAFE DELETE] KEEP/OTHER excluded   : {excluded_keep_or_indeterminate}")
+    print(f"[SAFE DELETE] Recomputed invalid    : {recomputed_invalid}")
+    print(f"[SAFE DELETE] JSON report            : {FEATURE13_SAFE_DELETE_DRYRUN_JSON}")
+    print(f"[SAFE DELETE] CSV report             : {FEATURE13_SAFE_DELETE_DRYRUN_CSV}")
+    print("[ACTION] READ-ONLY: DATABASE TIDAK DIUBAH")
+    print("[ACTION] Tidak ada DELETE/UPDATE/INSERT dan tidak ada Telegram.")
+    print("=" * 70)
+    return {
+        "status": "PASSED",
+        "total_rows": len(rows),
+        "delete_candidates": len(candidates),
+        "non_2026_excluded": excluded_non_2026,
+        "recomputed_invalid": recomputed_invalid,
+        "json_report": FEATURE13_SAFE_DELETE_DRYRUN_JSON,
+        "csv_report": FEATURE13_SAFE_DELETE_DRYRUN_CSV,
+    }
+
+
 def sync_feature13_location_context_only() -> Dict[str, Any]:
     """Feature #13 SAFE WRITE: sync only location_context_valid=True.
 
@@ -16199,6 +16414,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--safe-delete-feature13-location-dry-run",
+        action="store_true",
+        help="dry-run read-only untuk mengekspor DELETE-CANDIDATE Feature #13",
+    )
+
+    parser.add_argument(
         "--cleanup-feature13-location-dry-run-v2",
         action="store_true",
         help=(
@@ -16499,6 +16720,14 @@ def main() -> None:
         if result.get("status") == "FAILED":
             raise RuntimeError(
                 f"Sync Feature #13 invalid-only gagal: {result.get('failed') or result.get('reason')}"
+            )
+        return
+
+    if args.safe_delete_feature13_location_dry_run:
+        result = safe_delete_feature13_location_dry_run()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Safe Delete Feature #13 dry-run gagal: {result.get('reason')}"
             )
         return
 
