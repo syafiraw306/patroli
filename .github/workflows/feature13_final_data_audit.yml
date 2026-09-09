@@ -1,4 +1,4 @@
-name: Feature #13 - Final Data Audit
+name: Feature 13 - Final Data Audit
 
 on:
   workflow_dispatch:
