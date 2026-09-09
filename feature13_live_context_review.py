@@ -39,7 +39,7 @@ def review(row):
     title = patroli.normalize_text(row.get('title'))
     link = patroli.normalize_url(row.get('link'))
     keywords = row.get('matched_location_keywords') or []
-    out = {'row': row, 'status': 'FETCH_FAILED', 'final_url': link, 'content': '', 'error': ''}
+    out = {'row': row, 'status': 'FETCH_FAILED', 'final_url': link, 'content': '', 'error': '', 'live_matches': []}
     if not link:
         out['error'] = 'link kosong'
         return out
@@ -66,7 +66,12 @@ def review(row):
             if not out['error']:
                 out['error'] = f'content publisher terlalu pendek (len={len(content)})'
             return out
-        valid = patroli._has_deli_serdang_location_context(title, content, keywords)
+        # Jangan mempercayai matched_location_keywords lama sebagai bukti
+        # konteks. Hitung ulang keyword dari title + publisher content yang
+        # benar-benar berhasil di-fetch.
+        live_matches = patroli.find_location_matches(title, content)
+        out['live_matches'] = live_matches
+        valid = patroli._has_deli_serdang_location_context(title, content, live_matches)
         out['status'] = 'VALID' if valid else 'INVALID'
         return out
     except Exception as exc:
@@ -146,7 +151,7 @@ def main():
     print('=' * 70)
     for x in sorted(valid, key=lambda z: str(z['row'].get('id'))):
         r=x['row']; c=x['content']
-        print(f"[LIVE-VALID] id={r.get('id')} | domain={domain(r.get('link'))} | keywords={r.get('matched_location_keywords') or []}")
+        print(f"[LIVE-VALID] id={r.get('id')} | domain={domain(r.get('link'))} | stored_keywords={r.get('matched_location_keywords') or []} | live_matches={x.get('live_matches') or []}")
         print(f"  title={patroli.normalize_text(r.get('title'))[:240]}")
         print(f"  final_url={x['final_url']} | content_length={len(c)}")
         print(f"  evidence={c[:700]}")
@@ -156,7 +161,7 @@ def main():
     print('=' * 70)
     for x in sorted(invalid, key=lambda z: str(z['row'].get('id'))):
         r=x['row']; c=x['content']
-        print(f"[LIVE-INVALID] id={r.get('id')} | domain={domain(r.get('link'))} | keywords={r.get('matched_location_keywords') or []}")
+        print(f"[LIVE-INVALID] id={r.get('id')} | domain={domain(r.get('link'))} | stored_keywords={r.get('matched_location_keywords') or []} | live_matches={x.get('live_matches') or []}")
         print(f"  title={patroli.normalize_text(r.get('title'))[:240]}")
         print(f"  final_url={x['final_url']} | content_length={len(c)}")
         print(f"  evidence={c[:700]}")
