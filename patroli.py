@@ -15219,6 +15219,276 @@ def audit_feature13_location() -> Dict[str, Any]:
     }
 
 
+
+FEATURE13_CLEANUP_DRYRUN_JSON = "feature13_location_cleanup_dry_run.json"
+FEATURE13_CLEANUP_DRYRUN_CSV = "feature13_location_cleanup_dry_run.csv"
+
+
+def _feature13_cleanup_content_is_wrapper(row: Dict[str, Any]) -> bool:
+    """True bila content masih berupa Google News/RSS wrapper atau terlalu pendek."""
+    link = normalize_url(row.get("link"))
+    content = normalize_text(row.get("content"))
+    title = normalize_text(row.get("title"))
+
+    if _is_google_news_url(link):
+        return True
+
+    # Pola wrapper yang pernah masuk ke tabel lama.
+    wrapper_markers = (
+        "google news",
+        "news.google.com",
+        "source=google",
+        "berita selengkapnya",
+        "read more",
+    )
+    sample = f"{title} {content}".lower()
+    if any(marker in sample for marker in wrapper_markers) and len(content) < 1200:
+        return True
+
+    return len(content) < 200
+
+
+def _feature13_cleanup_competing_region_reason(
+    row: Dict[str, Any],
+) -> Optional[str]:
+    """Deteksi sinyal kuat bahwa keyword lokasi merujuk wilayah lain.
+
+    Fungsi ini sengaja konservatif: hanya mengembalikan alasan DELETE-CANDIDATE
+    bila ada bukti wilayah pembanding yang cukup kuat. Kasus yang tidak jelas
+    dikembalikan None dan masuk INDETERMINATE.
+    """
+    title = normalize_text(row.get("title"))
+    content = normalize_text(row.get("content"))
+    keywords = [normalize_text(x).lower() for x in (row.get("matched_location_keywords") or [])]
+    text = f"{title} {content}".lower()
+
+    # Wilayah lain yang sudah terbukti muncul pada false-positive Feature #13.
+    competing_regions = (
+        "rokan hulu",
+        "aceh singkil",
+        "kabupaten asahan",
+        "asahan",
+        "sulawesi barat",
+        "sulbar",
+        "kepri",
+        "kepulauan riau",
+        "bintan",
+        "bitung",
+        "banjarmasin",
+        "sulteng",
+        "sulawesi tengah",
+        "ntt",
+        "nusa tenggara timur",
+        "siak",
+        "jayapura",
+        "bandung",
+        "dairi",
+    )
+
+    ambiguous = set(DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS)
+    ambiguous_hits = [kw for kw in keywords if kw in ambiguous]
+
+    if ambiguous_hits:
+        for region in competing_regions:
+            if re.search(rf"\b{re.escape(region)}\b", text):
+                return f"keyword ambigu bertemu wilayah lain: {region}"
+
+    # "galang" sebagai kata kerja: ini sangat kuat sebagai false-positive
+    # bila tidak ada konteks geografis Galang/Deli Serdang.
+    if "galang" in keywords:
+        verb_patterns = (
+            r"\bgalang\s+(?:dana|donasi|bantuan|solidaritas|dukungan|aksi)\b",
+            r"\b(?:menggalang|galang)\s+(?:dana|donasi|bantuan|solidaritas|dukungan)\b",
+        )
+        if any(re.search(pattern, text) for pattern in verb_patterns):
+            return "keyword 'galang' digunakan sebagai kata kerja, bukan lokasi"
+
+    return None
+
+
+def _feature13_cleanup_keeper_score(row: Dict[str, Any]) -> Tuple[int, int, int]:
+    """Skor deterministik untuk memilih keeper pada normalized-link collision."""
+    link = normalize_url(row.get("link"))
+    content_len = len(normalize_text(row.get("content")))
+    stored_valid = 1 if row.get("location_context_valid") is True else 0
+    publisher = 0 if _is_google_news_url(link) else 1
+    # Publisher + context valid + content panjang diprioritaskan.
+    return (publisher, stored_valid, content_len)
+
+
+def _write_feature13_cleanup_report(rows: List[Dict[str, Any]]) -> None:
+    summary = Counter(row.get("action") for row in rows)
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "target_year": DELI_SERDANG_LOCATION_YEAR,
+        "table": DELI_SERDANG_LOCATION_TABLE,
+        "mode": "DRY-RUN",
+        "database_mutated": False,
+        "counts": {
+            "KEEP": summary.get("KEEP", 0),
+            "DELETE-CANDIDATE": summary.get("DELETE-CANDIDATE", 0),
+            "UPDATE-CANDIDATE": summary.get("UPDATE-CANDIDATE", 0),
+            "INDETERMINATE": summary.get("INDETERMINATE", 0),
+        },
+        "rows": rows,
+    }
+    with open(FEATURE13_CLEANUP_DRYRUN_JSON, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+
+    fields = [
+        "id", "action", "reason", "title", "link", "normalized_link",
+        "published_date", "domain", "keywords", "stored_context",
+        "recomputed_context", "content_length", "collision_keeper_id",
+    ]
+    with open(FEATURE13_CLEANUP_DRYRUN_CSV, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fields})
+
+
+def cleanup_feature13_location_dry_run() -> Dict[str, Any]:
+    """Feature #13 cleanup classifier -- READ ONLY.
+
+    Tidak melakukan INSERT/UPDATE/DELETE. Setiap row diklasifikasikan menjadi:
+      KEEP              : data cukup aman dipertahankan apa adanya.
+      DELETE-CANDIDATE  : bukti kuat duplicate/false-positive, tetapi belum dihapus.
+      UPDATE-CANDIDATE  : validator baru menganggap valid, tetapi flag DB stale.
+      INDETERMINATE     : bukti belum cukup; jangan disentuh otomatis.
+    """
+    print("=" * 70)
+    print("FEATURE #13 — LOCATION CLEANUP DRY-RUN")
+    print("=" * 70)
+    print(f"Target year        : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location table     : {DELI_SERDANG_LOCATION_TABLE}")
+    print("Supabase write     : DISABLED")
+    print("INSERT/UPDATE/DELETE: DISABLED")
+    print("Telegram           : NOT SENT")
+    print("=" * 70)
+
+    try:
+        supabase = get_supabase()
+        rows: List[Dict[str, Any]] = []
+        batch_size = 500
+        offset = 0
+        while True:
+            response = (
+                supabase.table(DELI_SERDANG_LOCATION_TABLE)
+                .select(
+                    "id,title,link,content,published_date,"
+                    "matched_location_keywords,location_context_valid"
+                )
+                .range(offset, offset + batch_size - 1)
+                .execute()
+            )
+            batch = list(response.data or [])
+            rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+    except Exception as exc:
+        print(f"[CLEANUP DRY-RUN ERROR] {type(exc).__name__}: {exc}")
+        return {"status": "FAILED", "reason": str(exc)}
+
+    normalized_groups: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        norm = normalize_url(row.get("link"))
+        if norm:
+            normalized_groups.setdefault(norm, []).append(row)
+
+    collision_owner: Dict[Any, Any] = {}
+    collision_keeper: Dict[Any, Any] = {}
+    for norm, group in normalized_groups.items():
+        if len(group) <= 1:
+            continue
+        keeper = max(group, key=_feature13_cleanup_keeper_score)
+        collision_keeper_id = keeper.get("id")
+        for row in group:
+            collision_keeper[row.get("id")] = collision_keeper_id
+            if row.get("id") != collision_keeper_id:
+                collision_owner[row.get("id")] = collision_keeper_id
+
+    report_rows: List[Dict[str, Any]] = []
+    counts = Counter()
+
+    for row in rows:
+        article_id = row.get("id")
+        norm = normalize_url(row.get("link"))
+        title = normalize_text(row.get("title"))
+        content = normalize_text(row.get("content"))
+        keywords = row.get("matched_location_keywords") or []
+        stored_valid = row.get("location_context_valid") is True
+        recomputed_valid = _has_deli_serdang_location_context(title, content, keywords)
+
+        action = "INDETERMINATE"
+        reason = "bukti belum cukup untuk tindakan otomatis"
+        keeper_id = collision_keeper.get(article_id)
+
+        if article_id in collision_owner:
+            action = "DELETE-CANDIDATE"
+            reason = f"normalized-link duplicate; keeper={collision_owner[article_id]}"
+        elif recomputed_valid:
+            if stored_valid:
+                action = "KEEP"
+                reason = "validator terbaru valid dan flag DB sudah valid"
+            else:
+                action = "UPDATE-CANDIDATE"
+                reason = "validator terbaru valid tetapi flag DB masih false"
+        else:
+            competing_reason = _feature13_cleanup_competing_region_reason(row)
+            if competing_reason and not _feature13_cleanup_content_is_wrapper(row):
+                action = "DELETE-CANDIDATE"
+                reason = competing_reason
+            elif _feature13_cleanup_content_is_wrapper(row):
+                action = "INDETERMINATE"
+                reason = "publisher content belum cukup untuk memverifikasi konteks"
+            else:
+                action = "INDETERMINATE"
+                reason = "validator false tetapi belum ada bukti kuat untuk delete otomatis"
+
+        counts[action] += 1
+        report_rows.append({
+            "id": article_id,
+            "action": action,
+            "reason": reason,
+            "title": title[:300],
+            "link": row.get("link") or "",
+            "normalized_link": norm or "",
+            "published_date": row.get("published_date") or "",
+            "domain": urllib.parse.urlparse(norm).netloc.lower().removeprefix("www.") if norm else "",
+            "keywords": ", ".join(str(x) for x in keywords),
+            "stored_context": stored_valid,
+            "recomputed_context": recomputed_valid,
+            "content_length": len(content),
+            "collision_keeper_id": keeper_id or "",
+        })
+
+    _write_feature13_cleanup_report(report_rows)
+
+    print(f"[CLEANUP] Total rows          : {len(rows)}")
+    print(f"[CLEANUP] KEEP                : {counts['KEEP']}")
+    print(f"[CLEANUP] DELETE-CANDIDATE    : {counts['DELETE-CANDIDATE']}")
+    print(f"[CLEANUP] UPDATE-CANDIDATE    : {counts['UPDATE-CANDIDATE']}")
+    print(f"[CLEANUP] INDETERMINATE       : {counts['INDETERMINATE']}")
+    print(f"[CLEANUP] JSON report          : {FEATURE13_CLEANUP_DRYRUN_JSON}")
+    print(f"[CLEANUP] CSV report           : {FEATURE13_CLEANUP_DRYRUN_CSV}")
+    print("[ACTION] DRY-RUN: DATABASE TIDAK DIUBAH")
+    print("[ACTION] Tidak ada INSERT/UPDATE/DELETE dan tidak ada Telegram.")
+    print("=" * 70)
+    print("FEATURE #13 LOCATION CLEANUP DRY-RUN: COMPLETED")
+    print("=" * 70)
+
+    return {
+        "status": "PASSED",
+        "total_rows": len(rows),
+        "keep": counts["KEEP"],
+        "delete_candidate": counts["DELETE-CANDIDATE"],
+        "update_candidate": counts["UPDATE-CANDIDATE"],
+        "indeterminate": counts["INDETERMINATE"],
+        "json_report": FEATURE13_CLEANUP_DRYRUN_JSON,
+        "csv_report": FEATURE13_CLEANUP_DRYRUN_CSV,
+    }
+
 def test_feature13_real_integration() -> Dict[str, Any]:
     """
     Real integration test Feature #13.
@@ -15590,6 +15860,17 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--cleanup-feature13-location-dry-run",
+        action="store_true",
+        help=(
+            "klasifikasikan existing data Feature #13 menjadi KEEP / "
+            "DELETE-CANDIDATE / UPDATE-CANDIDATE / INDETERMINATE "
+            "tanpa mengubah database"
+        ),
+    )
+
+
+    parser.add_argument(
         "--test-feature13-real",
         action="store_true",
         help=(
@@ -15855,6 +16136,14 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+    if args.cleanup_feature13_location_dry_run:
+        result = cleanup_feature13_location_dry_run()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Cleanup Feature #13 dry-run gagal: {result.get('reason')}"
+            )
+        return
+
     if args.audit_feature13_location:
         result = audit_feature13_location()
         if result.get("status") == "FAILED":
