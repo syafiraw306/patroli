@@ -34,17 +34,17 @@ jobs:
 
       - name: Verify Feature #13 Cleanup V2 command
         run: |
-          python -m py_compile patroli_feature13_cleanup_v2.py
-          python patroli_feature13_cleanup_v2.py --help | grep -F -- "--test-feature13-cleanup-v2"
-          python patroli_feature13_cleanup_v2.py --help | grep -F -- "--cleanup-feature13-location-dry-run-v2"
+          python -m py_compile patroli.py
+          python patroli.py --help | grep -F -- "--test-feature13-cleanup-v2"
+          python patroli.py --help | grep -F -- "--cleanup-feature13-location-dry-run-v2"
 
       - name: Run Cleanup V2 regression tests
         run: |
-          python patroli_feature13_cleanup_v2.py --test-feature13-cleanup-v2
+          python patroli.py --test-feature13-cleanup-v2
 
       - name: Run Cleanup V2 read-only dry run
         run: |
-          python patroli_feature13_cleanup_v2.py --cleanup-feature13-location-dry-run-v2
+          python patroli.py --cleanup-feature13-location-dry-run-v2
 
       - name: Upload Cleanup V2 reports
         if: always()
