@@ -10,7 +10,7 @@ EXPECTED_UPDATE_IDS = 56
 EXPECTED_DELETE_IDS = 23
 EXPECTED_REVIEW_IDS = 5
 EXPECTED_ROWS_AFTER_DELETE = 770
-WL = Path('feature13_v31_final_approval_whitelist_CORRECTED.json')
+WL = Path('feature13_v31_final_approval_whitelist.json')
 OUT_JSON = Path('feature13_v31_final_mutation_safety_audit.json')
 OUT_CSV = Path('feature13_v31_final_mutation_safety_audit.csv')
 
