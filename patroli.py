@@ -15617,7 +15617,7 @@ def safe_delete_feature13_location_dry_run() -> Dict[str, Any]:
                 "link": row.get("link") or "",
                 "normalized_link": norm,
                 "published_date": published or "",
-                "domain": urlparse(str(row.get("link") or "")).netloc.lower(),
+                "domain": urllib.parse.urlparse(str(row.get("link") or "")).netloc.lower(),
                 "keywords": ", ".join(str(x) for x in keywords),
                 "stored_context": stored_valid,
                 "recomputed_context": recomputed_valid,
