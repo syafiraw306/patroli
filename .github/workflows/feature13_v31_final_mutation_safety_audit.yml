@@ -1,0 +1,33 @@
+name: Feature 13 V3.1 Final Mutation Safety Audit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  final-safety-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Compile production code
+        run: python -m py_compile patroli.py
+      - name: Cleanup V2 regression
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python patroli.py --test-feature13-cleanup-v2
+      - name: Final mutation safety audit - READ ONLY
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python feature13_v31_final_mutation_safety_audit.py
+      - name: Upload audit reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature13-v31-final-mutation-safety-audit
+          path: |
+            feature13_v31_final_mutation_safety_audit.json
+            feature13_v31_final_mutation_safety_audit.csv
