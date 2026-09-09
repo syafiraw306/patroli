@@ -1,0 +1,31 @@
+name: Feature 13 - Live Location Context Review
+
+on:
+  workflow_dispatch:
+
+auto_cancel: false
+
+jobs:
+  live-context-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Feature #13 live context review
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TAHUN_TARGET: '2026'
+          FEATURE13_LIVE_REVIEW_WORKERS: '5'
+          REQUEST_TIMEOUT: '15'
+        run: |
+          python feature13_live_context_review.py
