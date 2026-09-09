@@ -2007,11 +2007,15 @@ def _has_deli_serdang_location_context(
 ) -> bool:
     """Validasi apakah keyword lokasi benar-benar merujuk ke Deli Serdang.
 
-    Sebagian besar nama kecamatan pada daftar Feature #13 cukup spesifik
-    untuk discovery berita Sumut. Namun empat nama berikut bersifat
-    ambigu lintas daerah: Bangun Purba, Galang, Gunung Meriah, dan Deli Tua.
-    Untuk empat keyword tersebut, artikel wajib memiliki konteks
-    administratif Deli Serdang.
+    Prinsip validasi Feature #13:
+      1. Keyword non-ambigu dapat menjadi bukti lokasi langsung.
+      2. Keyword ambigu (Bangun Purba, Galang, Gunung Meriah, Deli Tua)
+         WAJIB mempunyai ikatan administratif yang jelas dengan Deli Serdang.
+      3. Jika keyword ambigu juga berada dalam konteks wilayah pesaing
+         (mis. Rokan Hulu/Aceh Singkil/Sulawesi Barat), artikel DITOLAK,
+         meskipun teks kebetulan menyebut "Deli Serdang" di bagian lain.
+      4. "Kecamatan <lokasi>" saja TIDAK cukup karena beberapa nama
+         kecamatan tersebut juga ada di kabupaten/provinsi lain.
     """
     title_text = normalize_text(title or "")
     content_text = normalize_text(content or "")
@@ -2021,14 +2025,22 @@ def _has_deli_serdang_location_context(
     if not matches:
         return False
 
-    # 1. Penyebutan eksplisit Deli Serdang adalah bukti kuat.
-    if re.search(r"\b(?:deli serdang|deliserdang)\b", text, flags=re.IGNORECASE):
-        return True
+    ambiguous_matches = [
+        normalize_text(m).lower()
+        for m in matches
+        if normalize_text(m).lower() in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS
+    ]
 
-    # 2. Keyword yang tidak ambigu dapat menjadi bukti lokasi secara langsung.
-    #    Ini mencegah false negative terhadap berita seperti
-    #    "Warga Sunggal..." atau "Kecelakaan di Namorambe..." yang memang
-    #    lazim diberitakan tanpa mengulang nama kabupaten.
+    # ------------------------------------------------------------
+    # 1. Keyword non-ambigu dapat berdiri sendiri.
+    #
+    # Contoh yang memang lazim:
+    #   "Warga Sunggal..."
+    #   "Kecelakaan di Namorambe..."
+    #
+    # Jangan mengubah aturan ini menjadi wajib menyebut "Deli Serdang"
+    # karena akan menghasilkan banyak false negative pada berita lokal.
+    # ------------------------------------------------------------
     non_ambiguous = [
         m for m in matches
         if normalize_text(m).lower() not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS
@@ -2036,34 +2048,70 @@ def _has_deli_serdang_location_context(
     if non_ambiguous:
         return True
 
-    # 3. Untuk keyword ambigu, cari ikatan administratif yang eksplisit.
-    for location in matches:
-        loc_norm = normalize_text(location).lower()
-        if loc_norm not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS:
-            continue
+    # ------------------------------------------------------------
+    # 2. Keyword ambigu wajib punya bukti administratif Deli Serdang.
+    # ------------------------------------------------------------
+    competing_location_patterns = [
+        r"\bkabupaten\s+rokan\s+hulu\b",
+        r"\brokan\s+hulu\b",
+        r"\brohul\b",
+        r"\bprovinsi\s+riau\b",
+        r"\briau\b",
+        r"\bkabupaten\s+aceh\s+singkil\b",
+        r"\baceh\s+singkil\b",
+        r"\bprovinsi\s+aceh\b",
+        r"\bsulawesi\s+barat\b",
+        r"\bsulbar\b",
+        r"\bkepulauan\s+riau\b",
+        r"\bkepri\b",
+        r"\bbatam\b",
+        r"\bbintan\b",
+    ]
+
+    has_competing_context = any(
+        re.search(pattern, text, flags=re.IGNORECASE)
+        for pattern in competing_location_patterns
+    )
+
+    for location in ambiguous_matches:
         loc = re.escape(location)
 
-        if re.search(rf"\bkecamatan\s+{loc}\b", text, flags=re.IGNORECASE):
-            return True
+        # --------------------------------------------------------
+        # 2a. Bentuk paling kuat:
+        #     "Kecamatan Bangun Purba, Kabupaten Deli Serdang"
+        #     "Bangun Purba, Kabupaten Deli Serdang"
+        #     "Kabupaten Deli Serdang, Kecamatan Bangun Purba"
+        # --------------------------------------------------------
+        direct_ds_patterns = [
+            rf"\b(?:kecamatan\s+)?{loc}\b\s*,?\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
+            rf"\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b\s*,?\s*(?:kecamatan\s+)?{loc}\b",
+            rf"\b{loc}\b\s*,?\s*deli\s+serdang\b",
+            rf"\bdeli\s+serdang\b\s*,?\s*(?:kecamatan\s+)?{loc}\b",
+        ]
 
-        # Contoh: "Galang, Kabupaten Deli Serdang".
-        if re.search(
-            rf"\b{loc}\s*,?\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            return True
+        has_direct_ds_binding = any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in direct_ds_patterns
+        )
 
-        # Contoh: "Kabupaten Deli Serdang, Galang".
-        if re.search(
-            rf"\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\s*,?\s*(?:kecamatan\s+)?{loc}\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
+        # --------------------------------------------------------
+        # 2b. Untuk keyword ambigu, konteks wilayah pesaing selalu
+        #     mengalahkan sinyal generik. Ini mencegah kasus:
+        #
+        #     "Kecamatan Gunung Meriah, Aceh Singkil"
+        #     "Bangun Purba, Rokan Hulu"
+        #
+        #     maupun artikel yang menyebut Deli Serdang di bagian
+        #     lain tetapi lokasi ambigu sebenarnya berada di daerah
+        #     pesaing.
+        # --------------------------------------------------------
+        if has_competing_context:
+            continue
+
+        if has_direct_ds_binding:
             return True
 
     return False
-
 
 def _feature13_location_record(
     candidate: Dict[str, Any],
@@ -14845,7 +14893,57 @@ def test_feature13_location() -> Dict[str, Any]:
             "Polsek Deli Tua melakukan mediasi konflik pemuda.",
             "Deli Tua tanpa konteks administratif Deli Serdang",
         ),
+        (
+            "Kegiatan Kecamatan Gunung Meriah",
+            "Kegiatan berlangsung di Kecamatan Gunung Meriah, Aceh Singkil.",
+            "Gunung Meriah + Kecamatan tetapi Aceh Singkil",
+        ),
+        (
+            "Operasi Pasar Bangun Purba",
+            "Pemerintah Kabupaten Rokan Hulu melaksanakan operasi pasar di Kecamatan Bangun Purba, Kabupaten Rokan Hulu. Dalam artikel juga disebut program kerja sama dengan daerah lain termasuk Deli Serdang.",
+            "Bangun Purba Rokan Hulu meskipun ada penyebutan Deli Serdang di bagian lain",
+        ),
+        (
+            "Galang Dana untuk Korban Bencana",
+            "Warga Sulawesi Barat menggalang dana dan melakukan aksi sosial di Galang.",
+            "Galang sebagai kata kerja + konteks Sulawesi Barat",
+        ),
     ]
+
+    # Positive regression cases untuk empat lokasi ambigu.
+    ambiguous_positive_cases = [
+        (
+            "Kegiatan di Kecamatan Bangun Purba, Kabupaten Deli Serdang",
+            "Pemerintah Kabupaten Deli Serdang melaksanakan kegiatan di Kecamatan Bangun Purba.",
+            "Bangun Purba Deli Serdang",
+        ),
+        (
+            "Warga Galang, Kabupaten Deli Serdang Ikuti Kegiatan",
+            "Kegiatan masyarakat berlangsung di Galang, Kabupaten Deli Serdang.",
+            "Galang Deli Serdang",
+        ),
+        (
+            "Kegiatan di Kecamatan Gunung Meriah, Kabupaten Deli Serdang",
+            "Kegiatan berlangsung di Kecamatan Gunung Meriah, Kabupaten Deli Serdang.",
+            "Gunung Meriah Deli Serdang",
+        ),
+        (
+            "Polsek Deli Tua Layani Masyarakat",
+            "Pelayanan masyarakat dilakukan di Kecamatan Deli Tua, Kabupaten Deli Serdang.",
+            "Deli Tua Deli Serdang",
+        ),
+    ]
+
+    for valid_title, valid_content, label in ambiguous_positive_cases:
+        valid_matches = find_location_matches(valid_title, valid_content)
+        valid_context = _has_deli_serdang_location_context(
+            valid_title, valid_content, valid_matches
+        )
+        check(
+            valid_context is True,
+            f"Accept true ambiguous location: {label}",
+            f"matches={valid_matches}, context_valid={valid_context}",
+        )
 
     # Re-enable mock after the valid-date test so false-positive regression
     # cases can prove that the DB write path is never reached.
