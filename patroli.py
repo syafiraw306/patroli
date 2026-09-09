@@ -15702,6 +15702,173 @@ def safe_delete_feature13_location_dry_run() -> Dict[str, Any]:
     }
 
 
+
+# -----------------------------------------------------------------------------
+# FEATURE #13 — SAFE DELETE EXECUTION (EXPLICIT WHITELIST ONLY)
+# -----------------------------------------------------------------------------
+FEATURE13_DELETE_APPROVED_IDS = frozenset({
+    4316, 4345, 4313, 4347, 4326, 4279, 4322, 4330, 4336, 4328,
+    4308, 4210, 4349, 4331, 4344, 4338, 4236, 4319, 4321, 4318,
+    4323, 4341, 4315, 4320, 4325, 4334, 4311, 4329, 4340, 4314,
+    4332, 4343, 4361, 4363, 4348, 4362, 4337, 4327, 4324, 4333,
+    4312, 4352, 16018, 4309, 4342, 4351, 4290,
+})
+FEATURE13_DELETE_EXECUTION_REPORT_JSON = "feature13_location_delete_execution.json"
+FEATURE13_DELETE_APPROVAL_SOURCE = "feature13_location_safe_delete_dry_run.json"
+
+
+def delete_feature13_approved_only() -> Dict[str, Any]:
+    """Delete only the explicitly approved Feature #13 IDs.
+
+    Hard guardrails:
+    - exactly the 47 approved primary keys;
+    - current rows must still be 2026;
+    - current location_context_valid must still be False;
+    - current title/link must match the approved dry-run snapshot;
+    - production `articles` is never touched;
+    - no Telegram.
+    """
+    print("=" * 70)
+    print("FEATURE #13 — SAFE DELETE EXECUTION (WHITELIST ONLY)")
+    print("=" * 70)
+    print(f"Target year         : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Location table      : {DELI_SERDANG_LOCATION_TABLE}")
+    print(f"Approved IDs        : {len(FEATURE13_DELETE_APPROVED_IDS)}")
+    print("Production articles : NOT TOUCHED")
+    print("Telegram            : NOT SENT")
+    print("=" * 70)
+
+    if DELI_SERDANG_LOCATION_YEAR != 2026:
+        raise RuntimeError("Guardrail gagal: target year bukan 2026.")
+    if len(FEATURE13_DELETE_APPROVED_IDS) != 47:
+        raise RuntimeError("Guardrail gagal: whitelist harus berisi tepat 47 ID.")
+
+    approval_path = Path(FEATURE13_DELETE_APPROVAL_SOURCE)
+    if not approval_path.exists():
+        raise RuntimeError(f"Approval source tidak ditemukan: {FEATURE13_DELETE_APPROVAL_SOURCE}")
+    approval_doc = json.loads(approval_path.read_text(encoding="utf-8"))
+    approved_rows = {
+        int(item["id"]): item
+        for item in approval_doc.get("candidates", [])
+        if item.get("action") == "DELETE-CANDIDATE"
+    }
+    if set(approved_rows) != set(FEATURE13_DELETE_APPROVED_IDS):
+        raise RuntimeError("Whitelist ID tidak sama dengan kandidat DELETE pada approval source.")
+
+    client = get_supabase_client()
+    if client is None:
+        raise RuntimeError("Supabase client tidak tersedia.")
+
+    # Snapshot current rows for exact integrity verification.
+    rows = []
+    offset = 0
+    batch_size = 500
+    while True:
+        resp = (client.table(DELI_SERDANG_LOCATION_TABLE)
+                .select("id,title,link,published_date,location_context_valid")
+                .range(offset, offset + batch_size - 1)
+                .execute())
+        batch = resp.data or []
+        rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        offset += batch_size
+
+    before_ids = {int(r["id"]) for r in rows if r.get("id") is not None}
+    by_id = {int(r["id"]): r for r in rows if r.get("id") is not None}
+    missing = sorted(FEATURE13_DELETE_APPROVED_IDS - before_ids)
+    if missing:
+        raise RuntimeError(f"Whitelist ID sudah tidak ada di DB: {missing}")
+
+    mismatches = []
+    for article_id in sorted(FEATURE13_DELETE_APPROVED_IDS):
+        current = by_id[article_id]
+        approved = approved_rows[article_id]
+        if str(current.get("title") or "") != str(approved.get("title") or ""):
+            mismatches.append({"id": article_id, "field": "title"})
+        if str(current.get("link") or "") != str(approved.get("link") or ""):
+            mismatches.append({"id": article_id, "field": "link"})
+        if str(current.get("published_date") or "")[:4] != "2026":
+            mismatches.append({"id": article_id, "field": "published_date", "value": current.get("published_date")})
+        if current.get("location_context_valid") is not False:
+            mismatches.append({"id": article_id, "field": "location_context_valid", "value": current.get("location_context_valid")})
+    if mismatches:
+        raise RuntimeError(f"Pre-delete integrity check gagal: {mismatches}")
+
+    deleted_ids = []
+    failed = []
+    for article_id in sorted(FEATURE13_DELETE_APPROVED_IDS):
+        try:
+            result = (client.table(DELI_SERDANG_LOCATION_TABLE)
+                      .delete()
+                      .eq("id", article_id)
+                      .eq("location_context_valid", False)
+                      .execute())
+            affected = result.data or []
+            if len(affected) != 1:
+                raise RuntimeError(f"expected exactly 1 deleted row, got {len(affected)}")
+            deleted_ids.append(article_id)
+        except Exception as exc:
+            failed.append({"id": article_id, "error": str(exc)})
+            break
+
+    # Post-delete verification: all approved IDs must be absent and every
+    # non-approved ID from the pre-delete snapshot must still exist.
+    after_resp = (client.table(DELI_SERDANG_LOCATION_TABLE)
+                  .select("id")
+                  .range(0, max(len(rows), 1) + 1000)
+                  .execute())
+    after_ids = {int(r["id"]) for r in (after_resp.data or []) if r.get("id") is not None}
+    unexpected_missing = sorted((before_ids - FEATURE13_DELETE_APPROVED_IDS) - after_ids)
+    approved_remaining = sorted(FEATURE13_DELETE_APPROVED_IDS & after_ids)
+    expected_count = len(before_ids) - len(FEATURE13_DELETE_APPROVED_IDS)
+    row_count_ok = len(after_ids) == expected_count
+
+    report = {
+        "mode": "SAFE-DELETE-EXECUTION-WHITELIST",
+        "target_year": 2026,
+        "table": DELI_SERDANG_LOCATION_TABLE,
+        "approval_source": FEATURE13_DELETE_APPROVAL_SOURCE,
+        "approved_count": len(FEATURE13_DELETE_APPROVED_IDS),
+        "deleted_count": len(deleted_ids),
+        "deleted_ids": deleted_ids,
+        "failed": failed,
+        "approved_ids_remaining": approved_remaining,
+        "unexpected_nonapproved_ids_missing": unexpected_missing,
+        "row_count_before": len(before_ids),
+        "row_count_after": len(after_ids),
+        "row_count_verification": row_count_ok,
+        "database_mutated": bool(deleted_ids),
+        "production_articles_touched": False,
+        "telegram_sent": False,
+        "guardrails": {
+            "exact_whitelist_only": True,
+            "whitelist_count_47": len(FEATURE13_DELETE_APPROVED_IDS) == 47,
+            "only_target_year_2026": True,
+            "delete_requires_location_context_false": True,
+            "title_link_snapshot_match": True,
+            "production_articles_write": False,
+            "telegram": False,
+        },
+    }
+    Path(FEATURE13_DELETE_EXECUTION_REPORT_JSON).write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8"
+    )
+
+    if failed or approved_remaining or unexpected_missing or not row_count_ok or len(deleted_ids) != 47:
+        raise RuntimeError(
+            f"Safe Delete tidak lengkap: deleted={len(deleted_ids)}, "
+            f"remaining={approved_remaining}, unexpected_missing={unexpected_missing}, failed={failed}"
+        )
+
+    print(f"[DELETE] Berhasil dihapus : {len(deleted_ids)}")
+    print(f"[VERIFY] Row count        : {len(before_ids)} -> {len(after_ids)}")
+    print("[VERIFY] Approved IDs tersisa : 0")
+    print("[VERIFY] Non-approved IDs hilang: 0")
+    print(f"[REPORT] {FEATURE13_DELETE_EXECUTION_REPORT_JSON}")
+    print("=" * 70)
+    return report
+
 def sync_feature13_location_context_only() -> Dict[str, Any]:
     """Feature #13 SAFE WRITE: sync only location_context_valid=True.
 
@@ -16420,6 +16587,11 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--safe-delete-feature13-execution",
+        action="store_true",
+        help="Execute Feature #13 approved whitelist delete",
+    )
+    parser.add_argument(
         "--cleanup-feature13-location-dry-run-v2",
         action="store_true",
         help=(
@@ -16721,6 +16893,12 @@ def main() -> None:
             raise RuntimeError(
                 f"Sync Feature #13 invalid-only gagal: {result.get('failed') or result.get('reason')}"
             )
+        return
+
+    if args.safe_delete_feature13_execution:
+        result = delete_feature13_approved_only()
+        if result.get("failed") or result.get("approved_ids_remaining") or result.get("unexpected_nonapproved_ids_missing"):
+            raise RuntimeError("Safe Delete Execution gagal atau tidak lengkap.")
         return
 
     if args.safe_delete_feature13_location_dry_run:
