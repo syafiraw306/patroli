@@ -1,0 +1,52 @@
+name: Feature #13 - Deli Serdang Location Cleanup Dry Run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  feature13-cleanup-dry-run:
+    name: Feature #13 Cleanup Dry Run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Verify Feature #13 command
+        run: |
+          python -m py_compile patroli.py
+          python patroli.py --help | grep -F -- "--cleanup-feature13-location-dry-run"
+
+      - name: Run Feature #13 cleanup dry run
+        run: |
+          python patroli.py --cleanup-feature13-location-dry-run
+
+      - name: Upload cleanup reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature13-location-cleanup-dry-run
+          if-no-files-found: ignore
+          path: |
+            feature13_location_cleanup_dry_run.json
+            feature13_location_cleanup_dry_run.csv
