@@ -1,4 +1,4 @@
-name: Feature 13 - Deli Serdang Location Cleanup Dry Run
+name: Feature #13 - Deli Serdang Location Cleanup V2 Dry Run
 
 on:
   workflow_dispatch:
@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 jobs:
-  feature13-cleanup-dry-run:
-    name: Feature #13 Cleanup Dry Run
+  feature13-cleanup-v2:
+    name: Feature #13 Cleanup V2 Regression + Dry Run
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -32,21 +32,26 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      - name: Verify Feature #13 command
+      - name: Verify Feature #13 Cleanup V2 command
         run: |
-          python -m py_compile patroli.py
-          python patroli.py --help | grep -F -- "--cleanup-feature13-location-dry-run"
+          python -m py_compile patroli_feature13_cleanup_v2.py
+          python patroli_feature13_cleanup_v2.py --help | grep -F -- "--test-feature13-cleanup-v2"
+          python patroli_feature13_cleanup_v2.py --help | grep -F -- "--cleanup-feature13-location-dry-run-v2"
 
-      - name: Run Feature #13 cleanup dry run
+      - name: Run Cleanup V2 regression tests
         run: |
-          python patroli.py --cleanup-feature13-location-dry-run
+          python patroli_feature13_cleanup_v2.py --test-feature13-cleanup-v2
 
-      - name: Upload cleanup reports
+      - name: Run Cleanup V2 read-only dry run
+        run: |
+          python patroli_feature13_cleanup_v2.py --cleanup-feature13-location-dry-run-v2
+
+      - name: Upload Cleanup V2 reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: feature13-location-cleanup-dry-run
+          name: feature13-location-cleanup-v2-dry-run
           if-no-files-found: ignore
           path: |
-            feature13_location_cleanup_dry_run.json
-            feature13_location_cleanup_dry_run.csv
+            feature13_location_cleanup_v2_dry_run.json
+            feature13_location_cleanup_v2_dry_run.csv
