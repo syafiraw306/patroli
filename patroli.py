@@ -15245,6 +15245,211 @@ FEATURE13_CLEANUP_DRYRUN_JSON = "feature13_location_cleanup_v2_dry_run.json"
 FEATURE13_CLEANUP_DRYRUN_CSV = "feature13_location_cleanup_v2_dry_run.csv"
 
 
+FEATURE13_ENTITY_VERIFY_JSON = "feature13_location_entity_verification_v2.json"
+FEATURE13_ENTITY_VERIFY_CSV = "feature13_location_entity_verification_v2.csv"
+
+# Ambiguous names that are also valid Deli Serdang districts.
+FEATURE13_DS_AMBIGUOUS_DISTRICTS = {
+    "bangun purba",
+    "deli tua",
+    "gunung meriah",
+    "galang",
+}
+
+# Strong competing-region signals. These are deliberately conservative:
+# only explicit regional/city/province bindings should override the district name.
+FEATURE13_ENTITY_COMPETING_REGIONS = {
+    "rokan hulu", "aceh singkil", "jayapura", "ntt", "kupang",
+    "sumba", "sumbawa", "bintan", "kepulauan riau", "kepri",
+    "sulawesi tengah", "sulbar", "sulawesi barat", "siak",
+    "dairi", "asahan", "sumatera utara", "riau",
+}
+
+def _feature13_entity_normalize(value: Any) -> str:
+    return re.sub(r"\s+", " ", normalize_text(value)).strip().lower()
+
+def _feature13_entity_has_ds_alias(text: str) -> bool:
+    t = _feature13_entity_normalize(text)
+    return bool(re.search(r"\b(?:deli\s+serdang|deliserdang)\b", t))
+
+def _feature13_entity_competing_region(text: str) -> str:
+    t = _feature13_entity_normalize(text)
+    # Specific regions first; do not treat "Sumatera Utara" alone as competing
+    # because Deli Serdang is itself in Sumatera Utara.
+    for region in sorted(FEATURE13_ENTITY_COMPETING_REGIONS, key=len, reverse=True):
+        if region == "sumatera utara":
+            continue
+        if re.search(rf"\b{re.escape(region)}\b", t):
+            return region
+    return ""
+
+def _feature13_entity_strong_ds_binding(title: str, content: str, keyword: str) -> bool:
+    title_n = _feature13_entity_normalize(title)
+    content_n = _feature13_entity_normalize(content)
+    kw = re.escape(keyword)
+
+    # Explicit district + Deli Serdang in title.
+    if re.search(rf"\b{kw}\b.{{0,100}}\b(?:deli\s+serdang|deliserdang)\b", title_n):
+        return True
+    if re.search(rf"\b(?:deli\s+serdang|deliserdang)\b.{{0,100}}\b{kw}\b", title_n):
+        return True
+
+    # Explicit administrative binding in content, sentence-local.
+    sentences = re.split(r"(?<=[.!?])\s+", content_n)
+    for sentence in sentences:
+        if re.search(rf"\b{kw}\b", sentence) and re.search(
+            r"\b(?:deli\s+serdang|deliserdang)\b", sentence
+        ):
+            return True
+
+    # Strong administrative phrases that identify the district itself.
+    if re.search(
+        rf"\b(?:kecamatan|kabupaten)\s+{kw}\b",
+        title_n + " " + content_n,
+    ):
+        # This alone is not sufficient if a competing region is explicitly bound.
+        if not _feature13_entity_competing_region(title_n + " " + content_n):
+            return True
+
+    return False
+
+def _feature13_entity_verify_row(row: Dict[str, Any]) -> Tuple[str, str]:
+    """Classify an INDETERMINATE row without mutating DB.
+
+    VALID: explicit Deli Serdang administrative binding.
+    INVALID: explicit competing region or non-location usage.
+    INDETERMINATE: insufficient publisher context.
+    """
+    title = normalize_text(row.get("title"))
+    content = normalize_text(row.get("content"))
+    kws = [str(x).strip().lower() for x in (row.get("matched_location_keywords") or [])]
+    text_all = f"{title} {content}"
+    lower = _feature13_entity_normalize(text_all)
+
+    ambiguous = [k for k in kws if k in FEATURE13_DS_AMBIGUOUS_DISTRICTS]
+    if not ambiguous:
+        return ("VALID", "tidak ada keyword ambiguous yang perlu entity verification")
+
+    # Clear non-location usage of "galang".
+    if "galang" in ambiguous and re.search(
+        r"\bgalang\s+(?:dana|donasi|bantuan|solidaritas|dukungan|aksi|sumbangan)\b",
+        lower,
+    ):
+        return ("INVALID", "Galang digunakan sebagai kata kerja, bukan lokasi")
+
+    # Explicit competing geography has priority over an ambiguous name.
+    competing = _feature13_entity_competing_region(text_all)
+    if competing:
+        # If the same text explicitly binds the district to Deli Serdang,
+        # keep it valid only when that binding is strong and local.
+        if not any(_feature13_entity_strong_ds_binding(title, content, k) for k in ambiguous):
+            return ("INVALID", f"terdapat competing region eksplisit: {competing}")
+
+    for k in ambiguous:
+        if _feature13_entity_strong_ds_binding(title, content, k):
+            return ("VALID", f"keyword '{k}' terikat eksplisit ke Deli Serdang")
+
+    # If the publisher title/content explicitly names a Deli Serdang institution
+    # together with the ambiguous district, treat it as a strong local signal.
+    if _feature13_entity_has_ds_alias(title):
+        return ("VALID", "judul secara eksplisit menyebut Deli Serdang")
+
+    return ("INDETERMINATE", "belum ada entity binding yang cukup kuat")
+
+def feature13_entity_verification_v2() -> Dict[str, Any]:
+    """Read-only verification of current INDETERMINATE Feature #13 rows."""
+    print("=" * 70)
+    print("FEATURE #13 — LOCATION ENTITY VERIFICATION V2")
+    print("=" * 70)
+    print(f"Target year   : {DELI_SERDANG_LOCATION_YEAR}")
+    print(f"Table         : {DELI_SERDANG_LOCATION_TABLE}")
+    print("Mode          : READ-ONLY")
+    print("INSERT/UPDATE/DELETE : DISABLED")
+    print("Production articles  : NOT TOUCHED")
+    print("Telegram              : NOT SENT")
+
+    supabase = get_supabase()
+    rows = []
+    page_size = 500
+    offset = 0
+    while True:
+        result = (
+            supabase.table(DELI_SERDANG_LOCATION_TABLE)
+            .select("*")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = result.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    candidates = [
+        r for r in rows
+        if str(r.get("published_date") or "").startswith("2026")
+        and _feature13_entity_verify_row(r)[0] != "VALID"
+        and (
+            not _has_deli_serdang_location_context(
+                normalize_text(r.get("title")),
+                normalize_text(r.get("content")),
+                r.get("matched_location_keywords") or [],
+            )
+            or r.get("location_context_valid") is False
+        )
+    ]
+
+    results = []
+    summary = {"VALID": 0, "INVALID": 0, "INDETERMINATE": 0}
+    for row in candidates:
+        classification, reason = _feature13_entity_verify_row(row)
+        summary[classification] += 1
+        results.append({
+            "id": row.get("id"),
+            "action": classification,
+            "reason": reason,
+            "title": row.get("title"),
+            "link": row.get("link"),
+            "normalized_link": row.get("normalized_link"),
+            "published_date": row.get("published_date"),
+            "domain": row.get("domain") or row.get("source"),
+            "keywords": ", ".join(row.get("matched_location_keywords") or []),
+            "stored_context": row.get("location_context_valid") is True,
+            "content_length": len(normalize_text(row.get("content"))),
+        })
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "target_year": DELI_SERDANG_LOCATION_YEAR,
+        "table": DELI_SERDANG_LOCATION_TABLE,
+        "mode": "ENTITY-VERIFICATION-V2-READ-ONLY",
+        "database_mutated": False,
+        "production_articles_touched": False,
+        "telegram_sent": False,
+        "input_rows": len(rows),
+        "candidates_reviewed": len(candidates),
+        "counts": summary,
+        "rows": results,
+    }
+    with open(FEATURE13_ENTITY_VERIFY_JSON, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+
+    if results:
+        with open(FEATURE13_ENTITY_VERIFY_CSV, "w", newline="", encoding="utf-8-sig") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(results[0].keys()))
+            writer.writeheader()
+            writer.writerows(results)
+
+    print(f"Rows read          : {len(rows)}")
+    print(f"Candidates reviewed: {len(candidates)}")
+    print(f"VALID              : {summary['VALID']}")
+    print(f"INVALID            : {summary['INVALID']}")
+    print(f"INDETERMINATE      : {summary['INDETERMINATE']}")
+    print(f"JSON report        : {FEATURE13_ENTITY_VERIFY_JSON}")
+    print(f"CSV report         : {FEATURE13_ENTITY_VERIFY_CSV}")
+    print("[ACTION] READ-ONLY: DATABASE TIDAK DIUBAH")
+    return {"status": "PASSED", "counts": summary, "rows": results}
+
 def _feature13_cleanup_content_is_wrapper(row: Dict[str, Any]) -> bool:
     """True bila content masih berupa Google News/RSS wrapper atau terlalu pendek."""
     link = normalize_url(row.get("link"))
@@ -16347,6 +16552,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--feature13-entity-verification-v2",
+        action="store_true",
+        help="verifikasi entity lokasi Feature #13 untuk kandidat ambigu secara read-only",
+    )
+
+    parser.add_argument(
         "--audit-feature13-location",
         action="store_true",
         help="audit seluruh data Feature #13 existing di production secara read-only",
@@ -16685,6 +16896,15 @@ def main() -> None:
         if result.get("status") == "FAILED":
             raise RuntimeError(
                 f"Cleanup Feature #13 dry-run gagal: {result.get('reason')}"
+            )
+        return
+
+    if args.feature13_entity_verification_v2:
+        result = feature13_entity_verification_v2()
+        if result.get("status") == "FAILED":
+            raise RuntimeError(
+                f"Entity Verification V2 gagal: "
+                f"{result.get('failed') or result.get('reason')}"
             )
         return
 
