@@ -3,23 +3,41 @@ name: Feature 13 - Live Location Context Review
 on:
   workflow_dispatch:
 
-auto_cancel: false
+permissions:
+  contents: read
+
+concurrency:
+  group: feature13-live-location-context-review
+  cancel-in-progress: false
 
 jobs:
   live-context-review:
+    name: Review Existing Location Context
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
+
+      - name: Verify Feature #13 review script
+        run: |
+          test -f feature13_live_context_review.py
+          test -f patroli.py
+          python -m py_compile feature13_live_context_review.py
+          python -m py_compile patroli.py
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Run Feature #13 live context review
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -28,4 +46,13 @@ jobs:
           FEATURE13_LIVE_REVIEW_WORKERS: '5'
           REQUEST_TIMEOUT: '15'
         run: |
-          python feature13_live_context_review.py
+          python feature13_live_context_review.py 2>&1 | tee feature13_live_context_review.log
+
+      - name: Upload review log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature13-live-context-review-log
+          path: feature13_live_context_review.log
+          if-no-files-found: warn
+          retention-days: 14
