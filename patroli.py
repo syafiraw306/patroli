@@ -2005,18 +2005,16 @@ def _has_deli_serdang_location_context(
     content: str,
     location_matches: Optional[List[str]] = None,
 ) -> bool:
-    """Validasi konteks lokasi Deli Serdang secara konservatif.
+    """Validasi apakah keyword lokasi benar-benar merujuk ke Deli Serdang.
 
-    Prinsip:
-      - Lokasi non-ambigu dapat menjadi bukti langsung.
-      - Empat lokasi ambigu (Bangun Purba, Galang, Gunung Meriah, Deli Tua)
-        TIDAK cukup hanya karena artikel menyebut nama lokasi tersebut.
-      - Untuk lokasi ambigu, harus ada ikatan administratif yang mengikat
-        lokasi itu sendiri ke Deli Serdang.
-      - Penyebutan ``Deli Serdang`` di bagian lain artikel tidak boleh
-        mengubah artikel wilayah lain menjadi artikel Deli Serdang.
-      - Jika ada konteks wilayah pesaing dan tidak ada direct binding,
-        artikel ditolak.
+    Keyword ambigu (Bangun Purba, Galang, Gunung Meriah, Deli Tua) tidak
+    dianggap valid hanya karena artikel menyebut ``Deli Serdang`` di tempat
+    lain. Harus ada ikatan langsung antara keyword lokasi dan Deli Serdang,
+    misalnya ``Bangun Purba, Kabupaten Deli Serdang`` atau ``Bangun Purba di
+    Kabupaten Deli Serdang``.
+
+    Keyword non-ambigu tetap dapat diterima secara standalone untuk menjaga
+    recall Feature #13.
     """
     title_text = normalize_text(title or "")
     content_text = normalize_text(content or "")
@@ -2026,90 +2024,70 @@ def _has_deli_serdang_location_context(
     if not matches:
         return False
 
-    normalized_matches = {
-        normalize_text(item).lower() for item in matches if normalize_text(item)
+    normalized_matches = {normalize_text(m).lower() for m in matches}
+
+    # Alias nama kabupaten bukan bukti DIRECT untuk keyword ambigu.
+    # Contoh penting: artikel tentang Bangun Purba, Rokan Hulu yang hanya
+    # menyebut Deli Serdang di kalimat lain tetap harus ditolak.
+    explicit_deli_serdang_keywords = {
+        "kabupaten deli serdang",
+        "deli serdang",
+        "kabupaten deliserdang",
+        "deliserdang",
     }
 
-    # Keyword non-ambigu tetap dapat menjadi bukti lokasi secara langsung.
-    # Namun jika artikel secara eksplisit mengikat keyword tersebut ke wilayah
-    # pesaing, jangan memasukkannya hanya karena ada keyword Deli Serdang.
-    non_ambiguous = normalized_matches - DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS
+    has_ambiguous = bool(
+        normalized_matches & DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS
+    )
+
+    # Keyword lokasi non-ambigu dapat menjadi bukti lokasi secara langsung,
+    # bahkan jika artikel juga memuat keyword ambigu lain.
+    non_ambiguous = [
+        m for m in normalized_matches
+        if (
+            m not in explicit_deli_serdang_keywords
+            and m not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS
+        )
+    ]
     if non_ambiguous:
         return True
 
-    # Hanya sampai di sini jika seluruh match yang relevan adalah keyword ambigu.
-    # Setiap keyword ambigu harus mempunyai direct administrative binding.
-    direct_binding = False
+    # Jika tidak ada keyword ambigu, penyebutan Deli Serdang sendiri cukup.
+    if not has_ambiguous and normalized_matches & explicit_deli_serdang_keywords:
+        return True
 
-    for location in matches:
-        loc_norm = normalize_text(location).lower()
-        if loc_norm not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS:
+    # Keyword ambigu harus memiliki DIRECT binding dengan Deli Serdang.
+    # Penyebutan "Deli Serdang" yang jauh/di kalimat lain TIDAK cukup.
+    for location in normalized_matches:
+        if location not in DELI_SERDANG_AMBIGUOUS_LOCATION_KEYWORDS:
             continue
 
-        loc = re.escape(normalize_text(location))
+        loc = re.escape(location)
 
-        # 1. "Kecamatan Bangun Purba, Kabupaten Deli Serdang"
-        if re.search(
-            rf"\bkecamatan\s+{loc}\b[^.;,\n]{{0,100}}\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            direct_binding = True
-            break
+        direct_patterns = [
+            # Kecamatan Bangun Purba, Kabupaten Deli Serdang
+            rf"\bkecamatan\s+{loc}\b\s*,?\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
 
-        # 2. "Kecamatan Bangun Purba Kabupaten Deli Serdang"
-        if re.search(
-            rf"\bkecamatan\s+{loc}\b[^.;\n]{{0,100}}\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            direct_binding = True
-            break
+            # Bangun Purba, Kabupaten Deli Serdang
+            rf"\b{loc}\b\s*,?\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
 
-        # 3. "Bangun Purba, Kabupaten Deli Serdang"
-        if re.search(
-            rf"\b{loc}\s*,?\s*(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            direct_binding = True
-            break
+            # Kabupaten Deli Serdang, Kecamatan Bangun Purba
+            rf"\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\b\s*,?\s*(?:kecamatan\s+)?{loc}\b",
 
-        # 4. "Kabupaten Deli Serdang, Bangun Purba"
-        if re.search(
-            rf"\b(?:kabupaten|kab\.?|pemkab)\s+deli\s+serdang\s*,?\s*(?:kecamatan\s+)?{loc}\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            direct_binding = True
-            break
+            # Bangun Purba di/dari/wilayah Kabupaten Deli Serdang
+            rf"\b{loc}\b[^.;!?\n]{{0,100}}\b(?:di|dari|wilayah|kawasan|area)\s+(?:kabupaten\s+)?deli\s+serdang\b",
 
-        # 5. Bentuk naratif yang masih jelas mengikat lokasi ke Deli Serdang,
-        #    misalnya "di Bangun Purba, Deli Serdang" atau
-        #    "Bangun Purba di Kabupaten Deli Serdang".
-        if re.search(
-            rf"\b{loc}\b[^.;\n]{{0,80}}\b(?:di|wilayah|kawasan|area)\s+(?:kabupaten\s+)?deli\s+serdang\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            direct_binding = True
-            break
+            # di Kecamatan Bangun Purba, Deli Serdang
+            rf"\b(?:di|dari|wilayah|kawasan|area)\s+(?:kecamatan\s+)?{loc}\b[^.;!?\n]{{0,100}}\b(?:kabupaten\s+)?deli\s+serdang\b",
 
-        if re.search(
-            rf"\b(?:di|wilayah|kawasan|area)\s+{loc}\b[^.;\n]{{0,80}}\b(?:kabupaten\s+)?deli\s+serdang\b",
-            text,
-            flags=re.IGNORECASE,
-        ):
-            direct_binding = True
-            break
+            # Bangun Purba merupakan salah satu kecamatan di Deli Serdang
+            rf"\b{loc}\b[^.;!?\n]{{0,120}}\b(?:kecamatan|desa|wilayah)\b[^.;!?\n]{{0,80}}\b(?:di|dalam)\s+(?:kabupaten\s+)?deli\s+serdang\b",
+        ]
 
-    if not direct_binding:
-        return False
+        if any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in direct_patterns):
+            return True
 
-    # Direct binding adalah bukti terkuat. Setelah lokasi ambigu benar-benar
-    # terikat ke Deli Serdang, penyebutan daerah lain dalam artikel dapat saja
-    # merupakan perbandingan/konteks berita dan tidak otomatis membatalkan.
-    return True
+    return False
 
 
 def _feature13_location_record(
@@ -14891,6 +14869,11 @@ def test_feature13_location() -> Dict[str, Any]:
             "Bhabinkamtibmas Polsek Deli Tua Mediasi Konflik",
             "Polsek Deli Tua melakukan mediasi konflik pemuda.",
             "Deli Tua tanpa konteks administratif Deli Serdang",
+        ),
+        (
+            "Operasi Pasar Bangun Purba",
+            "Pemerintah Kabupaten Rokan Hulu melaksanakan operasi pasar di Kecamatan Bangun Purba, Kabupaten Rokan Hulu. Dalam artikel juga disebut program kerja sama dengan daerah lain termasuk Deli Serdang.",
+            "Bangun Purba Rokan Hulu meskipun ada penyebutan Deli Serdang di bagian lain",
         ),
     ]
 
