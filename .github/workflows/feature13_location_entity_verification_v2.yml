@@ -1,0 +1,47 @@
+name: Feature 13 - Location Entity Verification V2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  entity-verification-v2:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      - name: Compile patroli.py
+        run: python -m py_compile patroli.py
+
+      - name: Cleanup V2 regression test
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python patroli.py --test-feature13-cleanup-v2
+
+      - name: Location Entity Verification V2 - READ ONLY
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python patroli.py --feature13-entity-verification-v2
+
+      - name: Upload Entity Verification report
+        uses: actions/upload-artifact@v4
+        with:
+          name: feature13-location-entity-verification-v2
+          path: |
+            feature13_location_entity_verification_v2.json
+            feature13_location_entity_verification_v2.csv
+          if-no-files-found: error
