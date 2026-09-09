@@ -15356,10 +15356,10 @@ def _feature13_entity_verify_row(row: Dict[str, Any]) -> Tuple[str, str]:
 
     return ("INDETERMINATE", "belum ada entity binding yang cukup kuat")
 
-def feature13_entity_verification_v2() -> Dict[str, Any]:
+def feature13_entity_verification_v3() -> Dict[str, Any]:
     """Read-only verification of current INDETERMINATE Feature #13 rows."""
     print("=" * 70)
-    print("FEATURE #13 — LOCATION ENTITY VERIFICATION V2")
+    print("FEATURE #13 — LOCATION ENTITY VERIFICATION V3")
     print("=" * 70)
     print(f"Target year   : {DELI_SERDANG_LOCATION_YEAR}")
     print(f"Table         : {DELI_SERDANG_LOCATION_TABLE}")
@@ -15422,7 +15422,7 @@ def feature13_entity_verification_v2() -> Dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "target_year": DELI_SERDANG_LOCATION_YEAR,
         "table": DELI_SERDANG_LOCATION_TABLE,
-        "mode": "ENTITY-VERIFICATION-V2-READ-ONLY",
+        "mode": "ENTITY-VERIFICATION-V3-READ-ONLY",
         "database_mutated": False,
         "production_articles_touched": False,
         "telegram_sent": False,
@@ -16552,7 +16552,7 @@ def main() -> None:
     )
 
     parser.add_argument(
-        "--feature13-entity-verification-v2",
+        "--feature13-entity-verification-v3",
         action="store_true",
         help="verifikasi entity lokasi Feature #13 untuk kandidat ambigu secara read-only",
     )
@@ -16899,11 +16899,11 @@ def main() -> None:
             )
         return
 
-    if args.feature13_entity_verification_v2:
-        result = feature13_entity_verification_v2()
+    if args.feature13_entity_verification_v3:
+        result = feature13_entity_verification_v3()
         if result.get("status") == "FAILED":
             raise RuntimeError(
-                f"Entity Verification V2 gagal: "
+                f"Entity Verification V3 gagal: "
                 f"{result.get('failed') or result.get('reason')}"
             )
         return
