@@ -342,8 +342,12 @@ def _validate_grounding(result: Dict[str, Any], sentences: List[str]) -> Dict[st
         basis = item.get("basis")
         if basis != "source_limitation" and (not ids or not set(ids).issubset(evidence_ids)):
             errors.append(f"trend_{idx}: trend tidak memiliki evidence yang valid")
-        if basis == "source_limitation" and ids:
-            errors.append(f"trend_{idx}: source_limitation seharusnya tidak membutuhkan evidence")
+        # source_limitation is a meta-level statement about the limits of the
+        # supplied article, not a claim that needs article evidence. Some models
+        # may still return evidence_sentence_ids despite the instruction; do not
+        # fail the whole draft for that harmless extra field.
+        if basis == "source_limitation":
+            continue
 
     # Hard check: every number appearing in AI text must appear in its cited evidence.
     for section_name in ("informasi_diperoleh", "trend_perkembangan"):
