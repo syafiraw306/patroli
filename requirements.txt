@@ -10,4 +10,5 @@ supabase>=2.9,<3
 pandas>=2.2,<3
 folium>=0.17,<1
 streamlit-folium>=0.23,<1
+reportlab
 
