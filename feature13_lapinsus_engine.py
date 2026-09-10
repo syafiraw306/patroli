@@ -368,9 +368,3 @@ def mark_failed(article_id, error):
         }).eq("id", article_id).execute()
     except Exception:
         pass
-
-
-
-
-# Feature #13 engine module: UI is intentionally omitted.
-
