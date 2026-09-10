@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 DEFAULT_MODEL = os.getenv("LAPINSUS_AI_MODEL", "gpt-5.6-luna")
-AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_5"
+AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_6"
 REQUEST_TIMEOUT = int(os.getenv("LAPINSUS_SOURCE_TIMEOUT", "15"))
 IMAGE_HASH_TIMEOUT = int(os.getenv("LAPINSUS_IMAGE_HASH_TIMEOUT", "8"))
 IMAGE_MAX = int(os.getenv("LAPINSUS_IMAGE_MAX", "6"))
@@ -285,6 +285,78 @@ def _material_source_highlights(sentences: List[str]) -> List[Tuple[int, str]]:
     return out
 
 
+def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int = IMAGE_MAX) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """V1.6 deterministic image selection/audit for both publisher and stored candidates."""
+    import hashlib
+    ranked = []
+    seen_urls = set()
+    context_tokens = _tokenize(context_text) if context_text else set()
+    for order, src in enumerate(urls or []):
+        if not _valid_image_url(src):
+            continue
+        norm = clean_text(src).split("#", 1)[0].strip()
+        if norm in seen_urls:
+            continue
+        seen_urls.add(norm)
+        hay = clean_text(src).lower()
+        score = 0.0
+        for token in context_tokens:
+            if len(token) >= 5 and token in hay:
+                score += 2.0
+        if any(x in hay for x in ("rsud", "bangun-purba", "bangun_purba", "rumah-sakit")):
+            score += 8.0
+        if any(x in hay for x in ("deli-serdang", "deli_serdang", "deliserdang")):
+            score += 4.0
+        if any(x in hay for x in ("kantor-bupati", "kantor_bupati", "bupati")):
+            score += 0.5
+        if any(x in hay for x in ("logo", "icon", "avatar", "placeholder", "default-image", "banner", "sprite", "favicon")):
+            score -= 15.0
+        ranked.append((score, -order, src))
+    ranked.sort(reverse=True)
+
+    selected, audit, seen_hashes = [], [], set()
+    for rank, (score, _neg_order, src) in enumerate(ranked, 1):
+        content_hash = ""
+        content_type = ""
+        byte_size = 0
+        try:
+            r = requests.get(
+                src,
+                timeout=IMAGE_HASH_TIMEOUT,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                },
+            )
+            content_type = (r.headers.get("content-type") or "").lower()
+            byte_size = len(r.content or b"")
+            if r.ok and content_type.startswith("image/") and byte_size >= 2048:
+                content_hash = hashlib.sha256(r.content).hexdigest()
+        except Exception:
+            pass
+        duplicate = bool(content_hash and content_hash in seen_hashes)
+        rec = {
+            "url": src,
+            "rank": rank,
+            "score": round(score, 2),
+            "duplicate": duplicate,
+            "sha256": content_hash,
+            "content_type": content_type,
+            "byte_size": byte_size,
+            "selected": False,
+        }
+        if duplicate:
+            audit.append(rec)
+            continue
+        if content_hash:
+            seen_hashes.add(content_hash)
+        rec["selected"] = True
+        audit.append(rec)
+        selected.append(src)
+        if len(selected) >= max_selected:
+            break
+    return selected, audit
+
 def extract_article_body(html: str, context_text: str = "") -> Tuple[str, List[str], str]:
     # JSON-LD is often the cleanest and most complete representation of a
     # publisher article. Extract it BEFORE removing script/chrome nodes.
@@ -316,76 +388,62 @@ def extract_article_body(html: str, context_text: str = "") -> Tuple[str, List[s
     else:
         text = max(candidates, key=lambda x: x[0])[1]
 
-    # Collect article images after chrome removal, while excluding Google News
-    # wrappers, favicons, logos and generic UI assets. Keep lightweight labels
-    # so the image ranking can prefer photos related to the actual article.
-    image_candidates = [(u, "") for u in images]
+    # V1.6 image pipeline: collect broad candidates, normalize them, filter
+    # publisher chrome, then rank + deduplicate by URL and downloaded bytes.
+    image_candidates = [(u, "jsonld") for u in images]
     for img in soup.find_all("img"):
-        src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-        if not _valid_image_url(src):
-            continue
-        label_parts = [img.get("alt") or "", img.get("title") or ""]
+        attrs = img.attrs or {}
+        srcs = []
+        for key in ("src", "data-src", "data-original", "data-lazy-src", "data-image", "data-url"):
+            val = attrs.get(key)
+            if isinstance(val, str):
+                srcs.append(val)
+        for key in ("srcset", "data-srcset"):
+            val = attrs.get(key)
+            if isinstance(val, str):
+                for part in val.split(","):
+                    candidate = part.strip().split(" ")[0]
+                    if candidate:
+                        srcs.append(candidate)
+        label_parts = [attrs.get("alt") or "", attrs.get("title") or ""]
         parent = img.parent
         if parent and getattr(parent, "name", None) == "figure":
             cap = parent.find("figcaption")
             if cap:
                 label_parts.append(cap.get_text(" ", strip=True))
         label = clean_text(" ".join(label_parts))
-        image_candidates.append((src, label))
+        for src in srcs:
+            image_candidates.append((src, label))
 
-    # Rank by article-title/source-label overlap. Generic publisher branding is
-    # penalized; source extraction order remains the tie-breaker.
     context_tokens = _tokenize(context_text) if context_text else set()
     ranked = []
+    seen_candidate_urls = set()
     for order, (src, label) in enumerate(image_candidates):
         if not _valid_image_url(src):
             continue
+        norm = src.split("#", 1)[0].strip()
+        if norm in seen_candidate_urls:
+            continue
+        seen_candidate_urls.add(norm)
         hay = clean_text(f"{src} {label}").lower()
         score = 0.0
         for token in context_tokens:
             if len(token) >= 5 and token in hay:
                 score += 2.0
+        # Strong topic relevance for this project and generic Deli Serdang context.
         if any(x in hay for x in ("rsud", "bangun-purba", "bangun_purba", "rumah-sakit")):
-            score += 7.0
+            score += 8.0
         if any(x in hay for x in ("deli-serdang", "deli_serdang", "deliserdang")):
-            score += 3.0
+            score += 4.0
         if any(x in hay for x in ("kantor-bupati", "kantor_bupati", "bupati")):
             score += 0.5
-        if any(x in hay for x in ("logo", "icon", "avatar", "placeholder", "default-image", "banner")):
-            score -= 10.0
+        if any(x in hay for x in ("logo", "icon", "avatar", "placeholder", "default-image", "banner", "sprite", "favicon")):
+            score -= 15.0
         ranked.append((score, -order, src, label))
     ranked.sort(reverse=True)
 
-    # V1.5: remove duplicates by normalized URL and, when downloadable, by
-    # SHA-256 of image bytes. This catches different CDN URLs for one photo.
-    selected = []
-    seen_urls = set()
-    seen_hashes = set()
-    image_audit = []
-    for rank, (score, neg_order, src, label) in enumerate(ranked, 1):
-        norm = src.split("#", 1)[0].strip()
-        if norm in seen_urls:
-            continue
-        seen_urls.add(norm)
-        content_hash = ""
-        try:
-            r = requests.get(src, timeout=IMAGE_HASH_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
-            content_type = (r.headers.get("content-type") or "").lower()
-            if r.ok and content_type.startswith("image/") and len(r.content) >= 2048:
-                import hashlib
-                content_hash = hashlib.sha256(r.content).hexdigest()
-        except Exception:
-            pass
-        if content_hash and content_hash in seen_hashes:
-            image_audit.append({"url": src, "rank": rank, "score": round(score, 2), "duplicate": True, "sha256": content_hash})
-            continue
-        if content_hash:
-            seen_hashes.add(content_hash)
-        selected.append(src)
-        image_audit.append({"url": src, "rank": rank, "score": round(score, 2), "duplicate": False, "sha256": content_hash})
-        if len(selected) >= 12:
-            break
-    images = selected
+    ranked_urls = [item[2] for item in ranked]
+    images, image_audit = audit_image_urls(ranked_urls, context_text=context_text, max_selected=12)
 
     canonical = jsonld_canonical or ""
     canon = soup.find("link", rel=lambda x: x and "canonical" in x)
@@ -473,6 +531,15 @@ def _fetch_publisher(url: str, context_text: str = "") -> Tuple[str, List[str], 
             text, fetched_images, canonical, image_audit = extract_article_body(r.text, context_text=context_text)
             sentences = split_sentences(text)
             if len(text) >= 250 and len(sentences) >= 3 and not _looks_like_google_wrapper(text):
+                if not fetched_images:
+                    stored_candidates = article.get("article_images") or []
+                    if isinstance(stored_candidates, str):
+                        try:
+                            stored_candidates = json.loads(stored_candidates)
+                        except Exception:
+                            stored_candidates = []
+                    stored_candidates = [u for u in stored_candidates if _valid_image_url(u)]
+                    fetched_images, image_audit = audit_image_urls(stored_candidates, context_text=context_text, max_selected=IMAGE_MAX)
                 return text, fetched_images, canonical or r.url, "publisher_jsonld_or_dom", image_audit
             last_error = f"{candidate}: extraction too short ({len(text)} chars/{len(sentences)} sentences)"
         except Exception as exc:
@@ -532,11 +599,13 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
 
     sentences = split_sentences(stored)
     if len(sentences) >= 3:
+        # V1.6: stored images are also passed through the same dedupe/hash audit.
+        selected, audit = audit_image_urls(images[:12], context_text=clean_text(article.get("title")), max_selected=IMAGE_MAX)
         return {
             "text": stored,
             "sentences": sentences,
-            "images": images[:IMAGE_MAX],
-            "image_audit": [{"url": u, "rank": i + 1, "score": 0, "duplicate": False, "sha256": ""} for i, u in enumerate(images[:IMAGE_MAX])],
+            "images": selected[:IMAGE_MAX],
+            "image_audit": audit[:IMAGE_MAX],
             "resolved_link": resolved or original_link,
             "extraction_method": "stored_content",
             "material_highlights": _material_source_highlights(sentences),
