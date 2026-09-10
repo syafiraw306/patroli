@@ -1,0 +1,88 @@
+name: Feature 13 - LAPINSUS AI V1.2 Pilot #33979
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LAPINSUS_AI_MODEL: gpt-5.6-luna
+      LAPINSUS_SOURCE_TIMEOUT: "20"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r feature13-lapinsus-ai-v1_2-requirements.txt
+
+      - name: Compile V1.2 files
+        run: |
+          python -m py_compile \
+            feature13_lapinsus_ai.py \
+            feature13_lapinsus_engine.py \
+            feature13_lapinsus_ai_pilot_33979.py \
+            feature13_lapinsus_ai_v1_2_source_regression.py
+
+      - name: Run offline source extraction regression
+        run: |
+          python feature13_lapinsus_ai_v1_2_source_regression.py
+
+      - name: Run V1.2 pilot #33979
+        run: |
+          python feature13_lapinsus_ai_pilot_33979.py
+
+      - name: Verify generated LAPINSUS files
+        run: |
+          echo "=== Current directory ==="
+          pwd
+          echo "=== Generated LAPINSUS files ==="
+          ls -lah LAPINSUS_33979_AI_V1_2_PILOT.pdf LAPINSUS_33979_AI_V1_2_PILOT.json
+          echo "=== File types ==="
+          file LAPINSUS_33979_AI_V1_2_PILOT.pdf LAPINSUS_33979_AI_V1_2_PILOT.json
+          echo "=== File sizes ==="
+          stat -c '%n : %s bytes' LAPINSUS_33979_AI_V1_2_PILOT.pdf
+          stat -c '%n : %s bytes' LAPINSUS_33979_AI_V1_2_PILOT.json
+          test -s LAPINSUS_33979_AI_V1_2_PILOT.pdf
+          test -s LAPINSUS_33979_AI_V1_2_PILOT.json
+
+      - name: Print V1.2 extraction diagnostics
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("LAPINSUS_33979_AI_V1_2_PILOT.json")
+          data = json.loads(p.read_text(encoding="utf-8"))
+          print("=== V1.2 DIAGNOSTICS ===")
+          print("AI version:", data.get("ai_version"))
+          print("AI model:", data.get("ai_model"))
+          print("Extraction method:", data.get("source_extraction_method"))
+          print("Source sentence count:", data.get("source_sentence_count"))
+          print("Material highlight count:", len(data.get("source_material_highlights") or []))
+          for item in data.get("source_material_highlights") or []:
+              print(f"[{item[0]}] {item[1]}")
+          print("Grounding:", data.get("grounding"))
+          print("Database mutation:", data.get("database_mutation"))
+          print("Telegram:", data.get("telegram_sent"))
+          PY
+
+      - name: Upload V1.2 pilot PDF and audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: LAPINSUS-33979-AI-V1-2-PILOT
+          path: |
+            ${{ github.workspace }}/LAPINSUS_33979_AI_V1_2_PILOT.pdf
+            ${{ github.workspace }}/LAPINSUS_33979_AI_V1_2_PILOT.json
+          if-no-files-found: error
+          retention-days: 14
