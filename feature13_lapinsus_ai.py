@@ -14,8 +14,9 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 DEFAULT_MODEL = os.getenv("LAPINSUS_AI_MODEL", "gpt-5.6-luna")
-AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_4"
+AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_5"
 REQUEST_TIMEOUT = int(os.getenv("LAPINSUS_SOURCE_TIMEOUT", "15"))
+IMAGE_HASH_TIMEOUT = int(os.getenv("LAPINSUS_IMAGE_HASH_TIMEOUT", "8"))
 IMAGE_MAX = int(os.getenv("LAPINSUS_IMAGE_MAX", "6"))
 
 SYSTEM_PROMPT = r"""
@@ -64,6 +65,7 @@ ATURAN WAJIB:
 21. Bila artikel memuat status proses + jumlah peserta + target kegiatan, prioritaskan trend yang menghubungkan ketiganya secara faktual tanpa menciptakan jadwal, hasil, pemenang, dampak, atau keputusan yang belum disebutkan.
 22. Jangan menggunakan kalimat trend yang hanya mengatakan "artikel menyebut..." atau "arah pengembangan..." jika dapat ditulis sebagai status/perkembangan konkret.
 23. Jika artikel tidak memiliki dasar perkembangan yang memadai, boleh ada satu source_limitation yang singkat. Jangan mengisi Bagian III dengan kalimat generik berulang.
+24. Source_limitation adalah catatan keterbatasan sumber, bukan trend utama. Jika ada current_process/explicit_future/limited_inference yang valid, utamakan itu dan jangan menjadikan source_limitation sebagai bullet trend utama.
 
 FORMAT:
 Kembalikan JSON sesuai schema. Jangan menambahkan field lain.
@@ -344,14 +346,46 @@ def extract_article_body(html: str, context_text: str = "") -> Tuple[str, List[s
             if len(token) >= 5 and token in hay:
                 score += 2.0
         if any(x in hay for x in ("rsud", "bangun-purba", "bangun_purba", "rumah-sakit")):
-            score += 5.0
+            score += 7.0
         if any(x in hay for x in ("deli-serdang", "deli_serdang", "deliserdang")):
-            score += 2.0
-        if any(x in hay for x in ("logo", "icon", "avatar", "placeholder", "default-image")):
-            score -= 8.0
-        ranked.append((score, -order, src))
+            score += 3.0
+        if any(x in hay for x in ("kantor-bupati", "kantor_bupati", "bupati")):
+            score += 0.5
+        if any(x in hay for x in ("logo", "icon", "avatar", "placeholder", "default-image", "banner")):
+            score -= 10.0
+        ranked.append((score, -order, src, label))
     ranked.sort(reverse=True)
-    images = [src for _, _, src in ranked]
+
+    # V1.5: remove duplicates by normalized URL and, when downloadable, by
+    # SHA-256 of image bytes. This catches different CDN URLs for one photo.
+    selected = []
+    seen_urls = set()
+    seen_hashes = set()
+    image_audit = []
+    for rank, (score, neg_order, src, label) in enumerate(ranked, 1):
+        norm = src.split("#", 1)[0].strip()
+        if norm in seen_urls:
+            continue
+        seen_urls.add(norm)
+        content_hash = ""
+        try:
+            r = requests.get(src, timeout=IMAGE_HASH_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"})
+            content_type = (r.headers.get("content-type") or "").lower()
+            if r.ok and content_type.startswith("image/") and len(r.content) >= 2048:
+                import hashlib
+                content_hash = hashlib.sha256(r.content).hexdigest()
+        except Exception:
+            pass
+        if content_hash and content_hash in seen_hashes:
+            image_audit.append({"url": src, "rank": rank, "score": round(score, 2), "duplicate": True, "sha256": content_hash})
+            continue
+        if content_hash:
+            seen_hashes.add(content_hash)
+        selected.append(src)
+        image_audit.append({"url": src, "rank": rank, "score": round(score, 2), "duplicate": False, "sha256": content_hash})
+        if len(selected) >= 12:
+            break
+    images = selected
 
     canonical = jsonld_canonical or ""
     canon = soup.find("link", rel=lambda x: x and "canonical" in x)
@@ -361,7 +395,7 @@ def extract_article_body(html: str, context_text: str = "") -> Tuple[str, List[s
         og = soup.find("meta", property="og:url")
         canonical = og.get("content") if og else ""
 
-    return text, images[:12], canonical or ""
+    return text, images[:12], canonical or "", image_audit
 
 def _looks_like_google_wrapper(text: str) -> bool:
     t = clean_text(text).lower()
@@ -419,7 +453,7 @@ def resolve_google_news(url: str) -> str:
     return url
 
 
-def _fetch_publisher(url: str, context_text: str = "") -> Tuple[str, List[str], str, str]:
+def _fetch_publisher(url: str, context_text: str = "") -> Tuple[str, List[str], str, str, List[Dict[str, Any]]]:
     """Fetch publisher URL variants and return the first substantial article."""
     last_error = ""
     for candidate in _candidate_publisher_urls(url):
@@ -436,10 +470,10 @@ def _fetch_publisher(url: str, context_text: str = "") -> Tuple[str, List[str], 
                 allow_redirects=True,
             )
             r.raise_for_status()
-            text, fetched_images, canonical = extract_article_body(r.text, context_text=context_text)
+            text, fetched_images, canonical, image_audit = extract_article_body(r.text, context_text=context_text)
             sentences = split_sentences(text)
             if len(text) >= 250 and len(sentences) >= 3 and not _looks_like_google_wrapper(text):
-                return text, fetched_images, canonical or r.url, "publisher_jsonld_or_dom"
+                return text, fetched_images, canonical or r.url, "publisher_jsonld_or_dom", image_audit
             last_error = f"{candidate}: extraction too short ({len(text)} chars/{len(sentences)} sentences)"
         except Exception as exc:
             last_error = f"{candidate}: {type(exc).__name__}: {exc}"
@@ -473,12 +507,13 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
 
     for publisher_url in list(dict.fromkeys(publisher_candidates)):
         try:
-            text, fetched_images, canonical, method = _fetch_publisher(publisher_url, context_text=clean_text(article.get("title")))
+            text, fetched_images, canonical, method, image_audit = _fetch_publisher(publisher_url, context_text=clean_text(article.get("title")))
             sentences = split_sentences(text)
             return {
                 "text": text,
                 "sentences": sentences,
                 "images": list(dict.fromkeys(fetched_images))[:IMAGE_MAX],
+                "image_audit": image_audit[:IMAGE_MAX],
                 "resolved_link": canonical or publisher_url,
                 "extraction_method": method,
                 "material_highlights": _material_source_highlights(sentences),
@@ -501,6 +536,7 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
             "text": stored,
             "sentences": sentences,
             "images": images[:IMAGE_MAX],
+            "image_audit": [{"url": u, "rank": i + 1, "score": 0, "duplicate": False, "sha256": ""} for i, u in enumerate(images[:IMAGE_MAX])],
             "resolved_link": resolved or original_link,
             "extraction_method": "stored_content",
             "material_highlights": _material_source_highlights(sentences),
@@ -671,7 +707,11 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
             raise RuntimeError("Output Section III terlalu generik untuk sumber yang memiliki status/proses konkret.")
 
     facts = [_ensure_bahwa(x["text"]) for x in result.get("informasi_diperoleh", [])]
-    trends = [_ensure_bahwa(x["text"]) for x in result.get("trend_perkembangan", [])]
+    raw_trend_items = result.get("trend_perkembangan", [])
+    meaningful_trend_items = [x for x in raw_trend_items if x.get("basis") != "source_limitation"]
+    limitation_items = [x for x in raw_trend_items if x.get("basis") == "source_limitation"]
+    trends = [_ensure_bahwa(x["text"]) for x in meaningful_trend_items]
+    trend_limitations = [_ensure_bahwa(x["text"]) for x in limitation_items]
     actions = [clean_text(x["text"]) for x in result.get("saran_tindak", [])]
     fact_evidence = [
         {
@@ -683,8 +723,8 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
     trend_evidence = [
         {
             "trend": trends[i],
-            "source_sentence_ids": list(result.get("trend_perkembangan", [])[i].get("evidence_sentence_ids") or []),
-            "basis": result.get("trend_perkembangan", [])[i].get("basis"),
+            "source_sentence_ids": list(meaningful_trend_items[i].get("evidence_sentence_ids") or []),
+            "basis": meaningful_trend_items[i].get("basis"),
         }
         for i in range(min(len(trends), 5))
     ]
@@ -692,7 +732,7 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
     if not facts:
         raise RuntimeError("AI tidak menghasilkan fakta untuk Section I.")
     if not trends:
-        trends = [_ensure_bahwa("sumber artikel belum memuat perkembangan lanjutan yang cukup untuk diuraikan lebih lanjut") ]
+        trends = [trend_limitations[0] if trend_limitations else _ensure_bahwa("sumber artikel belum memuat perkembangan lanjutan yang cukup untuk diuraikan lebih lanjut")]
         trend_evidence = [{"trend": trends[0], "source_sentence_ids": [], "basis": "source_limitation"}]
     if not actions:
         actions = [
@@ -707,6 +747,7 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
         "fact_evidence": fact_evidence[:10],
         "trend": trends[:5],
         "trend_evidence": trend_evidence[:5],
+        "trend_limitations": trend_limitations[:2],
         "actions": actions[:4],
         "source_statement": clean_text(result.get("source_statement")) or (
             f"Bahwa informasi diperoleh dari pemberitaan media {clean_text(article.get('publisher') or article.get('source')) or 'sebagaimana tercantum pada sumber artikel'} dan masih memerlukan verifikasi terhadap sumber primer/pihak terkait."
@@ -718,6 +759,7 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
         "source_material_highlights": source.get("material_highlights") or _material_source_highlights(sentences),
         "resolved_link": source.get("resolved_link") or article.get("link"),
         "images": source.get("images") or article.get("article_images") or [],
+        "image_audit": source.get("image_audit") or [],
         "grounding": validation,
         "model": os.getenv("LAPINSUS_AI_MODEL", DEFAULT_MODEL),
         "ai_version": AI_VERSION,
