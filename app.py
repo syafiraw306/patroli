@@ -14,6 +14,7 @@ from database import (
     get_all_articles,
     get_run_logs,
 )
+from feature13_panel import render_feature13_panel
 
 
 # ============================================================
@@ -1555,6 +1556,7 @@ def main() -> None:
             tab_positive,
             tab_analytics,
             tab_logs,
+            tab_feature13,
         ) = st.tabs(
             [
                 "🚨 PRIORITAS",
@@ -1564,6 +1566,7 @@ def main() -> None:
                 "🟢 POSITIF",
                 "📊 ANALISIS",
                 "📜 LOG",
+                "📍 FEATURE #13",
             ]
         )
 
@@ -1576,6 +1579,7 @@ def main() -> None:
             tab_neutral,
             tab_positive,
             tab_analytics,
+            tab_feature13,
         ) = st.tabs(
             [
                 "🚨 PRIORITAS",
@@ -1584,6 +1588,7 @@ def main() -> None:
                 "🟡 NETRAL",
                 "🟢 POSITIF",
                 "📊 ANALISIS",
+                "📍 FEATURE #13",
             ]
         )
 
@@ -1714,6 +1719,12 @@ def main() -> None:
             show_logs(
                 logs
             )
+
+    # --------------------------------------------------------
+    # FEATURE #13 — DELI SERDANG LOCATION INTELLIGENCE
+    # --------------------------------------------------------
+    with tab_feature13:
+        render_feature13_panel(is_admin=is_admin)
 
     # --------------------------------------------------------
     # FOOTER
