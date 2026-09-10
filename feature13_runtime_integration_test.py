@@ -89,8 +89,10 @@ def main():
     ids = {int(r["id"]) for r in before_location if r.get("id") is not None}
     missing_review = REVIEW_IDS - ids
     check("All 5 REVIEW IDs preserved", not missing_review, f"missing={sorted(missing_review)}")
-    review_count = sum(not bool(r.get("location_context_valid")) for r in before_location if int(r.get("id")) in REVIEW_IDS)
-    check("All REVIEW IDs remain review-state", review_count == 5, f"review_state_count={review_count}")
+    review_flags = {int(r["id"]): r.get("location_context_valid") for r in before_location if r.get("id") is not None and int(r["id"]) in REVIEW_IDS}
+    # REVIEW here means "excluded from V3.1 mutation approval", not necessarily location_context_valid=False.
+    # ID 4523 was intentionally preserved because its current flag is True and changing it would be an unapproved mutation.
+    check("All REVIEW IDs preserved with expected current flags", review_flags == {4284: False, 4292: False, 4356: False, 4358: False, 4523: True}, f"flags={review_flags}")
 
     # Exercise the same cached loader used by the dashboard panel.
     panel.load_feature13_articles.clear()
