@@ -1,0 +1,75 @@
+name: Feature 13 - Dashboard V5.1 Map Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  feature13-v51-map-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Feature 13 dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r feature13-v5-requirements.txt
+
+      - name: Check required files
+        run: |
+          test -f feature13_panel.py
+          test -f feature13_lapinsus_engine.py
+          echo "Required files: PASS"
+
+      - name: Python compile check
+        run: |
+          python -m py_compile feature13_panel.py feature13_lapinsus_engine.py
+          echo "Python compile: PASS"
+
+      - name: V5.1 map safety contract
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("feature13_panel.py").read_text(encoding="utf-8")
+          checks = {
+              "OpenStreetMap base layer": 'tiles="OpenStreetMap"' in p,
+              "No CARTO base layer": 'CartoDB dark_matter' not in p and 'cartodb' not in p.lower(),
+              "Deli Serdang GeoJSON loader": '_load_deli_serdang_geojson' in p,
+              "GeoJSON district filtering": 'deli serdang' in p.lower() and 'name_2' in p.lower(),
+              "Fit map to GeoJSON bounds": 'fit_bounds' in p,
+              "Deli Serdang fallback center": 'm.location = [3.52, 98.72]' in p,
+              "Issue filter": 'Filter isu' in p,
+              "Dynamic issue legend": 'legend_topics' in p,
+              "Specific issue classifier": 'extract_issue_topics' in p,
+              "Issue map title": 'Peta Isu per Kecamatan' in p,
+          }
+          failed = []
+          for name, ok in checks.items():
+              print(f"{name}: {'PASS' if ok else 'FAIL'}")
+              if not ok:
+                  failed.append(name)
+          if failed:
+              raise SystemExit("FAILED: " + ", ".join(failed))
+          print("FEATURE #13 V5.1 MAP SAFETY CONTRACT: PASS")
+          PY
+
+      - name: Safety summary
+        run: |
+          echo "=============================================="
+          echo "FEATURE #13 DASHBOARD V5.1 MAP CHECK"
+          echo "=============================================="
+          echo "Mode                  : READ-ONLY"
+          echo "Database mutation     : NONE"
+          echo "Telegram notification : NONE"
+          echo "Production articles   : NOT TOUCHED"
+          echo "Map base layer        : OpenStreetMap"
+          echo "CARTO API key         : NOT REQUIRED"
+          echo "=============================================="
