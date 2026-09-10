@@ -1,0 +1,65 @@
+name: Feature 13 - LAPINSUS AI V1.4 Pilot #33979
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LAPINSUS_AI_MODEL: gpt-5.6-luna
+      LAPINSUS_SOURCE_TIMEOUT: "20"
+      LAPINSUS_IMAGE_MAX: "6"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install requirements
+        run: pip install -r feature13-lapinsus-ai-v1_4-requirements.txt
+      - name: Compile check
+        run: python -m py_compile feature13_lapinsus_ai.py feature13_lapinsus_engine.py feature13_panel.py feature13_lapinsus_ai_pilot_33979.py feature13_lapinsus_ai_v1_4_regression.py
+      - name: V1.4 offline regression
+        run: python feature13_lapinsus_ai_v1_4_regression.py
+      - name: Run pilot #33979 (read-only)
+        run: python feature13_lapinsus_ai_pilot_33979.py
+      - name: Verify generated artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s LAPINSUS_33979_AI_V1_4_PILOT.pdf
+          test -s LAPINSUS_33979_AI_V1_4_PILOT.json
+          file LAPINSUS_33979_AI_V1_4_PILOT.pdf
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          audit=json.loads(Path('LAPINSUS_33979_AI_V1_4_PILOT.json').read_text())
+          assert audit['ai_version']=='LAPINSUS_DELI_SERDANG_AI_V1_4'
+          assert audit['grounding']['passed'] is True
+          assert audit['database_mutation'] is False
+          assert audit['telegram_sent'] is False
+          assert audit['source_extraction_method']=='publisher_jsonld_or_dom'
+          assert audit['source_sentence_count'] >= 3
+          assert audit['image_count'] > 0
+          assert len(audit.get('fact_evidence') or []) >= 4
+          assert len(audit.get('trend_evidence') or []) >= 1
+          print('=== V1.4 ACCEPTANCE ===')
+          print('facts:', len(audit.get('facts') or []))
+          print('fact_evidence:', len(audit.get('fact_evidence') or []))
+          print('trends:', len(audit.get('trend') or []))
+          print('trend_evidence:', len(audit.get('trend_evidence') or []))
+          print('images:', audit.get('image_count'))
+          print('extraction:', audit.get('source_extraction_method'))
+          print('STATUS: PASS')
+          PY
+      - name: Upload V1.4 pilot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LAPINSUS-33979-AI-V1-4-PILOT
+          path: |
+            LAPINSUS_33979_AI_V1_4_PILOT.pdf
+            LAPINSUS_33979_AI_V1_4_PILOT.json
+          if-no-files-found: error
