@@ -1,10 +1,12 @@
 import hashlib
+import html as html_lib
 import io
 import re
 from datetime import datetime, timezone
 
 import requests
 import streamlit as st
+from bs4 import BeautifulSoup
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
@@ -43,6 +45,69 @@ AUTENTIKASI_NIP = os.getenv("LAPINSUS_AUTENTIKASI_NIP", "19801020 200712 1002")
 
 def _clean(value):
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def clean_article_content(value):
+    """Convert stored RSS/HTML article content into readable plain text."""
+    if not value:
+        return ""
+    text = str(value)
+    if "<" in text and ">" in text:
+        soup = BeautifulSoup(html_lib.unescape(text), "html.parser")
+        for node in soup.select(
+            "script, style, noscript, svg, nav, header, footer, "
+            ".share, .sharing, .social, .related, .recommend, .recommended, "
+            ".advert, .ads, .iklan, .comment, .comments, .breadcrumb, "
+            ".sticky, .newsletter, .video, .tags, .read-also"
+        ):
+            node.decompose()
+        text = soup.get_text(" ", strip=True)
+    return _clean(html_lib.unescape(text))
+
+
+ISSUE_TOPIC_RULES = {
+    "Narkotika": [r"\bnarkoba\b", r"\bnarkotika\b", r"\bsabu\b", r"\bganja\b", r"\bkokain\b", r"\becstasy\b", r"\bpil ekstasi\b"],
+    "Penganiayaan": [r"penganiayaan", r"aniaya", r"dianiaya", r"menganiaya"],
+    "Pencurian": [r"pencurian", r"mencuri", r"dicuri", r"curanmor", r"pencuri"],
+    "Pembunuhan": [r"pembunuhan", r"membunuh", r"dibunuh", r"tewas dibunuh"],
+    "Penipuan": [r"penipuan", r"menipu", r"ditipu", r"penipu"],
+    "Korupsi": [r"korupsi", r"korupt", r"gratifikasi"],
+    "Suap / Gratifikasi": [r"suap", r"menyuap", r"disuap", r"gratifikasi"],
+    "Judi": [r"perjudian", r"judi online", r"judi", r"togel", r"slot online"],
+    "Kekerasan Seksual": [r"kekerasan seksual", r"pelecehan seksual", r"pemerkosaan", r"perkosaan", r"pencabulan"],
+    "KDRT": [r"kdrt", r"kekerasan dalam rumah tangga"],
+    "Kecelakaan": [r"kecelakaan", r"tabrakan", r"lakalantas", r"laka lantas"],
+    "Banjir": [r"\bbanjir\b", r"terendam", r"genangan"],
+    "Longsor": [r"longsor", r"tanah longsor"],
+    "Karhutla": [r"karhutla", r"kebakaran hutan", r"kebakaran lahan"],
+    "Kebakaran": [r"kebakaran", r"terbakar", r"dilalap api"],
+    "Infrastruktur": [r"infrastruktur", r"jalan rusak", r"jembatan", r"pembangunan jalan", r"rsud", r"rumah sakit", r"gedung"],
+    "Kesehatan": [r"kesehatan", r"rumah sakit", r"rsud", r"puskesmas", r"pasien", r"dokter"],
+    "Pendidikan": [r"pendidikan", r"sekolah", r"siswa", r"guru", r"universitas", r"kampus"],
+    "Lingkungan": [r"lingkungan", r"sampah", r"limbah", r"pencemaran", r"sungai", r"hutan"],
+    "Konflik / Kamtibmas": [r"konflik", r"keributan", r"bentrok", r"kamtibmas", r"tawuran", r"gangguan keamanan"],
+    "Pertanahan / Sengketa": [r"sengketa tanah", r"sengketa lahan", r"pertanahan", r"sertifikat tanah", r"konflik lahan"],
+    "Anggaran / Pemerintahan": [r"anggaran", r"apbd", r"pemkab", r"pemerintah kabupaten", r"bupati", r"dprd"],
+}
+
+
+def extract_issue_topics(title, content):
+    text = _clean(f"{title or ''} {content or ''}").lower()
+    found = []
+    for label, patterns in ISSUE_TOPIC_RULES.items():
+        if any(re.search(p, text, re.I) for p in patterns):
+            found.append(label)
+    return found
+
+
+def get_article_source_text(article):
+    """Panel-compatible adapter around the AI V1 source resolver."""
+    source = fetch_source_article(article)
+    return {
+        "text": clean_article_content(source.get("text")),
+        "images": source.get("images") or article.get("article_images") or [],
+        "resolved_link": source.get("resolved_link") or _clean(article.get("link")),
+    }
 
 
 def _parse_date(value):
@@ -99,7 +164,7 @@ def get_location_articles(limit=500):
 
 
 def _extract_sentences(content, max_items=18):
-    text = _clean(content)
+    text = clean_article_content(content)
     if not text:
         return []
     parts = re.split(r"(?<=[.!?])\s+", text)
