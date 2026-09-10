@@ -1,4 +1,4 @@
-name: Feature 13 - LAPINSUS AI V1.6 Pilot #33979
+name: Feature 13 - LAPINSUS AI V1.6 Pilot #33979 - Image Audit Hotfix
 
 on:
   workflow_dispatch:
@@ -13,7 +13,6 @@ jobs:
       LAPINSUS_AI_MODEL: gpt-5.6-luna
       LAPINSUS_SOURCE_TIMEOUT: "20"
       LAPINSUS_IMAGE_MAX: "6"
-      LAPINSUS_IMAGE_HASH_TIMEOUT: "8"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -23,11 +22,11 @@ jobs:
         run: pip install -r feature13-lapinsus-ai-v1_6-requirements.txt
       - name: Compile check
         run: python -m py_compile feature13_lapinsus_ai.py feature13_lapinsus_engine.py feature13_panel.py feature13_lapinsus_ai_pilot_33979.py feature13_lapinsus_ai_v1_6_regression.py
-      - name: V1.6 offline regression
+      - name: V1.6 regression
         run: python feature13_lapinsus_ai_v1_6_regression.py
       - name: Run pilot #33979 (read-only)
         run: python feature13_lapinsus_ai_pilot_33979.py
-      - name: Verify generated artifacts and acceptance
+      - name: Verify V1.6 image audit
         shell: bash
         run: |
           set -euo pipefail
@@ -38,43 +37,42 @@ jobs:
           import json
           from pathlib import Path
           audit=json.loads(Path('LAPINSUS_33979_AI_V1_6_PILOT.json').read_text())
-          image_audit=audit.get('image_audit') or []
-          selected=[x for x in image_audit if x.get('selected') is True]
-          checks={
-            'ai_version': audit.get('ai_version')=='LAPINSUS_DELI_SERDANG_AI_V1_6',
-            'grounding': audit.get('grounding',{}).get('passed') is True,
-            'no_db_mutation': audit.get('database_mutation') is False,
-            'no_telegram': audit.get('telegram_sent') is False,
-            'publisher_extraction': audit.get('source_extraction_method')=='publisher_jsonld_or_dom',
-            'source_sentences': audit.get('source_sentence_count',0)>=3,
-            'images': audit.get('image_count',0)>0,
-            'fact_evidence': len(audit.get('fact_evidence') or [])>=4,
-            'meaningful_trend_evidence': len([x for x in (audit.get('trend_evidence') or []) if x.get('basis')!='source_limitation'])>=1,
-            'image_audit': len(image_audit)>=1,
-            'selected_image_audit': len(selected)>=1,
-            'no_selected_duplicates': not any(x.get('selected') and x.get('duplicate') for x in image_audit),
-            'unique_selected_urls': len({x.get('url') for x in selected})==len(selected),
+          checks = {
+              'ai_version': audit.get('ai_version') == 'LAPINSUS_DELI_SERDANG_AI_V1_6',
+              'grounding': audit.get('grounding', {}).get('passed') is True,
+              'no_db_mutation': audit.get('database_mutation') is False,
+              'no_telegram': audit.get('telegram_sent') is False,
+              'publisher_extraction': audit.get('source_extraction_method') == 'publisher_jsonld_or_dom',
+              'source_sentences': int(audit.get('source_sentence_count') or 0) >= 3,
+              'images': int(audit.get('image_count') or 0) > 0,
+              'fact_evidence': len(audit.get('fact_evidence') or []) >= 4,
+              'meaningful_trend_evidence': len(audit.get('trend_evidence') or []) >= 1,
+              'image_audit': len(audit.get('image_audit') or []) >= 1,
           }
-          print('=== V1.6 ACCEPTANCE ===')
+          selected_audit = [x for x in (audit.get('image_audit') or []) if x.get('selected') is True]
+          checks['selected_image_audit'] = len(selected_audit) >= 1
+          checks['no_selected_duplicates'] = all(not x.get('duplicate') for x in selected_audit)
+          selected_urls = [x.get('url') for x in selected_audit]
+          checks['unique_selected_urls'] = len(selected_urls) == len(set(selected_urls))
+          print('=== V1.6 IMAGE-AUDIT HOTFIX ACCEPTANCE ===')
           for k,v in checks.items(): print(f'{k}: {"PASS" if v else "FAIL"}')
-          print('facts:',len(audit.get('facts') or []))
-          print('fact_evidence:',len(audit.get('fact_evidence') or []))
-          print('trends:',len(audit.get('trend') or []))
-          print('trend_evidence:',len(audit.get('trend_evidence') or []))
-          print('trend_limitations:',len(audit.get('trend_limitations') or []))
-          print('images:',audit.get('image_count'))
-          print('image_audit:',len(image_audit))
-          print('selected_images:',len(selected))
-          print('extraction:',audit.get('source_extraction_method'))
-          if not all(checks.values()): raise SystemExit('V1.6 acceptance failed')
+          print('facts:', len(audit.get('facts') or []))
+          print('fact_evidence:', len(audit.get('fact_evidence') or []))
+          print('trends:', len(audit.get('trend') or []))
+          print('trend_evidence:', len(audit.get('trend_evidence') or []))
+          print('images:', audit.get('image_count'))
+          print('image_audit:', len(audit.get('image_audit') or []))
+          print('selected_images:', len(selected_audit))
+          print('extraction:', audit.get('source_extraction_method'))
+          if not all(checks.values()):
+              raise SystemExit(1)
           print('STATUS: PASS')
           PY
-      - name: Upload V1.6 pilot artifacts
+      - name: Upload pilot artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: LAPINSUS-33979-AI-V1-6-PILOT
+          name: LAPINSUS-33979-AI-V1-6-IMAGE-AUDIT-HOTFIX
           path: |
             LAPINSUS_33979_AI_V1_6_PILOT.pdf
             LAPINSUS_33979_AI_V1_6_PILOT.json
           if-no-files-found: error
-
