@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 DEFAULT_MODEL = os.getenv("LAPINSUS_AI_MODEL", "gpt-5.6-luna")
+AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_1"
 REQUEST_TIMEOUT = int(os.getenv("LAPINSUS_SOURCE_TIMEOUT", "15"))
 
 SYSTEM_PROMPT = r"""
@@ -53,6 +54,11 @@ ATURAN WAJIB:
 13. Jangan menyalin elemen UI situs berita seperti "Tautan telah disalin",
     "Baca juga", "Artikel terkait", "Komentar", atau menu situs.
 14. Maksimum 10 fakta, 5 trend, dan 4 saran/tindak.
+15. Jika artikel memuat sedikitnya 4 fakta material yang berbeda, usahakan menghasilkan sedikitnya 4 butir informasi_diperoleh. Jangan menggabungkan banyak fakta material menjadi satu kalimat hanya agar jumlah fakta sedikit.
+16. Prioritaskan fakta material: angka anggaran/nilai, sumber anggaran, nama instansi, nama paket/kegiatan, kode paket, metode/proses pengadaan, status proses, jumlah peserta/pihak, lokasi, target, dan tahapan pekerjaan apabila benar-benar disebutkan dalam artikel.
+17. Bagian III bukan tempat mengulang Bagian I. Jika artikel menyebut proses yang sedang berjalan, tender, pendaftaran, target, jadwal, tahapan, atau perkembangan konkret, gunakan informasi tersebut sebagai current_process/explicit_future dan jelaskan perkembangan yang dapat dipantau tanpa menambahkan fakta baru.
+18. Jika membuat limited_inference, nyatakan secara hati-hati sebagai perkiraan dan tetap grounded pada kalimat sumber. Jangan menciptakan akibat baru yang tidak wajar dari artikel.
+19. Untuk source_limitation, cukup jelaskan keterbatasan informasi yang benar-benar relevan; evidence_sentence_ids boleh kosong.
 
 FORMAT:
 Kembalikan JSON sesuai schema. Jangan menambahkan field lain.
@@ -158,6 +164,19 @@ CHROME_SELECTORS = [
 ]
 
 
+IMAGE_BAD_PATTERNS = re.compile(
+    r"news\.google\.com|gstatic\.com|googleusercontent\.com|google\.com/logos|google-news|google_news|favicon|sprite|logo-google|googlelogo|/icons/",
+    re.I,
+)
+
+
+def _valid_image_url(url: Any) -> bool:
+    u = clean_text(url)
+    if not u or not u.startswith(("http://", "https://")):
+        return False
+    return not IMAGE_BAD_PATTERNS.search(u)
+
+
 def clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", unescape(str(value or ""))).strip()
 
@@ -198,7 +217,7 @@ def extract_article_body(html: str) -> Tuple[str, List[str], str]:
     images: List[str] = []
     for meta in soup.select("meta[property='og:image'], meta[name='twitter:image']"):
         url = meta.get("content")
-        if url and url.startswith(("http://", "https://")) and url not in images:
+        if _valid_image_url(url) and url not in images:
             images.append(url)
 
     candidates = []
@@ -217,7 +236,7 @@ def extract_article_body(html: str) -> Tuple[str, List[str], str]:
     # Collect article images after chrome removal.
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-        if src and src.startswith(("http://", "https://")) and src not in images:
+        if _valid_image_url(src) and src not in images:
             images.append(src)
 
     canonical = ""
@@ -264,6 +283,7 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
             images = json.loads(images)
         except Exception:
             images = []
+    images = [u for u in images if _valid_image_url(u)][:12]
 
     if not link:
         return {"text": stored, "sentences": split_sentences(stored), "images": images, "resolved_link": ""}
@@ -342,12 +362,8 @@ def _validate_grounding(result: Dict[str, Any], sentences: List[str]) -> Dict[st
         basis = item.get("basis")
         if basis != "source_limitation" and (not ids or not set(ids).issubset(evidence_ids)):
             errors.append(f"trend_{idx}: trend tidak memiliki evidence yang valid")
-        # source_limitation is a meta-level statement about the limits of the
-        # supplied article, not a claim that needs article evidence. Some models
-        # may still return evidence_sentence_ids despite the instruction; do not
-        # fail the whole draft for that harmless extra field.
-        if basis == "source_limitation":
-            continue
+        elif basis == "source_limitation" and ids and not set(ids).issubset(evidence_ids):
+            errors.append(f"trend_{idx}: evidence source_limitation tidak valid")
 
     # Hard check: every number appearing in AI text must appear in its cited evidence.
     for section_name in ("informasi_diperoleh", "trend_perkembangan"):
@@ -399,14 +415,35 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
     if not validation["passed"]:
         raise RuntimeError("Validasi grounding AI gagal: " + "; ".join(validation["errors"][:8]))
 
+    # Guardrail against an under-detailed Section I when the source contains
+    # several material, distinct claims. We do not require an arbitrary count
+    # for short articles; this only catches the known failure mode where a
+    # detailed procurement/infrastructure article collapses into one fact.
+    material_hints = 0
+    source_blob = " ".join(sentences).lower()
+    hint_patterns = [
+        r"\brp\s*[0-9]", r"apbd", r"spse", r"kode paket", r"tender",
+        r"pengadaan", r"perusahaan", r"mendaftar", r"pagu", r"hps",
+        r"dinas", r"anggaran", r"tahun anggaran", r"masih berlangsung",
+    ]
+    for pat in hint_patterns:
+        if re.search(pat, source_blob, re.I):
+            material_hints += 1
+    fact_count = len(result.get("informasi_diperoleh", []))
+    if material_hints >= 5 and fact_count < 3:
+        raise RuntimeError(
+            "Output AI terlalu ringkas untuk sumber yang memuat banyak fakta material "
+            f"(indikator={material_hints}, fakta={fact_count})."
+        )
+
     facts = [_ensure_bahwa(x["text"]) for x in result.get("informasi_diperoleh", [])]
     trends = [_ensure_bahwa(x["text"]) for x in result.get("trend_perkembangan", [])]
     actions = [clean_text(x["text"]) for x in result.get("saran_tindak", [])]
 
     if not facts:
-        facts = [_ensure_bahwa("pemberitaan telah memuat informasi sebagaimana tercantum dalam sumber artikel")]
+        raise RuntimeError("AI tidak menghasilkan fakta untuk Section I.")
     if not trends:
-        trends = [_ensure_bahwa("sumber artikel belum memuat proyeksi lanjutan yang eksplisit sehingga perkembangan berikutnya memerlukan monitoring")]
+        trends = [_ensure_bahwa("sumber artikel belum memuat perkembangan lanjutan yang eksplisit; perkembangan selanjutnya perlu dipantau berdasarkan informasi tambahan yang terverifikasi")]
     if not actions:
         actions = [
             "Melakukan verifikasi terhadap informasi utama pada sumber primer dan/atau pihak terkait.",
@@ -428,6 +465,7 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
         "images": source.get("images") or article.get("article_images") or [],
         "grounding": validation,
         "model": os.getenv("LAPINSUS_AI_MODEL", DEFAULT_MODEL),
+        "ai_version": AI_VERSION,
     }
 
 
