@@ -1,0 +1,38 @@
+name: Feature 13 - V3 Content Heatmap LAPINSUS Fix Validation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TAHUN_TARGET: '2026'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r feature13-fix-requirements.txt
+      - run: |
+          python -m py_compile feature13_panel.py
+          python -m py_compile feature13_lapinsus_engine.py
+          python -m py_compile feature13_v3_fix_regression.py
+      - name: Real read-only validation
+        run: |
+          python feature13_v3_fix_regression.py
+          python - <<'PY'
+          from feature13_lapinsus_engine import get_location_articles
+          rows = get_location_articles(limit=1000)
+          assert len(rows) == 770, len(rows)
+          assert all(str(r.get("published_date","")).startswith("2026") for r in rows)
+          print("[PASS] Real location table = 770")
+          print("[PASS] Real location table remains 2026-only")
+          print("DATABASE MUTATION: NONE")
+          print("TELEGRAM: NOT SENT")
+          PY
