@@ -111,23 +111,65 @@ def _source_data_cached(article_id, link, content, title, images):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def _load_deli_serdang_geojson():
-    try:
-        response = requests.get(GEOJSON_URL, timeout=30, headers={"User-Agent": "Feature13-DeliSerdang/1.0"})
-        response.raise_for_status()
-        data = response.json()
-        features = []
-        for feature in data.get("features", []):
-            props = feature.get("properties") or {}
-            name2 = str(props.get("NAME_2") or props.get("name_2") or "").strip().lower()
-            name1 = str(props.get("NAME_1") or props.get("name_1") or "").strip().lower()
-            if name2 in {"deli serdang", "deliserdang"} and ("sumatera" in name1 or "north sumatra" in name1 or not name1):
-                features.append(feature)
-        if features:
-            return {"type": "FeatureCollection", "features": features}
-    except Exception:
-        pass
+    """Load only Deli Serdang district polygons and normalize common GeoJSON schemas."""
+    urls = [GEOJSON_URL]
+    env_url = os.getenv("FEATURE13_GEOJSON_URL", "").strip()
+    if env_url and env_url not in urls:
+        urls.insert(0, env_url)
+    for url in urls:
+        try:
+            response = requests.get(
+                url, timeout=30,
+                headers={"User-Agent": "Feature13-DeliSerdang/1.1"},
+            )
+            response.raise_for_status()
+            data = response.json()
+            raw_features = data.get("features") or []
+            features = []
+            for feature in raw_features:
+                props = feature.get("properties") or {}
+                vals = {str(k).lower(): str(v).strip().lower() for k, v in props.items() if v is not None}
+                kab = vals.get("name_2") or vals.get("kabupaten") or vals.get("kab_kota") or vals.get("kabupaten_kota") or ""
+                prov = vals.get("name_1") or vals.get("provinsi") or ""
+                # Accept Deli Serdang even when province metadata is absent.
+                is_ds = kab in {"deli serdang", "deliserdang", "kabupaten deli serdang", "kabupaten deliserdang"}
+                if not is_ds:
+                    joined = " ".join(vals.values())
+                    is_ds = "deli serdang" in joined or "deliserdang" in joined
+                if is_ds:
+                    features.append(feature)
+            if features:
+                return {"type": "FeatureCollection", "features": features, "source_url": url}
+        except Exception:
+            continue
     return None
 
+
+def _geo_bounds(geo):
+    coords = []
+    def walk(value):
+        if isinstance(value, (list, tuple)):
+            if len(value) >= 2 and all(isinstance(x, (int, float)) for x in value[:2]):
+                coords.append((float(value[1]), float(value[0])))
+            else:
+                for item in value:
+                    walk(item)
+    for feature in (geo or {}).get("features", []):
+        walk((feature.get("geometry") or {}).get("coordinates"))
+    if not coords:
+        return None
+    lats = [x[0] for x in coords]
+    lons = [x[1] for x in coords]
+    return [[min(lats), min(lons)], [max(lats), max(lons)]]
+
+
+def _geo_district_name(feature):
+    props = feature.get("properties") or {}
+    for key in ("NAME_3", "name_3", "KECAMATAN", "kecamatan", "WADMKC", "NAMOBJ"):
+        value = props.get(key)
+        if value:
+            return str(value).strip().lower().replace("kec. ", "").replace("kecamatan ", "")
+    return ""
 
 def _topics_for_article(row, allow_source=False):
     title = str(row.get("title") or "")
@@ -274,9 +316,18 @@ def _render_issue_map(valid_rows, source_refresh=False):
 
     geo = _load_deli_serdang_geojson()
     if geo is None:
-        st.warning("Batas poligon kecamatan belum berhasil dimuat. Marker kecamatan tetap ditampilkan.")
+        st.warning("Batas poligon kecamatan Deli Serdang belum berhasil dimuat. Marker kecamatan tetap ditampilkan; posisi peta tetap dikunci ke Deli Serdang.")
+    else:
+        st.caption("Base map: OpenStreetMap • Polygon: Deli Serdang • tanpa CARTO API key")
 
-    m = folium.Map(location=[3.55, 98.72], zoom_start=10, tiles="CartoDB dark_matter", control_scale=True)
+    # OpenStreetMap is used deliberately: no CARTO API key is required.
+    m = folium.Map(
+        location=[3.52, 98.72],
+        zoom_start=10,
+        tiles="OpenStreetMap",
+        control_scale=True,
+        prefer_canvas=True,
+    )
     style_by_name = {}
     for district, topics in district_topics.items():
         dominant = next((x for x in ISSUE_ORDER if x in topics), None)
@@ -285,16 +336,39 @@ def _render_issue_map(valid_rows, source_refresh=False):
 
     if geo:
         def style_function(feature):
-            props = feature.get("properties") or {}
-            name = str(props.get("NAME_3") or props.get("name_3") or "").strip().lower()
-            normalized = name.replace("kec. ", "").replace("kecamatan ", "")
-            color = style_by_name.get(normalized, "#475569")
-            active = normalized in style_by_name
-            return {"fillColor": color if active else "#1f2937", "color": color if active else "#64748b", "weight": 1.5, "fillOpacity": 0.60 if active else 0.16}
-        folium.GeoJson(
-            geo, name="Kecamatan Deli Serdang", style_function=style_function,
-            tooltip=folium.GeoJsonTooltip(fields=["NAME_3"], aliases=["Kecamatan"], sticky=False),
-        ).add_to(m)
+            district_name = _geo_district_name(feature)
+            color = style_by_name.get(district_name, "#475569")
+            active = district_name in style_by_name
+            return {
+                "fillColor": color if active else "#334155",
+                "color": color if active else "#64748b",
+                "weight": 1.5,
+                "fillOpacity": 0.62 if active else 0.12,
+            }
+
+        tooltip_fields = []
+        if geo.get("features"):
+            props = geo["features"][0].get("properties") or {}
+            for candidate in ("NAME_3", "name_3", "KECAMATAN", "kecamatan", "WADMKC", "NAMOBJ"):
+                if candidate in props:
+                    tooltip_fields = [candidate]
+                    break
+
+        kwargs = {
+            "name": "Kecamatan Deli Serdang",
+            "style_function": style_function,
+        }
+        if tooltip_fields:
+            kwargs["tooltip"] = folium.GeoJsonTooltip(fields=tooltip_fields, aliases=["Kecamatan"])
+        folium.GeoJson(geo, **kwargs).add_to(m)
+
+        bounds = _geo_bounds(geo)
+        if bounds:
+            m.fit_bounds(bounds, padding=(12, 12))
+    else:
+        # Safe fallback: keep the map centered on Deli Serdang, never on another regency.
+        m.location = [3.52, 98.72]
+        m.zoom_start = 10
 
     for district, topics in sorted(district_topics.items()):
         if district not in FEATURE13_COORDS:
@@ -319,7 +393,12 @@ def _render_issue_map(valid_rows, source_refresh=False):
         st_folium(m, width=None, height=600, key="f13_real_issue_map")
     with right:
         st.markdown("**Legenda isu**")
-        legend_topics = [issue_filter] if issue_filter != "SEMUA ISU" else ISSUE_ORDER
+        if issue_filter != "SEMUA ISU":
+            legend_topics = [issue_filter] if any(issue_filter in topics for topics in district_topics.values()) else []
+        else:
+            legend_topics = [topic for topic in ISSUE_ORDER if any(topic in topics for topics in district_topics.values())]
+        if not legend_topics:
+            st.caption("Tidak ada isu spesifik yang cocok dengan filter saat ini.")
         for topic in legend_topics:
             icon, color = ISSUE_META[topic]
             st.markdown(f"<div style='margin:6px 0'><span style='display:inline-flex;width:25px;height:25px;border-radius:50%;background:{color};align-items:center;justify-content:center'>{icon}</span> &nbsp; {html.escape(topic)}</div>", unsafe_allow_html=True)
