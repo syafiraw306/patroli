@@ -1,0 +1,66 @@
+name: Feature 13 - Production Dashboard Integration Check
+
+on:
+  workflow_dispatch:
+
+jobs:
+  integration-check:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TAHUN_TARGET: '2026'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install reportlab folium streamlit
+
+      - name: Verify integration files
+        run: |
+          test -f app-3_feature13_integrated.py
+          test -f feature13_panel.py
+          test -f feature13_lapinsus_engine.py
+
+      - name: Compile
+        run: |
+          python -m py_compile app-3_feature13_integrated.py
+          python -m py_compile feature13_panel.py
+          python -m py_compile feature13_lapinsus_engine.py
+
+      - name: Static safety checks
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path("app-3_feature13_integrated.py").read_text(encoding="utf-8")
+          panel = Path("feature13_panel.py").read_text(encoding="utf-8")
+          engine = Path("feature13_lapinsus_engine.py").read_text(encoding="utf-8")
+
+          assert "from feature13_panel import render_feature13_panel" in app
+          assert "📍 FEATURE #13" in app
+          assert "with tab_feature13:" in app
+          assert "deli_serdang_location_articles" in panel
+          assert "def build_lapinsus" in engine
+          assert "def make_pdf" in engine
+          assert "def mark_generated" in engine
+
+          # Integration must not add Telegram behavior to Feature #13 panel.
+          assert "send_telegram" not in panel
+          assert "Telegram" not in panel
+
+          print("PRODUCTION DASHBOARD INTEGRATION CHECK: PASS")
+          print("Database mutation: NONE")
+          print("Telegram: NOT SENT")
+          PY
