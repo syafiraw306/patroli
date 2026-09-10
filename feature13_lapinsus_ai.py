@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 DEFAULT_MODEL = os.getenv("LAPINSUS_AI_MODEL", "gpt-5.6-luna")
-AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_2"
+AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_3"
 REQUEST_TIMEOUT = int(os.getenv("LAPINSUS_SOURCE_TIMEOUT", "15"))
 
 SYSTEM_PROMPT = r"""
@@ -326,16 +326,49 @@ def extract_article_body(html: str) -> Tuple[str, List[str], str]:
 
     return text, images[:12], canonical or ""
 
+def _looks_like_google_wrapper(text: str) -> bool:
+    t = clean_text(text).lower()
+    return (
+        "news.google.com" in t
+        or "target=\"_blank\">" in t
+        or "<a href=" in t and "detikcom" in t
+    )
+
+
+def _candidate_publisher_urls(url: str) -> List[str]:
+    """Generate safe publisher URL variants, including AMP for known publishers."""
+    base = clean_text(url)
+    if not base or "news.google.com" in base:
+        return []
+    candidates = [base]
+    parsed = urlparse(base)
+    path = parsed.path or ""
+    host = parsed.netloc.lower()
+    # Detik exposes a stable AMP representation and it is often accessible when
+    # the regular page is protected by anti-bot/challenge middleware.
+    if "detik.com" in host and not path.endswith("/amp"):
+        candidates.append(base.rstrip("/") + "/amp")
+    return list(dict.fromkeys(candidates))
+
+
 def resolve_google_news(url: str) -> str:
     if "news.google.com" not in (url or ""):
         return url
     try:
-        r = requests.get(url, timeout=REQUEST_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
+        r = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            },
+            allow_redirects=True,
+        )
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
         for selector in ["link[rel='canonical']", "meta[property='og:url']"]:
             node = soup.select_one(selector)
-            candidate = node.get("href") or node.get("content") if node else ""
+            candidate = (node.get("href") or node.get("content")) if node else ""
             if candidate and "news.google.com" not in candidate:
                 return candidate
         for a in soup.find_all("a", href=True):
@@ -344,15 +377,47 @@ def resolve_google_news(url: str) -> str:
                 host = urlparse(href).netloc.lower()
                 if host and not host.endswith("google.com"):
                     return href
-        return r.url
     except Exception:
-        return url
+        pass
+    return url
+
+
+def _fetch_publisher(url: str) -> Tuple[str, List[str], str, str]:
+    """Fetch publisher URL variants and return the first substantial article."""
+    last_error = ""
+    for candidate in _candidate_publisher_urls(url):
+        try:
+            r = requests.get(
+                candidate,
+                timeout=REQUEST_TIMEOUT,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Cache-Control": "no-cache",
+                },
+                allow_redirects=True,
+            )
+            r.raise_for_status()
+            text, fetched_images, canonical = extract_article_body(r.text)
+            sentences = split_sentences(text)
+            if len(text) >= 250 and len(sentences) >= 3 and not _looks_like_google_wrapper(text):
+                return text, fetched_images, canonical or r.url, "publisher_jsonld_or_dom"
+            last_error = f"{candidate}: extraction too short ({len(text)} chars/{len(sentences)} sentences)"
+        except Exception as exc:
+            last_error = f"{candidate}: {type(exc).__name__}: {exc}"
+    raise RuntimeError(last_error or "publisher fetch failed")
 
 
 def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
     original_link = clean_text(article.get("link"))
-    link = resolve_google_news(original_link)
-    stored = clean_text(article.get("content"))
+    resolved = resolve_google_news(original_link)
+    stored_raw = str(article.get("content") or "")
+    stored = clean_text(stored_raw)
+    stored_is_wrapper = _looks_like_google_wrapper(stored_raw)
+
+    # Stored article_images may contain a Google News/logo asset. Never use them
+    # as documentation when the stored content itself is only a wrapper.
     images = article.get("article_images") or []
     if isinstance(images, str):
         try:
@@ -360,49 +425,53 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             images = []
     images = [u for u in images if _valid_image_url(u)][:12]
+    if stored_is_wrapper:
+        images = []
 
-    if not link:
-        sentences = split_sentences(stored)
+    publisher_candidates = []
+    if resolved and "news.google.com" not in resolved:
+        publisher_candidates.append(resolved)
+    if original_link and "news.google.com" not in original_link:
+        publisher_candidates.append(original_link)
+
+    for publisher_url in list(dict.fromkeys(publisher_candidates)):
+        try:
+            text, fetched_images, canonical, method = _fetch_publisher(publisher_url)
+            sentences = split_sentences(text)
+            return {
+                "text": text,
+                "sentences": sentences,
+                "images": list(dict.fromkeys(fetched_images))[:12],
+                "resolved_link": canonical or publisher_url,
+                "extraction_method": method,
+                "material_highlights": _material_source_highlights(sentences),
+            }
+        except Exception:
+            continue
+
+    # A Google News wrapper is not an article source. Do NOT silently turn its
+    # title/link markup into a one-sentence source and let AI generate a report.
+    if stored_is_wrapper or "news.google.com" in original_link:
+        raise RuntimeError(
+            "Ekstraksi sumber artikel gagal: tautan Google News berhasil dikenali, "
+            "tetapi halaman publisher tidak dapat diambil. Stored content hanya wrapper/metadata, "
+            "bukan isi artikel. LAPINSUS dihentikan agar tidak menghasilkan laporan dari sumber yang tidak lengkap."
+        )
+
+    sentences = split_sentences(stored)
+    if len(sentences) >= 3:
         return {
             "text": stored,
             "sentences": sentences,
             "images": images,
-            "resolved_link": "",
+            "resolved_link": resolved or original_link,
             "extraction_method": "stored_content",
             "material_highlights": _material_source_highlights(sentences),
         }
-
-    try:
-        r = requests.get(link, timeout=REQUEST_TIMEOUT, headers={"User-Agent": "Mozilla/5.0"}, allow_redirects=True)
-        r.raise_for_status()
-        text, fetched_images, canonical = extract_article_body(r.text)
-        sentences = split_sentences(text)
-        material_hits = _material_source_highlights(sentences)
-        # A short/partial extraction must not silently replace a richer stored
-        # article. Prefer fetched publisher content when it is substantial and
-        # contains recognizable article material; otherwise fall back safely.
-        if len(text) >= 250 and len(sentences) >= 3:
-            merged_images = list(dict.fromkeys(list(images) + fetched_images))[:12]
-            return {
-                "text": text,
-                "sentences": sentences,
-                "images": merged_images,
-                "resolved_link": canonical or r.url,
-                "extraction_method": "publisher_jsonld_or_dom",
-                "material_highlights": material_hits,
-            }
-    except Exception:
-        pass
-
-    sentences = split_sentences(stored)
-    return {
-        "text": stored,
-        "sentences": sentences,
-        "images": images,
-        "resolved_link": link,
-        "extraction_method": "stored_content_fallback",
-        "material_highlights": _material_source_highlights(sentences),
-    }
+    raise RuntimeError(
+        "Ekstraksi sumber artikel tidak mencukupi: hanya "
+        f"{len(sentences)} kalimat yang tersedia."
+    )
 
 def _input_text(article: Dict[str, Any], source: Dict[str, Any]) -> str:
     title = clean_text(article.get("title"))
@@ -485,8 +554,6 @@ def _validate_grounding(result: Dict[str, Any], sentences: List[str]) -> Dict[st
         for idx, item in enumerate(result.get(section_name, []), 1):
             nums = set(re.findall(r"\d+(?:[.,]\d+)?", item.get("text", "")))
             ids = item.get("evidence_sentence_ids") or []
-            if section_name == "trend_perkembangan" and item.get("basis") == "source_limitation":
-                continue
             evidence_text = " ".join(sentences[i - 1] for i in ids if 1 <= i <= len(sentences))
             for n in nums:
                 if n not in evidence_text:
@@ -506,6 +573,8 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
     sentences = source.get("sentences") or split_sentences(source.get("text", ""))
     if not sentences:
         raise RuntimeError("Sumber artikel tidak memiliki teks yang cukup untuk dianalisis AI.")
+    if source.get("extraction_method") == "stored_content_fallback":
+        raise RuntimeError("Source extraction fallback lama tidak diizinkan pada V1.3.")
 
     client = OpenAI(api_key=api_key)
     response = client.responses.create(
