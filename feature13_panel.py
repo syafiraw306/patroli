@@ -229,7 +229,7 @@ def _generate_lapinsus(a, is_admin):
     article_id = a.get("id")
     if st.button("📄 Generate LAPINSUS", key=f"f13_generate_{article_id}", type="primary", use_container_width=True):
         try:
-            with st.spinner("Mengambil berita asli → menganalisis dengan AI → memvalidasi fakta → menyusun PDF..."):
+            with st.spinner("Mengambil berita asli → menganalisis dengan AI → memvalidasi evidence → menyusun PDF..."):
                 data = build_lapinsus(a)
                 pdf = make_pdf(data)
                 mark_generated(article_id, pdf, data)
@@ -287,7 +287,11 @@ def _render_article_card(a, is_admin):
             for fact in generated_data["facts"][:5]: st.write("• " + fact)
             st.markdown("**III. TREND PERKEMBANGAN / PERKIRAAN**")
             for trend in generated_data["trend"][:5]: st.write("• " + trend)
-            st.caption(f"Dokumentasi sumber: {len(generated_data.get('images') or [])} gambar")
+            st.caption(
+                f"Dokumentasi sumber: {len(generated_data.get('images') or [])} gambar · "
+                f"Evidence fakta: {len(generated_data.get('fact_evidence') or [])} · "
+                f"Evidence trend: {len(generated_data.get('trend_evidence') or [])}"
+            )
 
 
 def _map_issue_data(rows, source_refresh=False):

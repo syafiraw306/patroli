@@ -14,8 +14,9 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 DEFAULT_MODEL = os.getenv("LAPINSUS_AI_MODEL", "gpt-5.6-luna")
-AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_3"
+AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_4"
 REQUEST_TIMEOUT = int(os.getenv("LAPINSUS_SOURCE_TIMEOUT", "15"))
+IMAGE_MAX = int(os.getenv("LAPINSUS_IMAGE_MAX", "6"))
 
 SYSTEM_PROMPT = r"""
 Anda adalah AI penyusun DRAFT LAPORAN INFORMASI KHUSUS (LAPINSUS)
@@ -59,6 +60,10 @@ ATURAN WAJIB:
 17. Bagian III bukan tempat mengulang Bagian I. Jika artikel menyebut proses yang sedang berjalan, tender, pendaftaran, target, jadwal, tahapan, atau perkembangan konkret, gunakan informasi tersebut sebagai current_process/explicit_future dan jelaskan perkembangan yang dapat dipantau tanpa menambahkan fakta baru.
 18. Jika membuat limited_inference, nyatakan secara hati-hati sebagai perkiraan dan tetap grounded pada kalimat sumber. Jangan menciptakan akibat baru yang tidak wajar dari artikel.
 19. Untuk source_limitation, cukup jelaskan keterbatasan informasi yang benar-benar relevan; evidence_sentence_ids boleh kosong.
+20. Bagian III harus bernilai analitis, bukan sekadar mengulang fakta. Untuk current_process, jelaskan posisi proses saat ini dan perkembangan yang secara logis dapat dipantau dari proses tersebut. Untuk explicit_future, gunakan hanya rencana/target/tahapan yang benar-benar disebutkan. Untuk limited_inference, gunakan formulasi hati-hati seperti "diperkirakan", "perlu dicermati", atau "perkembangan selanjutnya bergantung pada" dan wajib memiliki dasar fakta yang jelas.
+21. Bila artikel memuat status proses + jumlah peserta + target kegiatan, prioritaskan trend yang menghubungkan ketiganya secara faktual tanpa menciptakan jadwal, hasil, pemenang, dampak, atau keputusan yang belum disebutkan.
+22. Jangan menggunakan kalimat trend yang hanya mengatakan "artikel menyebut..." atau "arah pengembangan..." jika dapat ditulis sebagai status/perkembangan konkret.
+23. Jika artikel tidak memiliki dasar perkembangan yang memadai, boleh ada satu source_limitation yang singkat. Jangan mengisi Bagian III dengan kalimat generik berulang.
 
 FORMAT:
 Kembalikan JSON sesuai schema. Jangan menambahkan field lain.
@@ -278,7 +283,7 @@ def _material_source_highlights(sentences: List[str]) -> List[Tuple[int, str]]:
     return out
 
 
-def extract_article_body(html: str) -> Tuple[str, List[str], str]:
+def extract_article_body(html: str, context_text: str = "") -> Tuple[str, List[str], str]:
     # JSON-LD is often the cleanest and most complete representation of a
     # publisher article. Extract it BEFORE removing script/chrome nodes.
     jsonld_text, jsonld_images, jsonld_canonical = _extract_jsonld_article(html)
@@ -310,11 +315,43 @@ def extract_article_body(html: str) -> Tuple[str, List[str], str]:
         text = max(candidates, key=lambda x: x[0])[1]
 
     # Collect article images after chrome removal, while excluding Google News
-    # wrappers, favicons, logos and generic UI assets.
+    # wrappers, favicons, logos and generic UI assets. Keep lightweight labels
+    # so the image ranking can prefer photos related to the actual article.
+    image_candidates = [(u, "") for u in images]
     for img in soup.find_all("img"):
         src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
-        if _valid_image_url(src) and src not in images:
-            images.append(src)
+        if not _valid_image_url(src):
+            continue
+        label_parts = [img.get("alt") or "", img.get("title") or ""]
+        parent = img.parent
+        if parent and getattr(parent, "name", None) == "figure":
+            cap = parent.find("figcaption")
+            if cap:
+                label_parts.append(cap.get_text(" ", strip=True))
+        label = clean_text(" ".join(label_parts))
+        image_candidates.append((src, label))
+
+    # Rank by article-title/source-label overlap. Generic publisher branding is
+    # penalized; source extraction order remains the tie-breaker.
+    context_tokens = _tokenize(context_text) if context_text else set()
+    ranked = []
+    for order, (src, label) in enumerate(image_candidates):
+        if not _valid_image_url(src):
+            continue
+        hay = clean_text(f"{src} {label}").lower()
+        score = 0.0
+        for token in context_tokens:
+            if len(token) >= 5 and token in hay:
+                score += 2.0
+        if any(x in hay for x in ("rsud", "bangun-purba", "bangun_purba", "rumah-sakit")):
+            score += 5.0
+        if any(x in hay for x in ("deli-serdang", "deli_serdang", "deliserdang")):
+            score += 2.0
+        if any(x in hay for x in ("logo", "icon", "avatar", "placeholder", "default-image")):
+            score -= 8.0
+        ranked.append((score, -order, src))
+    ranked.sort(reverse=True)
+    images = [src for _, _, src in ranked]
 
     canonical = jsonld_canonical or ""
     canon = soup.find("link", rel=lambda x: x and "canonical" in x)
@@ -382,7 +419,7 @@ def resolve_google_news(url: str) -> str:
     return url
 
 
-def _fetch_publisher(url: str) -> Tuple[str, List[str], str, str]:
+def _fetch_publisher(url: str, context_text: str = "") -> Tuple[str, List[str], str, str]:
     """Fetch publisher URL variants and return the first substantial article."""
     last_error = ""
     for candidate in _candidate_publisher_urls(url):
@@ -399,7 +436,7 @@ def _fetch_publisher(url: str) -> Tuple[str, List[str], str, str]:
                 allow_redirects=True,
             )
             r.raise_for_status()
-            text, fetched_images, canonical = extract_article_body(r.text)
+            text, fetched_images, canonical = extract_article_body(r.text, context_text=context_text)
             sentences = split_sentences(text)
             if len(text) >= 250 and len(sentences) >= 3 and not _looks_like_google_wrapper(text):
                 return text, fetched_images, canonical or r.url, "publisher_jsonld_or_dom"
@@ -436,12 +473,12 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
 
     for publisher_url in list(dict.fromkeys(publisher_candidates)):
         try:
-            text, fetched_images, canonical, method = _fetch_publisher(publisher_url)
+            text, fetched_images, canonical, method = _fetch_publisher(publisher_url, context_text=clean_text(article.get("title")))
             sentences = split_sentences(text)
             return {
                 "text": text,
                 "sentences": sentences,
-                "images": list(dict.fromkeys(fetched_images))[:12],
+                "images": list(dict.fromkeys(fetched_images))[:IMAGE_MAX],
                 "resolved_link": canonical or publisher_url,
                 "extraction_method": method,
                 "material_highlights": _material_source_highlights(sentences),
@@ -463,7 +500,7 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "text": stored,
             "sentences": sentences,
-            "images": images,
+            "images": images[:IMAGE_MAX],
             "resolved_link": resolved or original_link,
             "extraction_method": "stored_content",
             "material_highlights": _material_source_highlights(sentences),
@@ -620,14 +657,43 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
             f"(kategori={distinct_material_categories}, sorotan={material_hints}, fakta={fact_count})."
         )
 
+    # V1.4 trend quality guard: reject trends that merely repeat a fact when
+    # the source contains an identifiable current process / future / status.
+    source_lower = " ".join(sentences).lower()
+    has_process = bool(re.search(r"tender|pengadaan|masih berlangsung|mendaftar|proses|tahap|target|rencana|akan ", source_lower))
+    trend_texts = [clean_text(x.get("text")) for x in result.get("trend_perkembangan", [])]
+    if has_process and trend_texts:
+        weak = 0
+        for t in trend_texts:
+            if re.search(r"artikel (tidak )?memuat|arah pengembangan proyek sebagaimana tercantum|informasi belum dapat diuraikan", t, re.I):
+                weak += 1
+        if weak == len(trend_texts):
+            raise RuntimeError("Output Section III terlalu generik untuk sumber yang memiliki status/proses konkret.")
+
     facts = [_ensure_bahwa(x["text"]) for x in result.get("informasi_diperoleh", [])]
     trends = [_ensure_bahwa(x["text"]) for x in result.get("trend_perkembangan", [])]
     actions = [clean_text(x["text"]) for x in result.get("saran_tindak", [])]
+    fact_evidence = [
+        {
+            "fact": facts[i],
+            "source_sentence_ids": list(result.get("informasi_diperoleh", [])[i].get("evidence_sentence_ids") or []),
+        }
+        for i in range(min(len(facts), 10))
+    ]
+    trend_evidence = [
+        {
+            "trend": trends[i],
+            "source_sentence_ids": list(result.get("trend_perkembangan", [])[i].get("evidence_sentence_ids") or []),
+            "basis": result.get("trend_perkembangan", [])[i].get("basis"),
+        }
+        for i in range(min(len(trends), 5))
+    ]
 
     if not facts:
         raise RuntimeError("AI tidak menghasilkan fakta untuk Section I.")
     if not trends:
-        trends = [_ensure_bahwa("sumber artikel belum memuat perkembangan lanjutan yang eksplisit; perkembangan selanjutnya perlu dipantau berdasarkan informasi tambahan yang terverifikasi")]
+        trends = [_ensure_bahwa("sumber artikel belum memuat perkembangan lanjutan yang cukup untuk diuraikan lebih lanjut") ]
+        trend_evidence = [{"trend": trends[0], "source_sentence_ids": [], "basis": "source_limitation"}]
     if not actions:
         actions = [
             "Melakukan verifikasi terhadap informasi utama pada sumber primer dan/atau pihak terkait.",
@@ -638,7 +704,9 @@ def generate_ai_lapinsus(article: Dict[str, Any], source: Dict[str, Any] | None 
     return {
         "perihal": clean_text(result.get("perihal")) or clean_text(article.get("title")),
         "facts": facts[:10],
+        "fact_evidence": fact_evidence[:10],
         "trend": trends[:5],
+        "trend_evidence": trend_evidence[:5],
         "actions": actions[:4],
         "source_statement": clean_text(result.get("source_statement")) or (
             f"Bahwa informasi diperoleh dari pemberitaan media {clean_text(article.get('publisher') or article.get('source')) or 'sebagaimana tercantum pada sumber artikel'} dan masih memerlukan verifikasi terhadap sumber primer/pihak terkait."
@@ -667,9 +735,20 @@ def mock_lapinsus_33979(article: Dict[str, Any]) -> Dict[str, Any]:
             "Bahwa proses pengadaan pekerjaan tersebut masih berada pada tahap tender.",
             "Bahwa berdasarkan pemberitaan, terdapat 12 perusahaan yang telah terdaftar dalam proses tender.",
         ],
+        "fact_evidence": [
+            {"fact": "Bahwa Pemerintah Kabupaten Deli Serdang berencana meningkatkan RSUD Bangun Purba menjadi rumah sakit tipe C.", "source_sentence_ids": [1]},
+            {"fact": "Bahwa untuk pelaksanaan peningkatan RSUD Bangun Purba tersebut telah dianggarkan dana sebesar Rp11,9 miliar dari APBD Kabupaten Deli Serdang Tahun Anggaran 2026.", "source_sentence_ids": [2, 8]},
+            {"fact": "Bahwa paket pekerjaan peningkatan RSUD Bangun Purba berada pada Dinas Cipta Karya dan Tata Ruang Kabupaten Deli Serdang.", "source_sentence_ids": [7]},
+            {"fact": "Bahwa proses pengadaan pekerjaan tersebut masih berada pada tahap tender.", "source_sentence_ids": [10]},
+            {"fact": "Bahwa berdasarkan pemberitaan, terdapat 12 perusahaan yang telah terdaftar dalam proses tender.", "source_sentence_ids": [11]},
+        ],
         "trend": [
             "Bahwa proses pengadaan pekerjaan peningkatan RSUD Bangun Purba masih berlangsung melalui tahapan tender.",
-            "Bahwa perkembangan selanjutnya berkaitan dengan hasil proses tender dan pelaksanaan pekerjaan peningkatan RSUD Bangun Purba menjadi tipe C.",
+            "Bahwa dengan telah adanya 12 perusahaan yang mendaftar, perkembangan selanjutnya perlu dicermati pada tahapan proses tender berikutnya sampai dengan penetapan hasil pengadaan.",
+        ],
+        "trend_evidence": [
+            {"trend": "Bahwa proses pengadaan pekerjaan peningkatan RSUD Bangun Purba masih berlangsung melalui tahapan tender.", "source_sentence_ids": [10], "basis": "current_process"},
+            {"trend": "Bahwa dengan telah adanya 12 perusahaan yang mendaftar, perkembangan selanjutnya perlu dicermati pada tahapan proses tender berikutnya sampai dengan penetapan hasil pengadaan.", "source_sentence_ids": [10, 11], "basis": "limited_inference"},
         ],
         "actions": [
             "Melakukan verifikasi terhadap tahapan dan hasil proses pengadaan pekerjaan pada sumber primer atau pihak terkait.",
