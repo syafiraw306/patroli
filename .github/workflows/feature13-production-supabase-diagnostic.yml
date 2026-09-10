@@ -1,0 +1,44 @@
+name: Feature 13 - Production Supabase Data Diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      TAHUN_TARGET: '2026'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install streamlit folium streamlit-folium reportlab
+
+      - name: Verify diagnostic files
+        run: |
+          test -f feature13_panel.py
+          test -f feature13_lapinsus_engine.py
+          test -f feature13_production_diagnostic.py
+
+      - name: Compile
+        run: |
+          python -m py_compile feature13_panel.py
+          python -m py_compile feature13_lapinsus_engine.py
+          python -m py_compile feature13_production_diagnostic.py
+
+      - name: Run diagnostic (READ-ONLY)
+        run: |
+          python feature13_production_diagnostic.py
