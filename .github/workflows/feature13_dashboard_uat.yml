@@ -29,14 +29,14 @@ jobs:
 
       - name: Verify files
         run: |
-          test -f app-3_feature13_integrated.py
+          test -f app_feature13_integrated.py
           test -f feature13_panel.py
           test -f feature13_lapinsus_engine.py
           test -f feature13_dashboard_uat.py
 
       - name: Compile
         run: |
-          python -m py_compile app-3_feature13_integrated.py
+          python -m py_compile app_feature13_integrated.py
           python -m py_compile feature13_panel.py
           python -m py_compile feature13_lapinsus_engine.py
           python -m py_compile feature13_dashboard_uat.py
