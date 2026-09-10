@@ -1,44 +1,78 @@
 import ast
+import html
+import json
 import os
 import re
+from collections import Counter, defaultdict
+from urllib.parse import urlparse
 
-import pandas as pd
-import streamlit as st
 import folium
+import pandas as pd
+import requests
+import streamlit as st
 from streamlit_folium import st_folium
 
 from feature13_lapinsus_engine import (
-    get_location_articles,
     build_lapinsus,
-    make_pdf,
-    mark_generated,
     clean_article_content,
-    classify_issues,
     extract_issue_topics,
     get_article_source_text,
+    get_location_articles,
+    make_pdf,
+    mark_generated,
 )
 
 FEATURE13_TABLE = "deli_serdang_location_articles"
 FEATURE13_YEAR = int(os.getenv("TAHUN_TARGET", "2026"))
 FEATURE13_REVIEW_IDS = {4284, 4292, 4356, 4358, 4523}
 
-# Approximate district anchors only; not incident-level geocoding.
+# 22 kecamatan Deli Serdang; anchors are only used for labels/icons.
 FEATURE13_COORDS = {
     "bangun purba": (3.442, 98.775), "batang kuis": (3.601, 98.873),
-    "sibiru-biru": (3.443, 98.682), "deli tua": (3.507, 98.675),
-    "galang": (3.423, 98.718), "gunung meriah": (3.457, 98.590),
-    "hamparan perak": (3.706, 98.623), "kutalimbaru": (3.449, 98.510),
-    "labuhan deli": (3.719, 98.666), "lubuk pakam": (3.558, 98.862),
-    "namorambe": (3.472, 98.676), "pagar merbau": (3.600, 98.874),
-    "pancur batu": (3.469, 98.603), "pantai labu": (3.659, 98.935),
-    "patumbak": (3.522, 98.715), "percut sei tuan": (3.625, 98.790),
-    "sibolangit": (3.303, 98.554), "stm hilir": (3.508, 98.805),
-    "stm hulu": (3.432, 98.756), "sunggal": (3.603, 98.616),
-    "tanjung morawa": (3.523, 98.790),
+    "beringin": (3.590, 98.890), "sibiru-biru": (3.443, 98.682),
+    "deli tua": (3.507, 98.675), "galang": (3.423, 98.718),
+    "gunung meriah": (3.457, 98.590), "hamparan perak": (3.706, 98.623),
+    "kutalimbaru": (3.449, 98.510), "labuhan deli": (3.719, 98.666),
+    "lubuk pakam": (3.558, 98.862), "namorambe": (3.472, 98.676),
+    "pagar merbau": (3.600, 98.874), "pancur batu": (3.469, 98.603),
+    "pantai labu": (3.659, 98.935), "patumbak": (3.522, 98.715),
+    "percut sei tuan": (3.625, 98.790), "sibolangit": (3.303, 98.554),
+    "stm hilir": (3.508, 98.805), "stm hulu": (3.432, 98.756),
+    "sunggal": (3.603, 98.616), "tanjung morawa": (3.523, 98.790),
 }
 
+ISSUE_META = {
+    "Narkotika": ("💉", "#dc2626"),
+    "Penganiayaan": ("⚔️", "#7c3aed"),
+    "Pencurian": ("🕵️", "#d97706"),
+    "Pembunuhan": ("☠️", "#991b1b"),
+    "Penipuan": ("💳", "#b45309"),
+    "Korupsi": ("🏛️", "#ea580c"),
+    "Suap / Gratifikasi": ("💰", "#ca8a04"),
+    "Judi": ("🎰", "#9333ea"),
+    "Kekerasan Seksual": ("⚠️", "#be185d"),
+    "KDRT": ("🏠", "#db2777"),
+    "Kecelakaan": ("🚗", "#f97316"),
+    "Banjir": ("🌊", "#0284c7"),
+    "Longsor": ("⛰️", "#92400e"),
+    "Karhutla": ("🔥", "#b91c1c"),
+    "Kebakaran": ("🔥", "#ef4444"),
+    "Infrastruktur": ("🏗️", "#f59e0b"),
+    "Kesehatan": ("🏥", "#2563eb"),
+    "Pendidikan": ("🎓", "#7c3aed"),
+    "Lingkungan": ("🌿", "#16a34a"),
+    "Konflik / Kamtibmas": ("👥", "#0f766e"),
+    "Pertanahan / Sengketa": ("⚖️", "#64748b"),
+    "Anggaran / Pemerintahan": ("🏢", "#0891b2"),
+}
+ISSUE_ORDER = list(ISSUE_META)
+GEOJSON_URL = os.getenv(
+    "FEATURE13_GEOJSON_URL",
+    "https://raw.githubusercontent.com/fahadh4ilyas/indonesia-geojson-archive/master/Indonesia_subdistricts.geojson",
+)
 
-def _f13_keywords(row):
+
+def _keywords(row):
     value = row.get("matched_location_keywords") or []
     if isinstance(value, str):
         try:
@@ -48,317 +82,304 @@ def _f13_keywords(row):
     return [str(x).strip().lower() for x in value if str(x).strip()]
 
 
-@st.cache_data(ttl=60)
+def _district(row):
+    kws = _keywords(row)
+    preferred = [k for k in kws if k in FEATURE13_COORDS and k not in {"deli serdang", "kabupaten deli serdang", "kabupaten deliserdang", "deliserdang"}]
+    return preferred[0] if preferred else ("deli serdang" if any("deli serdang" in k for k in kws) else "")
+
+
+def _source_domain(row):
+    source = str(row.get("publisher") or row.get("source") or "").strip()
+    if source:
+        return source
+    try:
+        return urlparse(str(row.get("link") or "")).netloc.replace("www.", "")
+    except Exception:
+        return "Sumber"
+
+
+@st.cache_data(ttl=60, show_spinner=False)
 def load_feature13_articles():
-    return get_location_articles(limit=1000)
-
-
-def _article_text(row):
-    return clean_article_content(row.get("content") or "")
+    rows = get_location_articles(limit=1000)
+    return [r for r in rows if str(r.get("published_date", "")).startswith(str(FEATURE13_YEAR))]
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _cached_source_text(article_id, title, content, link, article_images):
-    article = {
-        "id": article_id,
-        "title": title,
-        "content": content,
-        "link": link,
-        "article_images": article_images or [],
-    }
-    return get_article_source_text(article)
+def _source_data_cached(article_id, link, content, title, images):
+    return get_article_source_text({"id": article_id, "link": link, "content": content, "title": title, "article_images": images})
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def _load_deli_serdang_geojson():
+    try:
+        response = requests.get(GEOJSON_URL, timeout=30, headers={"User-Agent": "Feature13-DeliSerdang/1.0"})
+        response.raise_for_status()
+        data = response.json()
+        features = []
+        for feature in data.get("features", []):
+            props = feature.get("properties") or {}
+            name2 = str(props.get("NAME_2") or props.get("name_2") or "").strip().lower()
+            name1 = str(props.get("NAME_1") or props.get("name_1") or "").strip().lower()
+            if name2 in {"deli serdang", "deliserdang"} and ("sumatera" in name1 or "north sumatra" in name1 or not name1):
+                features.append(feature)
+        if features:
+            return {"type": "FeatureCollection", "features": features}
+    except Exception:
+        pass
+    return None
+
+
+def _topics_for_article(row, allow_source=False):
+    title = str(row.get("title") or "")
+    content = clean_article_content(row.get("content"))
+    topics = extract_issue_topics(title, content)
+    if allow_source and ("news.google.com" in str(row.get("link") or "") or len(content) < 350):
+        data = _source_data_cached(row.get("id"), row.get("link"), row.get("content"), row.get("title"), row.get("article_images") or [])
+        topics = extract_issue_topics(title, data.get("text") or content)
+    return topics
+
+
+def _excerpt(row):
+    text = clean_article_content(row.get("content"))
+    if len(text) < 220:
+        data = _source_data_cached(row.get("id"), row.get("link"), row.get("content"), row.get("title"), row.get("article_images") or [])
+        text = data.get("text") or text
+    return text[:260] + ("..." if len(text) > 260 else "")
+
+
+def _image_for_card(row):
+    images = row.get("article_images") or []
+    if isinstance(images, str):
+        try: images = json.loads(images)
+        except Exception: images = []
+    if images:
+        return images[0]
+    return None
+
+
+def _render_image(url, height=145):
+    if url:
+        st.image(url, use_container_width=True, output_format="auto")
+    else:
+        st.markdown(
+            f"<div style='height:{height}px;border-radius:12px;background:#171923;display:flex;align-items:center;justify-content:center;font-size:42px'>📰</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def _render_issue_badges(topics):
+    if not topics:
+        st.caption("Belum ada isu spesifik yang terdeteksi dari konten tersimpan.")
+        return
+    html_badges = []
+    for topic in topics[:5]:
+        icon, color = ISSUE_META.get(topic, ("•", "#64748b"))
+        html_badges.append(
+            f"<span style='display:inline-block;background:{color};color:white;border-radius:999px;padding:4px 10px;margin:2px 4px 2px 0;font-size:12px'>{icon} {html.escape(topic)}</span>"
+        )
+    st.markdown("".join(html_badges), unsafe_allow_html=True)
+
+
+def _generate_lapinsus(a, is_admin):
+    if not is_admin:
+        st.info("Generate LAPINSUS hanya tersedia untuk ADMIN.")
+        return
+    article_id = a.get("id")
+    if st.button("📄 Generate LAPINSUS", key=f"f13_generate_{article_id}", type="primary", use_container_width=True):
+        with st.spinner("Mengambil sumber berita dan menyusun LAPINSUS..."):
+            data = build_lapinsus(a)
+            pdf = make_pdf(data)
+            mark_generated(article_id, pdf, data)
+            st.session_state[f"f13_pdf_{article_id}"] = pdf
+            st.session_state[f"f13_data_{article_id}"] = data
+        st.success("Draft LAPINSUS berhasil dibuat. Tetap memerlukan verifikasi analis.")
+    pdf = st.session_state.get(f"f13_pdf_{article_id}")
+    if pdf:
+        st.download_button("⬇️ Download LAPINSUS PDF", pdf, file_name=f"LAPINSUS_{article_id}.pdf", mime="application/pdf", key=f"f13_dl_{article_id}", use_container_width=True)
+
+
+def _render_article_card(a, is_admin):
+    article_id = a.get("id")
+    topics = _topics_for_article(a, allow_source=False)
+    image_url = _image_for_card(a)
+    district = _district(a)
+    valid = bool(a.get("location_context_valid"))
+    status = "VALID" if valid else "PERLU REVIEW"
+    status_color = "#16a34a" if valid else "#f59e0b"
+    with st.container(border=True):
+        cols = st.columns([1.05, 4.0, 0.72])
+        with cols[0]:
+            _render_image(image_url)
+        with cols[1]:
+            st.markdown(f"### {html.escape(str(a.get('title') or 'Tanpa judul'))}")
+            date = str(a.get("published_date") or "-")[:10]
+            st.caption(f"📅 {date}   |   📍 {district.title() if district else 'Deli Serdang'}   |   📰 {_source_domain(a)}")
+            _render_issue_badges(topics)
+            st.write(_excerpt(a))
+            b1, b2 = st.columns([1, 1.35])
+            with b1:
+                if a.get("link"):
+                    st.link_button("↗️ Buka Berita", a["link"], use_container_width=True)
+            with b2:
+                _generate_lapinsus(a, is_admin)
+        with cols[2]:
+            st.markdown(
+                f"<div style='text-align:center'><span style='background:{status_color};color:white;padding:5px 9px;border-radius:999px;font-size:12px'>{status}</span><br><br><span style='color:#9ca3af'>#{article_id}</span></div>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("Isi"):
+                st.write(clean_article_content(a.get("content"))[:5000] or "Konten tersimpan tidak tersedia.")
+        generated_data = st.session_state.get(f"f13_data_{article_id}")
+        if generated_data:
+            st.markdown("**Preview LAPINSUS**")
+            st.markdown("**I. INFORMASI YANG DIPEROLEH**")
+            for fact in generated_data["facts"][:5]: st.write("• " + fact)
+            st.markdown("**III. TREND PERKEMBANGAN / PERKIRAAN**")
+            for trend in generated_data["trend"][:5]: st.write("• " + trend)
+            st.caption(f"Dokumentasi sumber: {len(generated_data.get('images') or [])} gambar")
+
+
+def _map_issue_data(rows, source_refresh=False):
+    district_topics = defaultdict(set)
+    district_articles = defaultdict(list)
+    for row in rows:
+        district = _district(row)
+        if not district:
+            continue
+        topics = _topics_for_article(row, allow_source=source_refresh)
+        for topic in topics:
+            district_topics[district].add(topic)
+            district_articles[district].append((topic, row.get("id"), row.get("title")))
+    return district_topics, district_articles
+
+
+def _render_issue_map(valid_rows, source_refresh=False):
+    st.markdown("### 🗺️ Peta Isu per Kecamatan")
+    st.caption("Batas kecamatan Deli Serdang ditampilkan sebagai poligon. Warna dan marker menunjukkan isu spesifik yang terdeteksi dari berita.")
+    refresh_col, issue_col = st.columns([1.4, 2.6])
+    with refresh_col:
+        if st.button("🔄 Analisis dari link berita", key="f13_map_refresh"):
+            st.session_state["f13_map_source_refresh"] = True
+            _source_data_cached.clear()
+            st.rerun()
+    source_refresh = bool(st.session_state.get("f13_map_source_refresh", source_refresh))
+    with issue_col:
+        available = sorted({topic for row in valid_rows for topic in _topics_for_article(row, allow_source=False)}, key=lambda x: ISSUE_ORDER.index(x) if x in ISSUE_ORDER else 999)
+        issue_filter = st.selectbox("Filter isu", ["SEMUA ISU"] + available, key="f13_issue_filter")
+
+    district_topics, district_articles = _map_issue_data(valid_rows, source_refresh=source_refresh)
+    if issue_filter != "SEMUA ISU":
+        district_topics = {d: {t for t in topics if t == issue_filter} for d, topics in district_topics.items()}
+        district_topics = {d: t for d, t in district_topics.items() if t}
+
+    geo = _load_deli_serdang_geojson()
+    if geo is None:
+        st.warning("Batas poligon kecamatan belum berhasil dimuat. Marker kecamatan tetap ditampilkan.")
+
+    m = folium.Map(location=[3.55, 98.72], zoom_start=10, tiles="CartoDB dark_matter", control_scale=True)
+    style_by_name = {}
+    for district, topics in district_topics.items():
+        dominant = next((x for x in ISSUE_ORDER if x in topics), None)
+        color = ISSUE_META.get(dominant, ("•", "#64748b"))[1]
+        style_by_name[district] = color
+
+    if geo:
+        def style_function(feature):
+            props = feature.get("properties") or {}
+            name = str(props.get("NAME_3") or props.get("name_3") or "").strip().lower()
+            normalized = name.replace("kec. ", "").replace("kecamatan ", "")
+            color = style_by_name.get(normalized, "#475569")
+            active = normalized in style_by_name
+            return {"fillColor": color if active else "#1f2937", "color": color if active else "#64748b", "weight": 1.5, "fillOpacity": 0.60 if active else 0.16}
+        folium.GeoJson(
+            geo, name="Kecamatan Deli Serdang", style_function=style_function,
+            tooltip=folium.GeoJsonTooltip(fields=["NAME_3"], aliases=["Kecamatan"], sticky=False),
+        ).add_to(m)
+
+    for district, topics in sorted(district_topics.items()):
+        if district not in FEATURE13_COORDS:
+            continue
+        lat, lon = FEATURE13_COORDS[district]
+        topic_list = [t for t in ISSUE_ORDER if t in topics]
+        if not topic_list:
+            continue
+        first = topic_list[0]
+        icon, color = ISSUE_META[first]
+        rows_html = "".join(f"<li>{html.escape(t)}</li>" for t in topic_list)
+        count = len(district_articles.get(district, []))
+        popup = folium.Popup(f"<b>{html.escape(district.title())}</b><br><b>Isu:</b><ul>{rows_html}</ul><small>{count} relasi artikel</small>", max_width=330)
+        folium.Marker(
+            [lat, lon], popup=popup,
+            tooltip=f"{district.title()} — {', '.join(topic_list)}",
+            icon=folium.DivIcon(html=f"<div style='width:34px;height:34px;border-radius:50%;background:{color};border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:17px;box-shadow:0 2px 8px rgba(0,0,0,.5)'>{icon}</div>"),
+        ).add_to(m)
+
+    left, right = st.columns([4.2, 1.4])
+    with left:
+        st_folium(m, width=None, height=600, key="f13_real_issue_map")
+    with right:
+        st.markdown("**Legenda isu**")
+        legend_topics = [issue_filter] if issue_filter != "SEMUA ISU" else ISSUE_ORDER
+        for topic in legend_topics:
+            icon, color = ISSUE_META[topic]
+            st.markdown(f"<div style='margin:6px 0'><span style='display:inline-flex;width:25px;height:25px;border-radius:50%;background:{color};align-items:center;justify-content:center'>{icon}</span> &nbsp; {html.escape(topic)}</div>", unsafe_allow_html=True)
+        st.divider()
+        st.caption("Klik marker untuk melihat isu dan artikel yang terkait dengan kecamatan tersebut.")
 
 
 def render_feature13_panel(is_admin=False):
     st.header("📍 Feature #13 — Deli Serdang Location Intelligence")
-    st.caption("Location discovery → artikel wilayah → peta isu → LAPINSUS")
-
+    st.caption("Location discovery → artikel wilayah → peta isu (berdasarkan isi berita)")
     articles = load_feature13_articles()
-    articles = [
-        a for a in articles
-        if str(a.get("published_date", "")).startswith(str(FEATURE13_YEAR))
-    ]
-
     valid = [a for a in articles if bool(a.get("location_context_valid"))]
     review = [a for a in articles if not bool(a.get("location_context_valid"))]
 
-    c = st.columns(4)
-    c[0].metric("Total artikel", len(articles))
-    c[1].metric("Valid", len(valid))
-    c[2].metric("Perlu review", len(review))
-    c[3].metric("Tahun", FEATURE13_YEAR)
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("📄 Total artikel", len(articles)); c2.metric("✅ Valid", len(valid)); c3.metric("⚠️ Perlu review", len(review)); c4.metric("🏘️ Kecamatan terdeteksi", f"{len({ _district(a) for a in valid if _district(a) })} / 22")
 
-    f1, f2, f3 = st.columns(3)
-    with f1:
-        search = st.text_input("🔎 Cari artikel", key="f13_search")
-    with f2:
-        status = st.selectbox(
-            "Konteks lokasi", ["SEMUA", "VALID", "PERLU REVIEW"], key="f13_status"
-        )
+    f1, f2, f3, f4 = st.columns([1.7, 1.0, 1.0, 1.0])
+    with f1: search = st.text_input("🔎 Cari artikel", placeholder="Ketik judul, kata kunci, atau sumber...", key="f13_search_v5")
+    with f2: status = st.selectbox("Konteks lokasi", ["SEMUA", "VALID", "PERLU REVIEW"], key="f13_status_v5")
     with f3:
-        allkw = sorted({k for a in articles for k in _f13_keywords(a)})
-        kw = st.selectbox(
-            "Kecamatan / keyword", ["SEMUA"] + allkw, key="f13_kw"
-        )
+        districts = sorted({k for a in articles for k in _keywords(a) if k in FEATURE13_COORDS})
+        district_filter = st.selectbox("Kecamatan", ["SEMUA"] + districts, key="f13_district_v5")
+    with f4:
+        sources = sorted({_source_domain(a) for a in articles})
+        source_filter = st.selectbox("Sumber", ["SEMUA"] + sources[:150], key="f13_source_v5")
+    if st.button("↻ Reset filter", key="f13_reset_v5"):
+        for key in ("f13_search_v5", "f13_status_v5", "f13_district_v5", "f13_source_v5"):
+            st.session_state.pop(key, None)
+        st.rerun()
 
-    filtered = []
+    filtered=[]
+    q = search.lower().strip()
     for a in articles:
-        text = (
-            str(a.get("title") or "")
-            + " "
-            + _article_text(a)
-        ).lower()
-        kws = _f13_keywords(a)
-        if search and search.lower() not in text:
-            continue
-        if status == "VALID" and not a.get("location_context_valid"):
-            continue
-        if status == "PERLU REVIEW" and a.get("location_context_valid"):
-            continue
-        if kw != "SEMUA" and kw not in kws:
-            continue
+        hay = " ".join([str(a.get("title") or ""), clean_article_content(a.get("content")), _source_domain(a)]).lower()
+        kws = _keywords(a)
+        if q and q not in hay: continue
+        if status == "VALID" and not a.get("location_context_valid"): continue
+        if status == "PERLU REVIEW" and a.get("location_context_valid"): continue
+        if district_filter != "SEMUA" and district_filter not in kws: continue
+        if source_filter != "SEMUA" and _source_domain(a) != source_filter: continue
         filtered.append(a)
 
     st.write(f"Menampilkan **{len(filtered)}** artikel")
-
-    tab_list, tab_map, tab_lap = st.tabs(
-        ["📋 Artikel", "🗺️ Peta Isu", "📄 LAPINSUS"]
-    )
-
-    with tab_list:
-        for a in filtered[:100]:
-            with st.container(border=True):
-                st.subheader(str(a.get("title") or "Tanpa judul"))
-                st.write(
-                    f"**Tanggal:** {a.get('published_date') or '-'}  | "
-                    f"**Lokasi:** {', '.join(_f13_keywords(a)) or '-'}"
-                )
-                st.write(
-                    f"**Status konteks:** "
-                    f"{'VALID' if a.get('location_context_valid') else 'PERLU REVIEW'}"
-                )
-                if a.get("publisher") or a.get("source"):
-                    st.caption(f"Sumber: {a.get('publisher') or a.get('source')}")
-                if a.get("link"):
-                    st.markdown(f"[Buka sumber artikel]({a['link']})")
-
-                with st.expander("Lihat isi artikel"):
-                    clean = _article_text(a)
-                    if clean:
-                        st.write(clean[:12000])
-                    else:
-                        st.info(
-                            "Isi artikel belum tersedia pada data tersimpan. "
-                            "Gunakan Buka sumber artikel untuk melihat pemberitaan asli."
-                        )
-
-    with tab_map:
-        st.subheader("🗺️ Peta Isu per Kecamatan")
-        st.caption(
-            "Isu diambil dari judul/konten berita dan, bila konten tersimpan berupa wrapper Google News atau terlalu pendek, "
-            "sistem mengambil ulang isi dari link sumber berita. Satu artikel dihitung sekali per kecamatan."
-        )
-
-        source_key = f"f13_issue_source_{FEATURE13_YEAR}"
-        if source_key not in st.session_state:
-            st.session_state[source_key] = True
-
-        col_a, col_b = st.columns([1, 3])
-        with col_a:
-            analyze_source = st.button(
-                "🔄 Analisis dari link berita",
-                key="f13_analyze_source",
-                help="Mengambil isi sumber berita jika konten tersimpan tidak cukup untuk klasifikasi isu.",
-            )
-        if analyze_source:
-            st.session_state[source_key] = True
-            st.cache_data.clear()
-
-        issue_by_location = {}
-        article_issue_rows = []
-        for a in valid:
-            base_text = _article_text(a)
-            use_source = (
-                st.session_state[source_key]
-                and (
-                    "news.google.com" in str(a.get("link") or "").lower()
-                    or len(base_text) < 350
-                )
-            )
-            if use_source:
-                try:
-                    grounded = _cached_source_text(
-                        a.get("id"), str(a.get("title") or ""), str(a.get("content") or ""),
-                        str(a.get("link") or ""), a.get("article_images") or [],
-                    )
-                    issue_text = grounded.get("text") or base_text
-                except Exception:
-                    issue_text = base_text
-            else:
-                issue_text = base_text
-
-            issues = extract_issue_topics(str(a.get("title") or ""), issue_text)
-            locations = [k for k in _f13_keywords(a) if k in FEATURE13_COORDS]
-            for k in locations:
-                if issues:
-                    issue_by_location.setdefault(k, set()).update(issues)
-                for issue in issues:
-                    article_issue_rows.append({
-                        "Lokasi": k.title(),
-                        "Isu": issue,
-                        "Artikel": str(a.get("title") or "Tanpa judul"),
-                        "ID": a.get("id"),
-                    })
-
-        if issue_by_location:
-            center = (3.55, 98.73)
-            m = folium.Map(location=center, zoom_start=10)
-            max_issues = max(len(v) for v in issue_by_location.values()) or 1
-
-            for k, issues in sorted(
-                issue_by_location.items(),
-                key=lambda x: (-len(x[1]), x[0]),
-            ):
-                lat, lon = FEATURE13_COORDS[k]
-                issue_list = sorted(issues)
-                n = len(issue_list)
-                radius = 9 + 10 * (n / max_issues)
-                popup_html = (
-                    f"<b>{k.title()}</b><br>"
-                    f"<b>Isu terdeteksi ({n}):</b><br>"
-                    + "<br>".join(f"• {x}" for x in issue_list)
-                )
-                folium.CircleMarker(
-                    [lat, lon],
-                    radius=radius,
-                    tooltip=f"{k.title()}: {n} jenis isu",
-                    popup=folium.Popup(popup_html, max_width=420),
-                    fill=True,
-                ).add_to(m)
-
-            st_folium(m, width=None, height=520, key="f13_map")
-
-            table = [
-                {
-                    "Kecamatan": k.title(),
-                    "Jumlah Isu": len(issues),
-                    "Isu": ", ".join(sorted(issues)),
-                }
-                for k, issues in sorted(
-                    issue_by_location.items(),
-                    key=lambda x: (-len(x[1]), x[0]),
-                )
-            ]
-            st.dataframe(
-                pd.DataFrame(table),
-                width="stretch",
-                hide_index=True,
-            )
-
-            st.markdown("**Daftar isu berdasarkan artikel sumber:**")
-            if article_issue_rows:
-                issue_df = pd.DataFrame(article_issue_rows).drop_duplicates(
-                    subset=["Lokasi", "Isu", "ID"]
-                )
-                st.dataframe(
-                    issue_df[["Lokasi", "Isu", "Artikel", "ID"]],
-                    width="stretch",
-                    hide_index=True,
-                )
-            st.info(
-                "Peta menampilkan JENIS ISU spesifik yang ditemukan pada berita, misalnya Narkotika, "
-                "Penganiayaan, Pencurian, Korupsi, Infrastruktur, dan Kesehatan. "
-                "Satu artikel tidak dihitung sebagai jumlah artikel pada marker. Koordinat merupakan anchor kecamatan perkiraan."
-            )
-        else:
-            st.info("Belum ada data VALID yang dapat dipetakan.")
-
-    with tab_lap:
-        st.subheader("📄 LAPINSUS — Daftar Artikel")
-        st.caption(
-            "Setiap artikel VALID ditampilkan sebagai card. Generate hanya dilakukan untuk artikel yang tombolnya ditekan."
-        )
-        choices = [a for a in filtered if a.get("location_context_valid")]
-        if not choices:
-            st.info("Tidak ada artikel VALID pada filter saat ini.")
-        else:
-            page_size = st.selectbox(
-                "Jumlah card per halaman", [10, 20, 50], index=1, key="f13_lap_page_size"
-            )
-            total_pages = max(1, (len(choices) + page_size - 1) // page_size)
-            page_no = st.number_input(
-                "Halaman", min_value=1, max_value=total_pages, value=1, step=1, key="f13_lap_page_no"
-            )
-            start_idx = (int(page_no) - 1) * page_size
-            page_choices = choices[start_idx:start_idx + page_size]
-            st.caption(f"Menampilkan card {start_idx + 1}–{min(start_idx + page_size, len(choices))} dari {len(choices)} artikel VALID.")
-
-            for a in page_choices:
-                article_id = a.get("id")
-                title = str(a.get("title") or "Tanpa judul")
-                locations = ", ".join(_f13_keywords(a)) or "-"
-                source = a.get("publisher") or a.get("source") or "-"
-                issue_labels = extract_issue_topics(title, _article_text(a))
-                status_label = str(a.get("lapinsus_status") or "BELUM DIGENERATE")
-
-                with st.container(border=True):
-                    h1, h2 = st.columns([5, 1])
-                    with h1:
-                        st.markdown(f"### #{article_id} — {title}")
-                    with h2:
-                        st.caption(status_label)
-                    st.write(
-                        f"**Tanggal:** {a.get('published_date') or '-'}  | "
-                        f"**Kecamatan:** {locations}"
-                    )
-                    st.write(f"**Sumber:** {source}")
-                    st.write("**Isu:** " + ", ".join(issue_labels))
-                    if a.get("link"):
-                        st.markdown(f"[🔗 Buka sumber artikel]({a['link']})")
-
-                    if is_admin:
-                        if st.button(
-                            "📄 Generate LAPINSUS",
-                            key=f"f13_generate_card_{article_id}",
-                            width="stretch",
-                        ):
-                            with st.spinner("Mengambil sumber artikel dan membuat LAPINSUS..."):
-                                try:
-                                    data = build_lapinsus(a)
-                                    pdf = make_pdf(data)
-                                    # Explicit button click is the only persistence path.
-                                    mark_generated(article_id, pdf, data)
-                                    st.session_state[f"f13_pdf_{article_id}"] = pdf
-                                    st.session_state[f"f13_data_{article_id}"] = data
-                                    st.success("LAPINSUS berhasil dibuat dan metadata lifecycle disimpan.")
-                                except Exception as exc:
-                                    st.error(f"Gagal membuat LAPINSUS: {type(exc).__name__}: {exc}")
-
-                    pdf = st.session_state.get(f"f13_pdf_{article_id}")
-                    data = st.session_state.get(f"f13_data_{article_id}")
-                    if data:
-                        with st.expander("🔎 Preview hasil LAPINSUS", expanded=True):
-                            st.markdown(f"**Nomor:** {data['report_number']}")
-                            st.markdown(f"**Perihal:** {data['title']}")
-                            st.markdown(f"**Sumber:** {data['source']}")
-                            if data.get("resolved_link"):
-                                st.markdown(f"[Buka sumber artikel asli]({data['resolved_link']})")
-                            st.markdown("**I. INFORMASI YANG DIPEROLEH:**")
-                            for fact in data["facts"]:
-                                st.write("• " + fact)
-                            st.markdown("**III. TREND PERKEMBANGAN / PERKIRAAN:**")
-                            for item in data["trend"]:
-                                st.write("• " + item)
-                            st.caption(
-                                f"Dokumentasi sumber: {len(data.get('images') or [])} gambar ditemukan."
-                            )
-                            if pdf:
-                                st.download_button(
-                                    "⬇️ Download LAPINSUS PDF",
-                                    pdf,
-                                    file_name=f"LAPINSUS_{article_id}.pdf",
-                                    mime="application/pdf",
-                                    key=f"f13_dl_card_{article_id}",
-                                    width="stretch",
-                                )
-
+    left, right = st.columns([1.03, 0.97], gap="large")
+    with left:
+        h1, h2 = st.columns([2.2, 1.0])
+        with h1:
+            st.subheader("📰 Daftar Artikel")
+            st.caption(f"Menampilkan {len(filtered)} artikel ({FEATURE13_YEAR})")
+        with h2:
+            sort = st.selectbox("Urutkan", ["Terbaru", "Terlama"], key="f13_sort_v5")
+            page_size = st.selectbox("Tampilkan", [10, 20, 50], index=1, key="f13_page_size_v5")
+        filtered.sort(key=lambda x: str(x.get("published_date") or ""), reverse=(sort == "Terbaru"))
+        total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
+        page = st.number_input("Halaman", min_value=1, max_value=total_pages, value=min(int(st.session_state.get("f13_page_v5", 1)), total_pages), step=1, key="f13_page_v5")
+        start = (page - 1) * page_size
+        for a in filtered[start:start+page_size]:
+            _render_article_card(a, is_admin)
+        if total_pages > 1:
+            st.caption(f"Halaman {page} dari {total_pages}")
+    with right:
+        _render_issue_map(valid, source_refresh=False)
