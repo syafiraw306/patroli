@@ -1,0 +1,61 @@
+name: Feature 13 - LAPINSUS AI V1 Pilot #33979
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pilot:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LAPINSUS_AI_MODEL: gpt-5.6-luna
+      TAHUN_TARGET: "2026"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r feature13-lapinsus-ai-v1-requirements.txt
+
+      - name: Compile
+        run: |
+          python -m py_compile \
+            feature13_lapinsus_ai.py \
+            feature13_lapinsus_engine.py \
+            feature13_lapinsus_ai_pilot_33979.py
+
+      - name: Generate pilot PDF (read-only)
+        run: python feature13_lapinsus_ai_pilot_33979.py
+
+      - name: Upload pilot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LAPINSUS-33979-AI-V1-PILOT
+          path: |
+            LAPINSUS_33979_AI_V1_PILOT.pdf
+            LAPINSUS_33979_AI_V1_PILOT.json
+
+      - name: Safety summary
+        run: |
+          echo "=============================================="
+          echo "FEATURE #13 LAPINSUS AI V1 PILOT #33979"
+          echo "=============================================="
+          echo "Mode                  : READ-ONLY PILOT"
+          echo "Database mutation     : NONE"
+          echo "Telegram notification : NONE"
+          echo "Production articles   : NOT TOUCHED"
+          echo "Article               : 33979"
+          echo "=============================================="
