@@ -85,13 +85,27 @@ def main():
     )
     check(any("Feature #13" in str(x.value) for x in admin.header),
           "Admin: Feature #13 panel header rendered")
-    check(any("Total artikel" in str(x.value) for x in admin.metric),
+    # Streamlit AppTest metric objects expose label/value through different
+    # versions. Inspect the metric collection defensively instead of assuming
+    # a particular object attribute layout.
+    metric_dump = []
+    for m in getattr(admin, "metric", []):
+        metric_dump.append(str(getattr(m, "label", "")))
+        metric_dump.append(str(getattr(m, "value", "")))
+        metric_dump.append(str(m))
+    check(any("Total artikel" in item for item in metric_dump),
           "Admin: KPI Total artikel rendered")
+    check(any(str(EXPECTED_ROWS) in item for item in metric_dump),
+          f"Admin: KPI value {EXPECTED_ROWS} rendered")
     check(any("Generate LAPINSUS PDF" in str(x.label) for x in admin.button),
           "Admin: Generate LAPINSUS PDF control available")
-    check(any("🗺️ Heatmap" in str(x.label) for x in admin.tabs),
+    tab_dump = []
+    for t in getattr(admin, "tabs", []):
+        tab_dump.append(str(getattr(t, "label", "")))
+        tab_dump.append(str(t))
+    check(any("🗺️ Heatmap" in item for item in tab_dump),
           "Admin: Heatmap tab rendered")
-    check(any("📄 LAPINSUS" in str(x.label) for x in admin.tabs),
+    check(any("📄 LAPINSUS" in item for item in tab_dump),
           "Admin: LAPINSUS tab rendered")
 
     # Viewer UAT: panel renders, but generation control must not be available.
