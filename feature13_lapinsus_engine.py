@@ -125,8 +125,75 @@ def resolve_article_url(url):
     return url
 
 
+def _extract_article_text_from_soup(soup):
+    """Extract the publisher's article body, excluding page chrome/UI noise."""
+    # Remove elements that are almost never part of the article body.
+    for tag in soup.find_all([
+        "script", "style", "noscript", "svg", "nav", "footer", "header",
+        "form", "iframe"
+    ]):
+        tag.decompose()
+
+    selectors = [
+        # detik / Indonesian publisher patterns
+        "div.detail__body-text",
+        "div.detail__body",
+        "div.detail__article",
+        "div.article__content",
+        "div.read__content",
+        "div.content-detail",
+        "div.post-content",
+        "div.entry-content",
+        "div.article-content",
+        "div.article-body",
+        "[itemprop='articleBody']",
+        "article",
+    ]
+
+    candidates = []
+    for selector in selectors:
+        for node in soup.select(selector):
+            # Remove nested UI blocks from the candidate.
+            clone = BeautifulSoup(str(node), "html.parser")
+            for bad in clone.find_all(class_=re.compile(
+                r"share|related|recommend|advert|iklan|comment|breadcrumb|sticky|footer|header|navigation|newsletter|video|social",
+                re.I,
+            )):
+                bad.decompose()
+            for bad in clone.find_all(id=re.compile(
+                r"share|related|recommend|advert|iklan|comment|breadcrumb|sticky|footer|header|navigation|newsletter|social",
+                re.I,
+            )):
+                bad.decompose()
+            paragraphs = [
+                x.get_text(" ", strip=True)
+                for x in clone.find_all(["p", "h2", "h3", "li"])
+            ]
+            paragraphs = [x for x in paragraphs if len(x) >= 25]
+            if paragraphs:
+                text = " ".join(paragraphs)
+            else:
+                text = clone.get_text(" ", strip=True)
+            if len(text) >= 180:
+                candidates.append(text)
+
+    if candidates:
+        # Prefer the most article-like candidate, not the longest page-wide wrapper.
+        def score(text):
+            lower = text.lower()
+            boilerplate = sum(lower.count(x) for x in (
+                "tautan telah disalin", "scroll to continue", "artikel ini telah tayang",
+                "anda menyukai artikel ini", "artikel disimpan", "baca juga",
+                "komentar", "advertisement", "terpopuler"
+            ))
+            return len(text) - (boilerplate * 500)
+        return max(candidates, key=score)
+
+    return ""
+
+
 def _fetch_article_page(url):
-    """Fetch publisher page, returning clean text + image URLs."""
+    """Fetch publisher page, returning clean article text + image URLs."""
     url = resolve_article_url(url)
     if not url:
         return "", []
@@ -162,24 +229,19 @@ def _fetch_article_page(url):
             if src:
                 images.append(src)
 
-        article_nodes = soup.select(
-            "article, .article-content, .article-body, "
-            ".post-content, .entry-content, [itemprop='articleBody']"
-        )
-        if article_nodes:
-            texts = [n.get_text(" ", strip=True) for n in article_nodes]
-            text = max(texts, key=len)
-        else:
-            for tag in soup(["script", "style", "noscript", "nav", "footer", "header"]):
+        text = _extract_article_text_from_soup(soup)
+        if not text:
+            # Last-resort fallback: strip page chrome and use visible text.
+            fallback = BeautifulSoup(response.text, "html.parser")
+            for tag in fallback(["script", "style", "noscript", "nav", "footer", "header", "form", "iframe"]):
                 tag.decompose()
-            text = soup.get_text(" ", strip=True)
+            text = fallback.get_text(" ", strip=True)
 
         text = _clean(html.unescape(text))
         images = list(dict.fromkeys(images))
         return text, images
     except Exception:
         return "", []
-
 
 def _article_grounding(article):
     stored_content = clean_article_content(article.get("content"))
@@ -208,6 +270,13 @@ def _article_grounding(article):
     images = list(dict.fromkeys(fetched_images + stored_images + list(article.get("article_images") or [])))
     return text, images[:8], resolved or source_link
 
+
+
+
+def get_article_source_text(article):
+    """Return article text grounded in the publisher link when possible."""
+    text, images, resolved = _article_grounding(article)
+    return {"text": text, "images": images, "resolved_link": resolved}
 
 def _parse_date(value):
     if not value:
@@ -302,15 +371,79 @@ def classify_issues(title, content):
     return found or ["Umum / lainnya"]
 
 
+# Fine-grained issue labels for the map. These are deliberately event/issue terms,
+# not broad administrative categories such as "Kriminalitas".
+ISSUE_TOPIC_RULES = [
+    ("Narkotika", r"\bnarkotika\b|\bnarkoba\b|\bsabu\b|\bganja\b|\bekstasi\b|\bpil ekstasi\b|\bobat terlarang\b"),
+    ("Penganiayaan", r"\bpenganiayaan\b|\bdianiaya\b|\bmenganiaya\b|\baniaya\b"),
+    ("Pencurian", r"\bpencurian\b|\bmencuri\b|\bdicuri\b|\bcuranmor\b|\bpencurian kendaraan\b"),
+    ("Pembunuhan", r"\bpembunuhan\b|\bdibunuh\b|\bmembunuh\b|\bpembunuh\b"),
+    ("Penipuan", r"\bpenipuan\b|\bmenipu\b|\bditipu\b|\bpenyelewengan\b"),
+    ("Korupsi", r"\bkorupsi\b|\btindak pidana korupsi\b|\btipikor\b"),
+    ("Suap / Gratifikasi", r"\bsuap\b|\bgratifikasi\b|\bpungli\b"),
+    ("Judi", r"\bperjudian\b|\bjudi\b|\btogel\b|\bkasino\b"),
+    ("Kekerasan Seksual", r"\bkekerasan seksual\b|\bpencabulan\b|\bpelecehan seksual\b|\bpersetubuhan\b"),
+    ("KDRT", r"\bkdrt\b|\bkekerasan dalam rumah tangga\b"),
+    ("Kecelakaan", r"\bkecelakaan\b|\btabrakan\b|\btertabrak\b|\blaka lantas\b"),
+    ("Banjir", r"\bbanjir\b|\bterendam\b|\bgenangan\b"),
+    ("Longsor", r"\blongsor\b|\btanah longsor\b"),
+    ("Karhutla", r"\bkarhutla\b|\bkebakaran hutan\b|\bkebakaran lahan\b"),
+    ("Infrastruktur", r"\bjembatan\b|\bjalan\b|\binfrastruktur\b|\bpembangunan\b|\bproyek\b|\btender\b"),
+    ("Kesehatan", r"\brsud\b|\brumah sakit\b|\bpuskesmas\b|\bkesehatan\b|\bpasien\b|\bdokter\b"),
+    ("Pendidikan", r"\bsekolah\b|\bsiswa\b|\bguru\b|\bpendidikan\b|\bkampus\b|\buniversitas\b"),
+    ("Lingkungan", r"\blingkungan\b|\bsampah\b|\bpencemaran\b|\bhutan\b"),
+    ("Konflik / Kamtibmas", r"\bkeributan\b|\bkonflik\b|\bbentrokan\b|\bkamtibmas\b|\bkeamanan\b|\bpatroli\b"),
+    ("Pertanahan / Sengketa", r"\bpertanahan\b|\bsengketa tanah\b|\bsengketa lahan\b|\bsertifikat\b"),
+    ("Anggaran / Pemerintahan", r"\banggaran\b|\banggarkan\b|\bapbd\b|\bpemkab\b|\bbupati\b|\bdprd\b|\bpemerintah\b"),
+]
+
+
+def extract_issue_topics(title, content):
+    """Extract specific issue/event labels from the article text."""
+    text = _clean(f"{title} {content}").lower()
+    found = [name for name, pattern in ISSUE_TOPIC_RULES if re.search(pattern, text, re.I)]
+    return found or ["Isu umum / lainnya"]
+
+
 def _trend_sentences(sentences):
+    """Return only trend/progress statements actually present in the article."""
     trend_patterns = (
-        r"\bakan\b|\brencana\b|\bditargetkan\b|\btarget\b|\bdiproyeksikan\b|"
-        r"\bke depan\b|\bselanjutnya\b|\bberikutnya\b|\bakan dilakukan\b|"
+        r"\bakan\b|\brencana\b|\bberencana\b|\bdirencanakan\b|\bditargetkan\b|"
+        r"\btarget\b|\bdiproyeksikan\b|\bke depan\b|\bselanjutnya\b|\bberikutnya\b|"
         r"\bdilanjutkan\b|\bmelanjutkan\b|\bpengembangan\b|\bpercepatan\b|"
-        r"\bdianggarkan\b|\bdibangun\b|\bditingkatkan\b|\bmulai\b"
+        r"\bdianggarkan\b|\bdibangun\b|\bditingkatkan\b|\bakan dimulai\b|"
+        r"\bsedang\b|\bdalam proses\b|\bproses tender\b|\btender\b|\bterdaftar\b|"
+        r"\bberlangsung\b|\bdimulai\b|\bmulai\b|\btahun ini\b"
     )
-    selected = [s for s in sentences if re.search(trend_patterns, s, re.I)]
-    return selected[:4]
+    noise = (
+        "tautan telah disalin", "scroll to continue", "anda menyukai artikel ini",
+        "artikel disimpan", "baca juga", "ikuti kami", "advertisement"
+    )
+    selected = []
+    seen = set()
+    for sentence in sentences:
+        low = sentence.lower()
+        if any(x in low for x in noise):
+            continue
+        if re.search(trend_patterns, sentence, re.I):
+            key = low[:400]
+            if key not in seen:
+                selected.append(sentence)
+                seen.add(key)
+        if len(selected) >= 5:
+            break
+    return selected
+
+
+def _fallback_trend(sentences):
+    """No invented trend: explicitly state that the article has no explicit projection."""
+    if sentences:
+        return [
+            "Artikel tidak memuat proyeksi lanjutan yang eksplisit. Perkembangan berikutnya perlu dimonitor berdasarkan sumber asli.",
+        ]
+    return [
+        "Tidak terdapat cukup teks artikel untuk menilai trend perkembangan/perkiraan. Verifikasi sumber asli diperlukan."
+    ]
 
 
 def build_lapinsus(article):
@@ -328,24 +461,16 @@ def build_lapinsus(article):
         else:
             evidence.append(sentence)
 
-    facts = evidence[:10] or [
-        "Konten artikel tidak cukup untuk mengekstrak fakta terstruktur. "
-        "Informasi perlu diverifikasi langsung pada sumber pemberitaan."
-    ]
+    # Facts are article sentences only. No generic facts are inserted when the source is available.
+    facts = evidence[:10]
+    if not facts:
+        facts = [
+            "Konten artikel yang berhasil diambil tidak cukup untuk mengekstrak fakta. Verifikasi langsung pada sumber asli diperlukan."
+        ]
 
     trend = _trend_sentences(sentences)
     if not trend:
-        if sentences:
-            trend = [
-                "Artikel yang tersedia belum memuat proyeksi lanjutan yang eksplisit; "
-                "perkembangan berikutnya perlu dimonitor berdasarkan informasi pada sumber asli.",
-                f"Monitoring diarahkan pada tindak lanjut atas isu: {sentences[-1][:280]}",
-            ]
-        else:
-            trend = [
-                "Perkembangan selanjutnya belum dapat dipastikan dari konten artikel "
-                "yang berhasil diambil dan memerlukan monitoring lanjutan."
-            ]
+        trend = _fallback_trend(sentences)
 
     issues = classify_issues(title, grounded_text)
 
@@ -370,7 +495,6 @@ def build_lapinsus(article):
         "grounded_content": grounded_text,
         "report_number": _report_number(article.get("id")),
     }
-
 
 def _styles():
     base = getSampleStyleSheet()
