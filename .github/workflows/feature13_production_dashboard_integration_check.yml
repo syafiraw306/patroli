@@ -29,13 +29,13 @@ jobs:
 
       - name: Verify integration files
         run: |
-          test -f app-3_feature13_integrated.py
+          test -f app_feature13_integrated.py
           test -f feature13_panel.py
           test -f feature13_lapinsus_engine.py
 
       - name: Compile
         run: |
-          python -m py_compile app-3_feature13_integrated.py
+          python -m py_compile app_feature13_integrated.py
           python -m py_compile feature13_panel.py
           python -m py_compile feature13_lapinsus_engine.py
 
@@ -44,7 +44,7 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          app = Path("app-3_feature13_integrated.py").read_text(encoding="utf-8")
+          app = Path("app_feature13_integrated.py").read_text(encoding="utf-8")
           panel = Path("feature13_panel.py").read_text(encoding="utf-8")
           engine = Path("feature13_lapinsus_engine.py").read_text(encoding="utf-8")
 
