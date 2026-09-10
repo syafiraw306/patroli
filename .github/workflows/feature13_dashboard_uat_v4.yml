@@ -26,20 +26,23 @@ jobs:
           pip install -r requirements.txt
           pip install beautifulsoup4 requests folium streamlit-folium reportlab
 
-      - name: Install V4 files
+      - name: Verify V4 files
         run: |
-          cp feature13_v4_package/feature13_panel.py feature13_panel.py
-          cp feature13_v4_package/feature13_lapinsus_engine.py feature13_lapinsus_engine.py
-          cp feature13_v4_package/feature13_dashboard_uat_v4.py feature13_dashboard_uat_v4.py
+          test -f feature13_panel.py
+          test -f feature13_lapinsus_engine.py
+          test -f feature13_dashboard_uat_v4.py
+          test -f feature13_v4_regression.py
+          echo "V4 files found"
 
       - name: Compile
         run: |
           python -m py_compile feature13_panel.py
           python -m py_compile feature13_lapinsus_engine.py
           python -m py_compile feature13_dashboard_uat_v4.py
+          python -m py_compile feature13_v4_regression.py
 
       - name: V4 regression
-        run: python feature13_v4_package/feature13_v4_regression.py
+        run: python feature13_v4_regression.py
 
       - name: Real dashboard UAT
         run: python feature13_dashboard_uat_v4.py
