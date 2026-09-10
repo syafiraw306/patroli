@@ -1,0 +1,84 @@
+name: Feature 13 - Dashboard V5 Check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  feature13-v5-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Feature 13 dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r feature13-v5-requirements.txt
+
+      - name: Check required files
+        run: |
+          test -f app-3_feature13_v5.py
+          test -f feature13_panel.py
+          test -f feature13_lapinsus_engine.py
+          test -f feature13-v5-requirements.txt
+          echo "Required files: PASS"
+
+      - name: Python compile check
+        run: |
+          python -m py_compile             app-3_feature13_v5.py             feature13_panel.py             feature13_lapinsus_engine.py
+          echo "Python compile: PASS"
+
+      - name: Static Feature 13 contract check
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          app = Path("app-3_feature13_v5.py").read_text(encoding="utf-8")
+          panel = Path("feature13_panel.py").read_text(encoding="utf-8")
+          engine = Path("feature13_lapinsus_engine.py").read_text(encoding="utf-8")
+
+          checks = {
+              "render": "render_feature13_panel" in app and "render_feature13_panel" in panel,
+              "tab": "FEATURE #13" in app,
+              "cards": "Generate LAPINSUS" in panel,
+              "map": "Peta Isu per Kecamatan" in panel,
+              "issue_table": "Jumlah Isu" in panel,
+              "no_article_count_table": "Jumlah Artikel" not in panel,
+              "issues": "extract_issue_topics" in panel and "ISSUE_TOPIC_RULES" in engine,
+              "geojson": "FEATURE13_GEOJSON_URL" in panel,
+              "build": "build_lapinsus" in panel and "build_lapinsus" in engine,
+              "pdf": "make_pdf" in panel and "make_pdf" in engine,
+              "source": "get_article_source_text" in engine,
+              "no_internal_tabs": "st.tabs(" not in panel,
+          }
+
+          failed = [name for name, ok in checks.items() if not ok]
+
+          for name, ok in checks.items():
+              print(f"{name}: {'PASS' if ok else 'FAIL'}")
+
+          if failed:
+              raise SystemExit("FAILED checks: " + ", ".join(failed))
+
+          print("Feature 13 V5 static contract: PASS")
+          PY
+
+      - name: Safety summary
+        run: |
+          echo "=============================================="
+          echo "FEATURE #13 DASHBOARD V5 CHECK"
+          echo "=============================================="
+          echo "Mode                  : READ-ONLY"
+          echo "Database mutation     : NONE"
+          echo "Telegram notification : NONE"
+          echo "Production articles   : NOT TOUCHED"
+          echo "=============================================="
