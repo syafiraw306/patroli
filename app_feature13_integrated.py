@@ -1549,31 +1549,52 @@ def main() -> None:
     if is_admin:
 
         (
-            tab_priority, tab_negative, tab_handling, tab_neutral,
-            tab_positive, tab_analytics, tab_logs, tab_feature13,
+            tab_priority,
+            tab_negative,
+            tab_handling,
+            tab_neutral,
+            tab_positive,
+            tab_analytics,
+            tab_logs,
+            tab_feature13,
         ) = st.tabs(
             [
-                "🚨 PRIORITAS", "🔴 NEGATIF KUAT", "🟠 PENANGANAN",
-                "🟡 NETRAL", "🟢 POSITIF", "📊 ANALISIS",
-                "📜 LOG", "📍 FEATURE #13",
+                "🚨 PRIORITAS",
+                "🔴 NEGATIF KUAT",
+                "🟠 PENANGANAN",
+                "🟡 NETRAL",
+                "🟢 POSITIF",
+                "📊 ANALISIS",
+                "📜 LOG",
+                "📍 FEATURE #13",
             ]
         )
 
     else:
 
         (
-            tab_priority, tab_negative, tab_handling, tab_neutral,
-            tab_positive, tab_analytics, tab_feature13,
+            tab_priority,
+            tab_negative,
+            tab_handling,
+            tab_neutral,
+            tab_positive,
+            tab_analytics,
+            tab_feature13,
         ) = st.tabs(
             [
-                "🚨 PRIORITAS", "🔴 NEGATIF KUAT", "🟠 PENANGANAN",
-                "🟡 NETRAL", "🟢 POSITIF", "📊 ANALISIS",
+                "🚨 PRIORITAS",
+                "🔴 NEGATIF KUAT",
+                "🟠 PENANGANAN",
+                "🟡 NETRAL",
+                "🟢 POSITIF",
+                "📊 ANALISIS",
                 "📍 FEATURE #13",
             ]
         )
 
         tab_logs = None
 
+    # --------------------------------------------------------
     # PRIORITAS
     # --------------------------------------------------------
 
@@ -1701,9 +1722,11 @@ def main() -> None:
 
     # --------------------------------------------------------
     # FEATURE #13 — DELI SERDANG LOCATION INTELLIGENCE
+    # --------------------------------------------------------
     with tab_feature13:
         render_feature13_panel(is_admin=is_admin)
 
+    # --------------------------------------------------------
     # FOOTER
     # --------------------------------------------------------
 
