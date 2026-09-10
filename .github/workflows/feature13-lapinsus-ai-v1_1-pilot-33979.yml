@@ -1,0 +1,60 @@
+name: Feature 13 - LAPINSUS AI V1.1 Pilot #33979
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pilot-33979:
+    runs-on: ubuntu-latest
+
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LAPINSUS_AI_MODEL: gpt-5.6-luna
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r feature13-lapinsus-ai-v1_1-requirements.txt
+          pip install "python-dotenv>=1.0.1"
+
+      - name: Compile check
+        run: |
+          python -m py_compile \
+            feature13_lapinsus_ai.py \
+            feature13_lapinsus_engine.py \
+            feature13_lapinsus_ai_pilot_33979.py
+
+      - name: Run LAPINSUS AI V1.1 Pilot #33979
+        run: |
+          python feature13_lapinsus_ai_pilot_33979.py
+
+      - name: Upload pilot artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: LAPINSUS-33979-AI-V1.1-PILOT
+          path: |
+            LAPINSUS_33979_AI_V1_1_PILOT.pdf
+            LAPINSUS_33979_AI_V1_1_PILOT.json
+          if-no-files-found: warn
+
+      - name: Safety summary
+        if: always()
+        run: |
+          echo "=============================================="
+          echo "FEATURE 13 - LAPINSUS AI V1.1 PILOT #33979"
+          echo "Database mutation : NONE"
+          echo "Telegram           : NONE"
+          echo "Production articles: NOT TOUCHED"
+          echo "=============================================="
