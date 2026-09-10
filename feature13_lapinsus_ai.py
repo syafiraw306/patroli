@@ -2,7 +2,7 @@ import json
 import os
 import re
 from html import unescape
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import requests
@@ -286,7 +286,14 @@ def _material_source_highlights(sentences: List[str]) -> List[Tuple[int, str]]:
 
 
 def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int = IMAGE_MAX) -> Tuple[List[str], List[Dict[str, Any]]]:
-    """V1.6 deterministic image selection/audit for both publisher and stored candidates."""
+    """Deterministic image selection/audit.
+
+    Important: an image candidate remains auditable even when the CDN blocks a
+    HEAD/GET or returns an unexpected content-type. Network fetch failure must
+    not erase the audit trail. Such an image is marked ``fetch_ok=False`` and
+    can still be selected when it passes URL/relevance filtering. Content hash
+    deduplication is applied whenever bytes are available.
+    """
     import hashlib
     ranked = []
     seen_urls = set()
@@ -319,6 +326,8 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
         content_hash = ""
         content_type = ""
         byte_size = 0
+        fetch_ok = False
+        fetch_error = ""
         try:
             r = requests.get(
                 src,
@@ -327,13 +336,22 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
                     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140.0 Safari/537.36",
                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
                 },
+                allow_redirects=True,
             )
             content_type = (r.headers.get("content-type") or "").lower()
             byte_size = len(r.content or b"")
-            if r.ok and content_type.startswith("image/") and byte_size >= 2048:
+            fetch_ok = bool(r.ok)
+            if r.ok and content_type.startswith("image/") and byte_size >= 512:
                 content_hash = hashlib.sha256(r.content).hexdigest()
-        except Exception:
-            pass
+            elif r.ok and byte_size >= 512:
+                fetch_error = f"unexpected_content_type:{content_type or 'missing'}"
+            elif not r.ok:
+                fetch_error = f"http_status:{r.status_code}"
+            else:
+                fetch_error = "image_payload_too_small"
+        except Exception as exc:
+            fetch_error = f"{type(exc).__name__}:{exc}"
+
         duplicate = bool(content_hash and content_hash in seen_hashes)
         rec = {
             "url": src,
@@ -343,15 +361,20 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
             "sha256": content_hash,
             "content_type": content_type,
             "byte_size": byte_size,
+            "fetch_ok": fetch_ok,
+            "fetch_error": fetch_error,
             "selected": False,
         }
+        audit.append(rec)
         if duplicate:
-            audit.append(rec)
             continue
         if content_hash:
             seen_hashes.add(content_hash)
+        # Selection is based on deterministic URL/relevance filtering. A CDN
+        # fetch failure is recorded but does not discard an otherwise valid
+        # article image; this prevents image_audit from becoming empty merely
+        # because the publisher blocks the runner's image request.
         rec["selected"] = True
-        audit.append(rec)
         selected.append(src)
         if len(selected) >= max_selected:
             break
@@ -511,7 +534,7 @@ def resolve_google_news(url: str) -> str:
     return url
 
 
-def _fetch_publisher(url: str, context_text: str = "") -> Tuple[str, List[str], str, str, List[Dict[str, Any]]]:
+def _fetch_publisher(url: str, context_text: str = "", stored_image_candidates: Optional[List[str]] = None) -> Tuple[str, List[str], str, str, List[Dict[str, Any]]]:
     """Fetch publisher URL variants and return the first substantial article."""
     last_error = ""
     for candidate in _candidate_publisher_urls(url):
@@ -532,7 +555,7 @@ def _fetch_publisher(url: str, context_text: str = "") -> Tuple[str, List[str], 
             sentences = split_sentences(text)
             if len(text) >= 250 and len(sentences) >= 3 and not _looks_like_google_wrapper(text):
                 if not fetched_images:
-                    stored_candidates = article.get("article_images") or []
+                    stored_candidates = stored_image_candidates or []
                     if isinstance(stored_candidates, str):
                         try:
                             stored_candidates = json.loads(stored_candidates)
@@ -574,8 +597,14 @@ def fetch_source_article(article: Dict[str, Any]) -> Dict[str, Any]:
 
     for publisher_url in list(dict.fromkeys(publisher_candidates)):
         try:
-            text, fetched_images, canonical, method, image_audit = _fetch_publisher(publisher_url, context_text=clean_text(article.get("title")))
+            text, fetched_images, canonical, method, image_audit = _fetch_publisher(publisher_url, context_text=clean_text(article.get("title")), stored_image_candidates=images)
             sentences = split_sentences(text)
+            if fetched_images and not image_audit:
+                fallback_selected, fallback_audit = audit_image_urls(
+                    fetched_images, context_text=clean_text(article.get("title")), max_selected=IMAGE_MAX
+                )
+                fetched_images = fallback_selected or fetched_images
+                image_audit = fallback_audit
             return {
                 "text": text,
                 "sentences": sentences,

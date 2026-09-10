@@ -6,6 +6,8 @@ from feature13_lapinsus_ai import (
 
 def main():
     assert AI_VERSION == 'LAPINSUS_DELI_SERDANG_AI_V1_6'
+    engine_text = __import__('pathlib').Path('feature13_lapinsus_engine.py').read_text(encoding='utf-8')
+    assert '"image_audit": ai.get("image_audit") or []' in engine_text
     assert _looks_like_google_wrapper('<a href="https://news.google.com/rss/articles/x">title</a>')
     assert any('/amp' in u for u in _candidate_publisher_urls('https://www.detik.com/sumut/berita/d-8654895/test'))
     sentences = [
@@ -62,6 +64,7 @@ def main():
     bad = _validate_grounding({'informasi_diperoleh':[{'text':'Bahwa anggaran Rp 99 miliar.','evidence_sentence_ids':[2]}],'trend_perkembangan':[]}, sentences)
     assert not bad['passed']
     print('[PASS] V1.6 version contract')
+    print('[PASS] Engine image_audit propagation')
     print('[PASS] Google wrapper detection')
     print('[PASS] Detik AMP candidate retained')
     print('[PASS] Material highlights')

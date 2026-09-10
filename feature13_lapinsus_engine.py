@@ -209,6 +209,7 @@ def build_lapinsus(article):
         "actions": ai["actions"],
         "source_statement": ai["source_statement"],
         "images": ai.get("images") or [],
+        "image_audit": ai.get("image_audit") or [],
         "report_number": _report_number(article.get("id")),
         "ai_model": ai.get("model"),
         "grounding": ai.get("grounding", {}),
