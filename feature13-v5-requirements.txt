@@ -1,0 +1,5 @@
+beautifulsoup4
+folium
+streamlit-folium
+reportlab
+requests
