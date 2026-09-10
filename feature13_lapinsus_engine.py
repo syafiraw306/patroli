@@ -29,7 +29,7 @@ from database import get_supabase
 from feature13_lapinsus_ai import generate_ai_lapinsus, fetch_source_article
 
 TABLE = "deli_serdang_location_articles"
-TEMPLATE_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_5PAGES"
+TEMPLATE_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_2_5PAGES"
 
 # Nilai default mengikuti dokumen contoh yang diberikan sebagai template.
 # Seluruh identitas dapat dioverride melalui environment variable bila terjadi perubahan pejabat.
@@ -209,6 +209,10 @@ def build_lapinsus(article):
         "report_number": _report_number(article.get("id")),
         "ai_model": ai.get("model"),
         "grounding": ai.get("grounding", {}),
+        "ai_version": ai.get("ai_version"),
+        "source_extraction_method": ai.get("source_extraction_method"),
+        "source_sentence_count": ai.get("source_sentence_count", 0),
+        "source_material_highlights": ai.get("source_material_highlights") or [],
     }
 
 

@@ -6,8 +6,8 @@ from database import get_supabase
 from feature13_lapinsus_engine import build_lapinsus, make_pdf, TABLE
 
 ARTICLE_ID = 33979
-OUT = Path("LAPINSUS_33979_AI_V1_PILOT.pdf")
-JSON_OUT = Path("LAPINSUS_33979_AI_V1_PILOT.json")
+OUT = Path("LAPINSUS_33979_AI_V1_2_PILOT.pdf")
+JSON_OUT = Path("LAPINSUS_33979_AI_V1_2_PILOT.json")
 
 
 def main():
@@ -37,7 +37,11 @@ def main():
         "resolved_link": data.get("link"),
         "report_number": data.get("report_number"),
         "ai_model": data.get("ai_model"),
+        "ai_version": data.get("ai_version"),
         "grounding": data.get("grounding"),
+        "source_extraction_method": data.get("source_extraction_method"),
+        "source_sentence_count": data.get("source_sentence_count"),
+        "source_material_highlights": data.get("source_material_highlights"),
         "facts": data.get("facts"),
         "trend": data.get("trend"),
         "actions": data.get("actions"),

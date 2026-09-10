@@ -485,8 +485,6 @@ def _validate_grounding(result: Dict[str, Any], sentences: List[str]) -> Dict[st
         for idx, item in enumerate(result.get(section_name, []), 1):
             nums = set(re.findall(r"\d+(?:[.,]\d+)?", item.get("text", "")))
             ids = item.get("evidence_sentence_ids") or []
-            if section_name == "trend_perkembangan" and item.get("basis") == "source_limitation":
-                continue
             evidence_text = " ".join(sentences[i - 1] for i in ids if 1 <= i <= len(sentences))
             for n in nums:
                 if n not in evidence_text:
