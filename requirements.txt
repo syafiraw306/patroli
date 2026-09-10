@@ -1,14 +1,16 @@
-requests
+
 feedparser
 plotly
-beautifulsoup4
 python-dotenv
 python-dateutil
 schedule
 streamlit>=1.40,<2
 supabase>=2.9,<3
 pandas>=2.2,<3
-folium>=0.17,<1
-streamlit-folium>=0.23,<1
-reportlab
+beautifulsoup4>=4.12
+requests>=2.31
+folium>=0.16
+streamlit-folium>=0.20
+reportlab>=4.0
+
 
