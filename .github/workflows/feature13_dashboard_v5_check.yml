@@ -22,6 +22,7 @@ jobs:
       - name: Install Feature 13 dependencies
         run: |
           python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           pip install -r feature13-v5-requirements.txt
 
       - name: Check required files
@@ -34,7 +35,10 @@ jobs:
 
       - name: Python compile check
         run: |
-          python -m py_compile             app-3_feature13_v5.py             feature13_panel.py             feature13_lapinsus_engine.py
+          python -m py_compile \
+            app-3_feature13_v5.py \
+            feature13_panel.py \
+            feature13_lapinsus_engine.py
           echo "Python compile: PASS"
 
       - name: Static Feature 13 contract check
@@ -48,13 +52,20 @@ jobs:
 
           checks = {
               "render": "render_feature13_panel" in app and "render_feature13_panel" in panel,
-              "tab": "FEATURE #13" in app,
+              "tab": "📍 FEATURE #13" in app,
+              "table": "deli_serdang_location_articles" in panel,
               "cards": "Generate LAPINSUS" in panel,
               "map": "Peta Isu per Kecamatan" in panel,
-              "issue_table": "Jumlah Isu" in panel,
+              # V5 intentionally does NOT render a table headed 'Jumlah Isu'.
+              # It shows issue-based map markers, an issue legend, and an issue filter.
+              "issue_map_contract": (
+                  "Legenda isu" in panel
+                  and "Filter isu" in panel
+                  and "extract_issue_topics" in panel
+              ),
               "no_article_count_table": "Jumlah Artikel" not in panel,
               "issues": "extract_issue_topics" in panel and "ISSUE_TOPIC_RULES" in engine,
-              "geojson": "FEATURE13_GEOJSON_URL" in panel,
+              "geojson": "FEATURE13_GEOJSON_URL" in panel and "GeoJson" in panel,
               "build": "build_lapinsus" in panel and "build_lapinsus" in engine,
               "pdf": "make_pdf" in panel and "make_pdf" in engine,
               "source": "get_article_source_text" in engine,
@@ -69,7 +80,7 @@ jobs:
           if failed:
               raise SystemExit("FAILED checks: " + ", ".join(failed))
 
-          print("Feature 13 V5 static contract: PASS")
+          print("FEATURE #13 V5 STATIC CONTRACT: PASS")
           PY
 
       - name: Safety summary
