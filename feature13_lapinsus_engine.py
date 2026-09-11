@@ -29,7 +29,7 @@ from database import get_supabase
 from feature13_lapinsus_ai import generate_ai_lapinsus, fetch_source_article
 
 TABLE = "deli_serdang_location_articles"
-TEMPLATE_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_7_5PAGES"
+TEMPLATE_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_7_1_DYNAMIC_DOCS"
 
 # Nilai default mengikuti dokumen contoh yang diberikan sebagai template.
 # Seluruh identitas dapat dioverride melalui environment variable bila terjadi perubahan pejabat.
@@ -370,28 +370,47 @@ def make_pdf(data):
         PageBreak(),
     ]
 
-    # ==================== PAGE 4 ====================
-    story += [Spacer(1, 0.2 * cm), _p("DOKUMENTASI", styles["title"]), Spacer(1, 0.15 * cm)]
+    # ==================== DOKUMENTASI (DYNAMIC PAGES) ====================
+    # Only render unique selected images. Never duplicate an image merely to
+    # preserve a fixed five-page template. With <=2 unique images the PDF is
+    # 4 pages; with 3+ unique images a second documentation page is added.
     images = list(data.get("images") or [])
-    rendered = 0
-    for url in images[:2]:
-        img = _image_flowable(url, 17.5 * cm, 8.0 * cm)
-        if img:
-            story += [img, Spacer(1, 0.3 * cm)]
-            rendered += 1
-    if rendered == 0:
-        story.append(_p("Dokumentasi gambar tidak tersedia pada data artikel yang tersimpan.", styles["center"]))
-    story.append(PageBreak())
+    image_audit = list(data.get("image_audit") or [])
+    selected_audit_urls = [x.get("url") for x in image_audit if x.get("selected") and x.get("url")]
+    if selected_audit_urls:
+        images = [u for u in images if u in selected_audit_urls] or selected_audit_urls
 
-    # ==================== PAGE 5 ====================
-    story += [Spacer(1, 0.2 * cm), _p("DOKUMENTASI", styles["title"]), Spacer(1, 0.15 * cm)]
-    third = images[2:5]
-    for url in third[:1]:
-        img = _image_flowable(url, 17.5 * cm, 9.5 * cm)
-        if img:
-            story += [img, Spacer(1, 0.3 * cm)]
-    if not third:
-        story.append(_p("Dokumentasi tambahan tidak tersedia pada data artikel yang tersimpan.", styles["center"]))
+    # Normalize while preserving order.
+    unique_images = []
+    seen = set()
+    for url in images:
+        if not url:
+            continue
+        key = re.sub(r"[?&](?:w|wid|width|v|t)=[^&]*", "", str(url), flags=re.I)
+        if key not in seen:
+            seen.add(key)
+            unique_images.append(url)
+
+    def add_doc_page(page_images, first_page=False):
+        story.extend([Spacer(1, 0.2 * cm), _p("DOKUMENTASI", styles["title"]), Spacer(1, 0.15 * cm)])
+        rendered = 0
+        for url in page_images:
+            img = _image_flowable(url, 17.5 * cm, 8.0 * cm)
+            if img:
+                story.extend([img, Spacer(1, 0.3 * cm)])
+                rendered += 1
+        if rendered == 0:
+            if first_page:
+                story.append(_p("Dokumentasi gambar tidak tersedia pada data artikel yang tersimpan.", styles["center"]))
+            else:
+                story.append(_p("Dokumentasi tambahan tidak tersedia pada data artikel yang tersimpan.", styles["center"]))
+
+    if len(unique_images) <= 2:
+        add_doc_page(unique_images, first_page=True)
+    else:
+        add_doc_page(unique_images[:2], first_page=True)
+        story.append(PageBreak())
+        add_doc_page(unique_images[2:5], first_page=False)
 
     doc.build(story)
     return buffer.getvalue()
