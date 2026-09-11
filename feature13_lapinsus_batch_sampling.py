@@ -109,6 +109,31 @@ def select_sample(rows):
     return selected[:SAMPLE_SIZE]
 
 
+def classify_runtime_error(exc):
+    """Classify expected source-access failures separately from unexpected bugs."""
+    msg = str(exc or '')
+    low = msg.lower()
+
+    source_signals = (
+        'ekstraksi sumber artikel gagal',
+        'publisher tidak dapat diambil',
+        'publisher tidak bisa diambil',
+        'halaman publisher tidak dapat diambil',
+        'halaman publisher tidak bisa diambil',
+        'google news',
+        'stored content hanya wrapper',
+        'stored content',
+        'artikel body tidak ditemukan',
+        'article body tidak ditemukan',
+        'source article',
+        'source unavailable',
+    )
+
+    if any(signal in low for signal in source_signals):
+        return 'SOURCE_UNAVAILABLE'
+    return 'ERROR'
+
+
 def assess(data, pdf_path):
     facts = data.get('facts') or []
     fact_ev = data.get('fact_evidence') or []
@@ -165,7 +190,15 @@ def main():
             })
             (OUT_DIR / f'LAPINSUS_{aid}.json').write_text(json.dumps({**rec, 'grounding': data.get('grounding'), 'image_audit': data.get('image_audit')}, ensure_ascii=False, indent=2), encoding='utf-8')
         except Exception as exc:
-            rec.update({'status':'ERROR','score':0,'score_total':0,'error':f'{type(exc).__name__}: {exc}'})
+            error_text = f'{type(exc).__name__}: {exc}'
+            status = classify_runtime_error(exc)
+            rec.update({
+                'status': status,
+                'score': 0,
+                'score_total': 0,
+                'error': error_text,
+            })
+            print(f'  -> {status}: {error_text}')
         results.append(rec)
         print(f'  -> {rec["status"]}')
 
@@ -195,6 +228,15 @@ def main():
     print('rows_before:',len(rows_before),'rows_after:',len(rows_after),'db_unchanged:',db_unchanged)
     print('status_counts:',dict(Counter(r['status'] for r in results)))
     print('category_counts:',dict(Counter(r['category'] for r in results)))
-    print('STATUS:', 'PASS' if all(r['status']!='ERROR' for r in results) else 'PARTIAL_REVIEW')
+    status_counts = Counter(r['status'] for r in results)
+    if status_counts.get('ERROR', 0) > 0:
+        final_status = 'FAIL'
+    elif status_counts.get('SOURCE_UNAVAILABLE', 0) > 0 or status_counts.get('QUALITY_REVIEW', 0) > 0:
+        final_status = 'PASS_WITH_REVIEW'
+    else:
+        final_status = 'PASS'
+    print('STATUS:', final_status)
+    if status_counts.get('ERROR', 0) > 0:
+        print('[FAIL] Unexpected ERROR detected. See LAPINSUS_BATCH_SAMPLE_SUMMARY.json for details.')
 
 if __name__ == '__main__': main()
