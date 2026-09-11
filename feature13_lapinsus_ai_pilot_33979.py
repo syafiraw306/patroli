@@ -6,8 +6,8 @@ from database import get_supabase
 from feature13_lapinsus_engine import build_lapinsus, make_pdf, TABLE
 
 ARTICLE_ID = 33979
-OUT = Path("LAPINSUS_33979_AI_V1_6_PILOT.pdf")
-JSON_OUT = Path("LAPINSUS_33979_AI_V1_6_PILOT.json")
+OUT = Path("LAPINSUS_33979_AI_V1_7_PILOT.pdf")
+JSON_OUT = Path("LAPINSUS_33979_AI_V1_7_PILOT.json")
 
 
 def main():

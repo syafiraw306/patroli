@@ -29,7 +29,7 @@ from database import get_supabase
 from feature13_lapinsus_ai import generate_ai_lapinsus, fetch_source_article
 
 TABLE = "deli_serdang_location_articles"
-TEMPLATE_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_6_5PAGES"
+TEMPLATE_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_7_5PAGES"
 
 # Nilai default mengikuti dokumen contoh yang diberikan sebagai template.
 # Seluruh identitas dapat dioverride melalui environment variable bila terjadi perubahan pejabat.

@@ -3,7 +3,7 @@ import os
 import re
 from html import unescape
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -14,10 +14,12 @@ except ImportError:  # pragma: no cover
     OpenAI = None
 
 DEFAULT_MODEL = os.getenv("LAPINSUS_AI_MODEL", "gpt-5.6-luna")
-AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_6"
+AI_VERSION = "LAPINSUS_DELI_SERDANG_AI_V1_7"
 REQUEST_TIMEOUT = int(os.getenv("LAPINSUS_SOURCE_TIMEOUT", "15"))
 IMAGE_HASH_TIMEOUT = int(os.getenv("LAPINSUS_IMAGE_HASH_TIMEOUT", "8"))
 IMAGE_MAX = int(os.getenv("LAPINSUS_IMAGE_MAX", "6"))
+VISUAL_HASH_DISTANCE_THRESHOLD = int(os.getenv("LAPINSUS_VISUAL_HASH_DISTANCE_THRESHOLD", "8"))
+IMAGE_FETCH_MAX_BYTES = int(os.getenv("LAPINSUS_IMAGE_FETCH_MAX_BYTES", str(8 * 1024 * 1024)))
 
 SYSTEM_PROMPT = r"""
 Anda adalah AI penyusun DRAFT LAPORAN INFORMASI KHUSUS (LAPINSUS)
@@ -285,14 +287,97 @@ def _material_source_highlights(sentences: List[str]) -> List[Tuple[int, str]]:
     return out
 
 
-def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int = IMAGE_MAX) -> Tuple[List[str], List[Dict[str, Any]]]:
-    """Deterministic image selection/audit.
+def _normalize_image_url(url: str) -> str:
+    """Normalize delivery-only image URL parameters for identity checks.
 
-    Important: an image candidate remains auditable even when the CDN blocks a
-    HEAD/GET or returns an unexpected content-type. Network fetch failure must
-    not erase the audit trail. Such an image is marked ``fetch_ok=False`` and
-    can still be selected when it passes URL/relevance filtering. Content hash
-    deduplication is applied whenever bytes are available.
+    The original URL is always retained for downloading/rendering. This key is
+    only used to recognize CDN resize/watermark variants of the same asset.
+    """
+    try:
+        parts = urlparse(clean_text(url))
+        query = []
+        ignored = {
+            "w", "wid", "width", "h", "height", "q", "quality", "v", "t",
+            "fm", "format", "fit", "crop", "auto", "dpr", "ixlib", "cs",
+            "rect", "mark", "mark64", "rot", "sat", "sharp", "usm", "bg",
+        }
+        for k, v in parse_qsl(parts.query, keep_blank_values=True):
+            if k.lower() not in ignored:
+                query.append((k.lower(), v))
+        path = re.sub(r"//+", "/", parts.path or "/")
+        path = re.sub(r"/(?:api/)?wm/", "/community/media/", path, flags=re.I)
+        return urlunparse((parts.scheme.lower(), parts.netloc.lower(), path, "", "&".join(f"{k}={v}" for k,v in sorted(query)), ""))
+    except Exception:
+        return clean_text(url).split("#", 1)[0].strip().lower()
+
+
+def _image_asset_key(url: str) -> str:
+    """Return a conservative asset identity key, including the basename.
+
+    News CDNs commonly expose the same physical image through different
+    delivery paths (e.g. /community/media vs /api/wm) while keeping the same
+    descriptive filename. We use the basename only when it is descriptive
+    enough to avoid collapsing generic files such as default.jpg.
+    """
+    try:
+        parts = urlparse(clean_text(url))
+        path = parts.path or ""
+        basename = path.rsplit("/", 1)[-1].lower()
+        stem = re.sub(r"\.[a-z0-9]{2,5}$", "", basename)
+        generic = {
+            "image", "photo", "picture", "default", "thumbnail", "thumb",
+            "placeholder", "banner", "news", "asset", "media", "img",
+        }
+        if len(stem) >= 12 and stem not in generic:
+            return f"filename:{stem}"
+        return f"path:{parts.netloc.lower()}{path.lower()}"
+    except Exception:
+        return "url:" + _normalize_image_url(url)
+
+
+def _visual_hash_from_bytes(content: bytes) -> str:
+    """Compute a small perceptual hash after cropping delivery/watermark edges."""
+    try:
+        from PIL import Image
+        import io
+        import numpy as np
+        image = Image.open(io.BytesIO(content)).convert("L")
+        w, h = image.size
+        if min(w, h) < 32:
+            return ""
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        border = max(1, int(side * 0.08))
+        image = image.crop((left + border, top + border, left + side - border, top + side - border))
+        image = image.resize((32, 32))
+        a = np.asarray(image, dtype=np.float32)
+        n = 32
+        idx = np.arange(n, dtype=np.float32)
+        basis = np.cos(np.pi * (idx[:, None] + 0.5) * idx[None, :] / n)
+        dct = basis @ a @ basis.T
+        low = dct[:8, :8]
+        median = float(np.median(low[1:]))
+        bits = (low > median).flatten()
+        return "".join("1" if bool(x) else "0" for x in bits)
+    except Exception:
+        return ""
+
+
+def _hash_distance(a: str, b: str) -> Optional[int]:
+    if not a or not b or len(a) != len(b):
+        return None
+    return sum(x != y for x, y in zip(a, b))
+
+
+def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int = IMAGE_MAX) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """V1.7 image audit with URL/asset/visual deduplication.
+
+    A candidate is audited even if its CDN blocks downloading. Selection is
+    based on relevance plus conservative identity checks. Visual duplicates
+    are detected with a perceptual hash when bytes are available; CDN variants
+    sharing a descriptive asset filename are also grouped even when their
+    bytes differ because of watermark/resize transformations.
     """
     import hashlib
     ranked = []
@@ -301,11 +386,17 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
     for order, src in enumerate(urls or []):
         if not _valid_image_url(src):
             continue
-        norm = clean_text(src).split("#", 1)[0].strip()
-        if norm in seen_urls:
-            continue
+        src = clean_text(src)
+        norm = _normalize_image_url(src)
+        # Keep normalized duplicates in the audit trail; V1.7 marks them as
+        # duplicates during selection instead of silently dropping them.
         seen_urls.add(norm)
         hay = clean_text(src).lower()
+        if any(x in hay for x in (
+            "logo", "icon", "avatar", "placeholder", "default-image",
+            "banner", "sprite", "favicon", "google-news", "google_news",
+        )):
+            continue
         score = 0.0
         for token in context_tokens:
             if len(token) >= 5 and token in hay:
@@ -321,9 +412,16 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
         ranked.append((score, -order, src))
     ranked.sort(reverse=True)
 
-    selected, audit, seen_hashes = [], [], set()
+    selected, audit = [], []
+    selected_url_keys = set()
+    selected_asset_keys = set()
+    selected_visual_hashes = []
+
     for rank, (score, _neg_order, src) in enumerate(ranked, 1):
+        normalized_url = _normalize_image_url(src)
+        asset_key = _image_asset_key(src)
         content_hash = ""
+        visual_hash = ""
         content_type = ""
         byte_size = 0
         fetch_ok = False
@@ -341,8 +439,11 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
             content_type = (r.headers.get("content-type") or "").lower()
             byte_size = len(r.content or b"")
             fetch_ok = bool(r.ok)
-            if r.ok and content_type.startswith("image/") and byte_size >= 512:
+            if r.ok and content_type.startswith("image/") and 512 <= byte_size <= IMAGE_FETCH_MAX_BYTES:
                 content_hash = hashlib.sha256(r.content).hexdigest()
+                visual_hash = _visual_hash_from_bytes(r.content)
+            elif r.ok and byte_size > IMAGE_FETCH_MAX_BYTES:
+                fetch_error = "image_payload_too_large"
             elif r.ok and byte_size >= 512:
                 fetch_error = f"unexpected_content_type:{content_type or 'missing'}"
             elif not r.ok:
@@ -352,12 +453,38 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
         except Exception as exc:
             fetch_error = f"{type(exc).__name__}:{exc}"
 
-        duplicate = bool(content_hash and content_hash in seen_hashes)
+        url_duplicate = normalized_url in selected_url_keys
+        asset_duplicate = asset_key in selected_asset_keys
+        visual_duplicate = False
+        visual_distance = None
+        if visual_hash:
+            distances = [d for h in selected_visual_hashes if (d := _hash_distance(visual_hash, h)) is not None]
+            if distances:
+                visual_distance = min(distances)
+                visual_duplicate = visual_distance <= VISUAL_HASH_DISTANCE_THRESHOLD
+
+        duplicate = bool(url_duplicate or asset_duplicate or visual_duplicate)
+        reasons = []
+        if url_duplicate:
+            reasons.append("normalized_url")
+        if asset_duplicate:
+            reasons.append("asset_identity")
+        if visual_duplicate:
+            reasons.append("visual_hash")
+
         rec = {
             "url": src,
+            "normalized_url": normalized_url,
+            "asset_key": asset_key,
             "rank": rank,
             "score": round(score, 2),
             "duplicate": duplicate,
+            "duplicate_reason": ",".join(reasons),
+            "url_duplicate": url_duplicate,
+            "asset_duplicate": asset_duplicate,
+            "visual_duplicate": visual_duplicate,
+            "visual_distance": visual_distance,
+            "visual_hash": visual_hash,
             "sha256": content_hash,
             "content_type": content_type,
             "byte_size": byte_size,
@@ -366,18 +493,17 @@ def audit_image_urls(urls: List[str], context_text: str = "", max_selected: int 
             "selected": False,
         }
         audit.append(rec)
-        if duplicate:
+
+        if duplicate or len(selected) >= max_selected:
             continue
-        if content_hash:
-            seen_hashes.add(content_hash)
-        # Selection is based on deterministic URL/relevance filtering. A CDN
-        # fetch failure is recorded but does not discard an otherwise valid
-        # article image; this prevents image_audit from becoming empty merely
-        # because the publisher blocks the runner's image request.
+
         rec["selected"] = True
         selected.append(src)
-        if len(selected) >= max_selected:
-            break
+        selected_url_keys.add(normalized_url)
+        selected_asset_keys.add(asset_key)
+        if visual_hash:
+            selected_visual_hashes.append(visual_hash)
+
     return selected, audit
 
 def extract_article_body(html: str, context_text: str = "") -> Tuple[str, List[str], str]:
@@ -411,7 +537,7 @@ def extract_article_body(html: str, context_text: str = "") -> Tuple[str, List[s
     else:
         text = max(candidates, key=lambda x: x[0])[1]
 
-    # V1.6 image pipeline: collect broad candidates, normalize them, filter
+    # V1.7 image pipeline: collect broad candidates, normalize them, filter
     # publisher chrome, then rank + deduplicate by URL and downloaded bytes.
     image_candidates = [(u, "jsonld") for u in images]
     for img in soup.find_all("img"):
@@ -902,4 +1028,5 @@ def mock_lapinsus_33979(article: Dict[str, Any]) -> Dict[str, Any]:
         "images": article.get("article_images") or [],
         "grounding": {"passed": True, "errors": [], "mode": "mock_fixture"},
         "model": "mock-fixture",
+        "ai_version": AI_VERSION,
     }
