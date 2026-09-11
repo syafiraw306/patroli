@@ -1,0 +1,116 @@
+name: Feature 13 - LAPINSUS AI Batch Sampling V1.1 (READ-ONLY)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sample_size:
+        description: 'Number of articles to sample'
+        required: false
+        default: '30'
+        type: string
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      LAPINSUS_AI_MODEL: gpt-5.6-luna
+      LAPINSUS_SOURCE_TIMEOUT: 20
+      LAPINSUS_IMAGE_MAX: 6
+      LAPINSUS_SAMPLE_SIZE: ${{ inputs.sample_size }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install -r feature13-lapinsus-ai-v1_7-requirements.txt
+      - name: Compile
+        run: python -m py_compile feature13_lapinsus_ai.py feature13_lapinsus_engine.py feature13_lapinsus_ai_pilot_33979.py feature13_lapinsus_batch_sampling.py
+      - name: Run read-only batch sampling
+        run: python feature13_lapinsus_batch_sampling.py
+      - name: Acceptance and safety gate
+        run: |
+          set -euo pipefail
+          test -s LAPINSUS_BATCH_SAMPLE_SUMMARY.json
+          test -s LAPINSUS_BATCH_SAMPLE_SUMMARY.csv
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          a=json.loads(Path('LAPINSUS_BATCH_SAMPLE_SUMMARY.json').read_text())
+          assert a['mode']=='READ_ONLY_BATCH_SAMPLING'
+          assert a['database_mutation'] is False
+          assert a['telegram_sent'] is False
+          assert a['db_unchanged'] is True
+          assert a['rows_before']==a['rows_after']==770
+          assert a['sample_size_selected'] > 0
+          errors = [x for x in a['results'] if x.get('status') == 'ERROR']
+          source_unavailable = [x for x in a['results'] if x.get('status') == 'SOURCE_UNAVAILABLE']
+          quality_review = [x for x in a['results'] if x.get('status') == 'QUALITY_REVIEW']
+
+          print('=== BATCH SAMPLING ACCEPTANCE ===')
+          print('unexpected_errors:', len(errors))
+          print('source_unavailable:', len(source_unavailable))
+          print('quality_review:', len(quality_review))
+
+          if source_unavailable:
+              print('=== SOURCE UNAVAILABLE DETAILS ===')
+              for x in source_unavailable:
+                  print(
+                      f"article_id={x.get('article_id')} | "
+                      f"category={x.get('category')} | "
+                      f"source={x.get('source')} | "
+                      f"title={x.get('title')} | "
+                      f"error={x.get('error')}"
+                  )
+
+          if quality_review:
+              print('=== QUALITY REVIEW DETAILS ===')
+              for x in quality_review:
+                  print(
+                      f"article_id={x.get('article_id')} | "
+                      f"category={x.get('category')} | "
+                      f"score={x.get('score')}/{x.get('score_total')} | "
+                      f"title={x.get('title')}"
+                  )
+
+          if errors:
+              print('=== UNEXPECTED ERROR DETAILS ===')
+              for x in errors:
+                  print(
+                      f"article_id={x.get('article_id')} | "
+                      f"category={x.get('category')} | "
+                      f"source={x.get('source')} | "
+                      f"title={x.get('title')} | "
+                      f"error={x.get('error')}"
+                  )
+              raise AssertionError(f'Found {len(errors)} unexpected ERROR result(s).')
+          print('rows:', a['rows_before'])
+          print('sample:', a['sample_size_selected'])
+          print('status_counts:', a['status_counts'])
+          print('category_counts:', a['category_counts'])
+          print('database_mutation:', a['database_mutation'])
+          print('telegram_sent:', a['telegram_sent'])
+          if errors:
+              print('STATUS: FAIL')
+          elif source_unavailable or quality_review:
+              print('STATUS: PASS_WITH_REVIEW')
+          else:
+              print('STATUS: PASS')
+          PY
+      - name: Package artifacts
+        run: |
+          zip -qr LAPINSUS_BATCH_SAMPLE_ARTIFACTS.zip LAPINSUS_BATCH_SAMPLE LAPINSUS_BATCH_SAMPLE_SUMMARY.json LAPINSUS_BATCH_SAMPLE_SUMMARY.csv
+          ls -lh LAPINSUS_BATCH_SAMPLE_ARTIFACTS.zip LAPINSUS_BATCH_SAMPLE_SUMMARY.json LAPINSUS_BATCH_SAMPLE_SUMMARY.csv
+      - name: Upload sampling artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LAPINSUS-AI-BATCH-SAMPLE-V1-READ-ONLY
+          if-no-files-found: error
+          path: |
+            LAPINSUS_BATCH_SAMPLE_ARTIFACTS.zip
+            LAPINSUS_BATCH_SAMPLE_SUMMARY.json
+            LAPINSUS_BATCH_SAMPLE_SUMMARY.csv
